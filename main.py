@@ -404,9 +404,12 @@ class MainWindow(QMainWindow):
             return
         log(f'配置已保存: {key} = {fixed}')
         if key in ('adb.device_serial', 'adb.path'):
-            self._restart_scrcpy()  # adb 配置变化：重新初始化 scrcpy 和画面
-        if self._runner_proc and self._runner_proc.poll() is None:
-            self._restart_timer.start()  # 防抖：连续修改多个字段只重启一次
+            # adb 连接相关：重拉 scrcpy，调度器也需要重启重建连接
+            self._restart_scrcpy()
+            if self._runner_proc and self._runner_proc.poll() is None:
+                self._restart_timer.start()  # 防抖：连续修改多个字段只重启一次
+        elif self._runner_proc and self._runner_proc.poll() is None:
+            log('调度器每轮自动重读配置，最迟下一轮生效（无需重启）')
 
     def _restart_scrcpy(self) -> None:
         """杀掉并重拉 scrcpy（换设备/换 adb 后画面也需要切换）。"""

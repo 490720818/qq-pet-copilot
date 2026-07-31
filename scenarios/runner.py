@@ -37,7 +37,7 @@ from src.progress import (
 )
 from scenarios.adventure import AdventureScenario
 from scenarios.care import CareScenario
-from scenarios.school import SchoolScenario
+from scenarios.school import ATTRIBUTE_COURSES, SchoolScenario
 from scenarios.work import WorkScenario
 
 
@@ -107,11 +107,53 @@ class Runner:
             log(f'{name} 执行失败: {e}，今天不再执行该场景')
             return False
 
+    def reload_config(self) -> None:
+        """每轮重新读取 config.yaml，设置页热修改无需重启即生效（adb 连接除外）。
+
+        各场景每轮（一节课/一次打工）执行时都读自己的字段，
+        所以这里更新字段后下一轮自然生效。
+        """
+        try:
+            cfg = load_config()
+        except Exception as e:
+            log(f'配置读取失败，沿用旧配置: {e}')
+            return
+        sched = cfg.schedule
+        self.threshold = sched.coin_threshold
+        self.school_factor = sched.school_factor
+        self.work_factor = sched.work_factor
+        self.daily_point_limit = sched.daily_point_limit
+
+        adv = cfg.adventure
+        self.adventure_times = adv.times_per_day
+        start_time = adv.start_time
+        if isinstance(start_time, int):
+            # YAML 1.1 会把不带引号的 9:00 解析成分钟数 540，转回 HH:MM
+            start_time = f'{start_time // 60:02d}:{start_time % 60:02d}'
+        try:
+            self.adventure_start = datetime.strptime(start_time, '%H:%M').time()
+        except ValueError:
+            log(f'冒险时间格式无效 {start_time!r}，沿用旧值')
+
+        self.care.energy_threshold = cfg.care.energy_threshold
+        self.care.clean_threshold = cfg.care.clean_threshold
+        self.school.times_per_day = cfg.school.times_per_day
+        if cfg.school.attribute in ATTRIBUTE_COURSES:
+            self.school.attribute = cfg.school.attribute
+        else:
+            log(f'属性点配置无效 {cfg.school.attribute!r}，沿用 {self.school.attribute}')
+        self.work.location = cfg.work.location
+        self.work.times_per_day = cfg.work.times_per_day
+        self.work.employ_scroll_limit = cfg.work.employ_scroll_limit
+
     def run(self) -> None:
         school_dead = False  # 学习今天不再可用（达上限/没有课程/执行失败）
         work_dead = False    # 打工今天不再可用
         adventure_dead = False  # 冒险今天不再可用（执行失败）
         while True:
+            # 热修改：每轮调度前重读配置，设置页存盘最迟下一轮生效
+            self.reload_config()
+
             # 所有任务开始之前：检查一次体力/清洁，不足则喂食/洗澡
             try:
                 self.care.check_and_care()
