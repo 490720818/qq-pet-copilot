@@ -48,8 +48,8 @@ PROGRESS_FILE = SCHOOL_PROGRESS_FILE
 
 
 class SchoolScenario(DeviceScenario):
-    def __init__(self):
-        super().__init__()
+    def __init__(self, dev=None):
+        super().__init__(dev)
         self.attribute = self.cfg.school.attribute
         if self.attribute not in ATTRIBUTE_COURSES:
             raise ValueError(

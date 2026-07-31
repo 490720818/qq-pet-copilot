@@ -24,10 +24,12 @@ BACK_GRACE_ATTEMPTS = 3
 class DeviceScenario:
     """各场景共用：截图、模板识别、点击/拖动、回主页面。"""
 
-    def __init__(self):
+    def __init__(self, dev: Device | None = None):
         self.cfg = load_config()
-        self.dev = Device(find_adb(self.cfg.adb.path), self.cfg.adb.device_serial)
-        log(f'设备在线: {self.dev.ensure_connected()}')
+        if dev is None:
+            dev = Device(find_adb(self.cfg.adb.path), self.cfg.adb.device_serial)
+            log(f'设备在线: {dev.ensure_connected()}')
+        self.dev = dev
 
     def screen(self):
         return png_to_bgr(self.dev.screenshot())

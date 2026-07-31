@@ -74,8 +74,8 @@ def parse_status(results: list[tuple[str, int, int, float]]) -> dict:
 
 
 class CareScenario(DeviceScenario):
-    def __init__(self):
-        super().__init__()
+    def __init__(self, dev=None):
+        super().__init__(dev)
         self.energy_threshold = self.cfg.care.energy_threshold
         self.clean_threshold = self.cfg.care.clean_threshold
         log(f'体力阈值: {self.energy_threshold}，清洁阈值: {self.clean_threshold}')

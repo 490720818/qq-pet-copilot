@@ -41,7 +41,7 @@ import win32con
 import win32gui
 
 from src import settings as settings_io
-from src.config import PROJECT_ROOT, resource_path
+from src.config import PROJECT_ROOT, load_config, resource_path
 from src.progress import add_log_listener, log
 
 SCRCPY = resource_path('scrcpy-win64') / 'scrcpy.exe'
@@ -69,10 +69,10 @@ STOP_BTN_STYLE = 'QPushButton { background-color: #f44336; }' + _BTN_BASE.format
 SETTINGS_BTN_STYLE = 'QPushButton { background-color: #607D8B; }' + _BTN_BASE.format(
     hover='#546E7A', pressed='#455A64', disabled='#CFD8DC')
 
-# 设置页面字段：(点路径, 显示名, 类型)  类型: 'int' / 'str' / 选项列表
+# 设置页面字段：(点路径, 显示名, 类型)  类型: 'int' / 'str' / 'devices'(adb 设备下拉) / 选项列表
 SETTING_FIELDS = [
     ('adb.path', 'adb 路径', 'str'),
-    ('adb.device_serial', '设备序列号', 'str'),
+    ('adb.device_serial', '设备序列号', 'devices'),
     ('school.attribute', '属性点课程', ['力量', '智力', '魅力']),
     ('school.times_per_day', '每天学习次数（0 不限）', 'int'),
     ('work.location', '打工地点', 'str'),
@@ -104,12 +104,18 @@ def start_scrcpy() -> subprocess.Popen | None:
     if not SCRCPY.is_file():
         log(f'未找到 {SCRCPY}，跳过 scrcpy 启动')
         return None
-    log('启动 scrcpy（--turn-screen-off --window-borderless）...')
+    cmd = [str(SCRCPY)]
+    serial = load_config().adb.device_serial
+    if serial:  # 指定设备序列号
+        cmd += ['-s', serial]
+    cmd += ['--turn-screen-off', '--window-borderless',
+            f'--window-title={SCRCPY_TITLE}',
+            # 先放到屏幕外，嵌入容器时再移回来，避免窗口先弹出再嵌入的闪烁
+            '--window-x=-2000', '--window-y=-2000']
+    log(f'启动 scrcpy（--turn-screen-off --window-borderless'
+        + (f'，设备 {serial}）...' if serial else '）...'))
     proc = subprocess.Popen(
-        [str(SCRCPY), '--turn-screen-off', '--window-borderless',
-         f'--window-title={SCRCPY_TITLE}',
-         # 先放到屏幕外，嵌入容器时再移回来，避免窗口先弹出再嵌入的闪烁
-         '--window-x=-2000', '--window-y=-2000'],
+        cmd,
         cwd=str(SCRCPY.parent),  # scrcpy 需要同目录的 scrcpy-server 等文件
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
@@ -143,6 +149,9 @@ class ScrcpyContainer(QWidget):
         self._aspect: tuple[int, int] | None = None  # 手机屏幕物理像素 (宽, 高)
         self.setStyleSheet('background: black;')
         self.setMinimumWidth(280)
+
+    def set_hwnd(self, hwnd: int | None) -> None:
+        self._hwnd = hwnd
 
     def embed(self, hwnd: int, aspect: tuple[int, int] | None = None) -> None:
         self._hwnd = hwnd
@@ -287,9 +296,10 @@ class MainWindow(QMainWindow):
                 # 体力/清洁是 0-100，其余次数/阈值放宽
                 w.setRange(0, 100 if key.startswith('care.') else 99999)
                 w.editingFinished.connect(lambda k=key: self.save_field(k))
-            elif isinstance(kind, list):
+            elif kind == 'devices' or isinstance(kind, list):
                 w = QComboBox()
-                w.addItems(kind)
+                if isinstance(kind, list):
+                    w.addItems(kind)
                 w.currentTextChanged.connect(lambda _t, k=key: self.save_field(k))
             else:
                 w = QLineEdit()
@@ -323,9 +333,11 @@ class MainWindow(QMainWindow):
         for key, (w, kind) in self._setting_widgets.items():
             value = settings_io.get_value(data, key)
             if value is None:
-                continue
+                value = ''
             w.blockSignals(True)  # 加载时不触发自动保存
-            if kind == 'int':
+            if kind == 'devices':
+                self._fill_devices(w, str(value))
+            elif kind == 'int':
                 w.setValue(int(value))
             elif isinstance(kind, list):
                 w.setCurrentText(str(value))
@@ -333,10 +345,28 @@ class MainWindow(QMainWindow):
                 w.setText(str(value))
             w.blockSignals(False)
 
+    def _fill_devices(self, combo: QComboBox, current: str) -> None:
+        """枚举在线 adb 设备填充序列号下拉，首项为 自动（第一台）。"""
+        combo.clear()
+        combo.addItem('自动（第一台）', '')
+        try:
+            from src.adb.device import Device
+            from src.config import find_adb
+
+            dev = Device(find_adb(load_config().adb.path))
+            for serial in dev.online_devices():
+                combo.addItem(serial, serial)
+        except Exception as e:
+            log(f'枚举设备失败: {e}')
+        idx = combo.findData(current)
+        combo.setCurrentIndex(idx if idx >= 0 else 0)
+
     def save_field(self, key: str) -> None:
         """字段失焦自动保存：校验 -> 写回 config.yaml -> 调度器在跑则延时重启生效。"""
         w, kind = self._setting_widgets[key]
-        if kind == 'int':
+        if kind == 'devices':
+            value = w.currentData() or ''
+        elif kind == 'int':
             value = w.value()
         elif isinstance(kind, list):
             value = w.currentText()
@@ -346,7 +376,10 @@ class MainWindow(QMainWindow):
         if not ok:
             log(f'配置 {key} 的值 {value!r} 无效，已恢复默认值 {fixed!r}')
             w.blockSignals(True)  # 恢复默认值不再触发一次保存
-            if kind == 'int':
+            if kind == 'devices':
+                idx = w.findData(fixed)
+                w.setCurrentIndex(idx if idx >= 0 else 0)
+            elif kind == 'int':
                 w.setValue(fixed)
             elif isinstance(kind, list):
                 w.setCurrentText(fixed)
@@ -361,8 +394,20 @@ class MainWindow(QMainWindow):
             log(f'保存配置失败: {e}')
             return
         log(f'配置已保存: {key} = {fixed}')
+        if key in ('adb.device_serial', 'adb.path'):
+            self._restart_scrcpy()  # adb 配置变化：重新初始化 scrcpy 和画面
         if self._runner_proc and self._runner_proc.poll() is None:
             self._restart_timer.start()  # 防抖：连续修改多个字段只重启一次
+
+    def _restart_scrcpy(self) -> None:
+        """杀掉并重拉 scrcpy（换设备/换 adb 后画面也需要切换）。"""
+        log('重新初始化 scrcpy...')
+        kill_existing_scrcpy()
+        self.scrcpy_view.set_hwnd(None)
+        self._scrcpy_proc = start_scrcpy()
+        if self._scrcpy_proc:
+            self._embed_tries = 0
+            self._embed_timer.start(500)
 
     def _restart_runner(self) -> None:
         if self._runner_proc and self._runner_proc.poll() is None:
@@ -438,6 +483,10 @@ class MainWindow(QMainWindow):
 def main() -> None:
     if '--runner' in sys.argv:
         # 调度器子进程模式（打包后由 GUI 以 --runner 参数拉起）
+        # windowed 打包的程序 stdout 用本地编码(GBK)，强制改 UTF-8，否则 GUI 日志乱码
+        for stream in (sys.stdout, sys.stderr):
+            if stream is not None and hasattr(stream, 'reconfigure'):
+                stream.reconfigure(encoding='utf-8', errors='replace')
         from scenarios.runner import Runner
 
         Runner().run()

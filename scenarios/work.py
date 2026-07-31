@@ -54,8 +54,8 @@ PROGRESS_FILE = WORK_PROGRESS_FILE
 
 
 class WorkScenario(DeviceScenario):
-    def __init__(self):
-        super().__init__()
+    def __init__(self, dev=None):
+        super().__init__(dev)
         self.location = self.cfg.work.location
         if not self.location:
             raise ValueError('config.yaml 中 work.location 未配置打工地点')

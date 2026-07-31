@@ -34,8 +34,8 @@ PROGRESS_FILE = ADVENTURE_PROGRESS_FILE
 
 
 class AdventureScenario(DeviceScenario):
-    def __init__(self):
-        super().__init__()
+    def __init__(self, dev=None):
+        super().__init__(dev)
         self.times_per_day = self.cfg.adventure.times_per_day
         log(f'每天冒险次数: {self.times_per_day if self.times_per_day else "不冒险"}')
 

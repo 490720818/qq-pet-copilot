@@ -25,7 +25,9 @@ from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from src.adb.device import Device
 from src.coins import read_coins
+from src.config import find_adb, load_config
 from src.progress import (
     ADVENTURE_PROGRESS_FILE,
     SCHOOL_PROGRESS_FILE,
@@ -41,10 +43,14 @@ from scenarios.work import WorkScenario
 
 class Runner:
     def __init__(self):
-        self.school = SchoolScenario()
-        self.work = WorkScenario()
-        self.adventure = AdventureScenario()
-        self.care = CareScenario()
+        # 共享一个 adb 连接，避免每个场景重复连接和打印
+        cfg = load_config()
+        dev = Device(find_adb(cfg.adb.path), cfg.adb.device_serial)
+        log(f'设备在线: {dev.ensure_connected()}')
+        self.school = SchoolScenario(dev)
+        self.work = WorkScenario(dev)
+        self.adventure = AdventureScenario(dev)
+        self.care = CareScenario(dev)
         sched = self.school.cfg.schedule
         self.threshold = sched.coin_threshold
         self.school_factor = sched.school_factor
@@ -52,8 +58,12 @@ class Runner:
         self.daily_point_limit = sched.daily_point_limit
         adv = self.school.cfg.adventure
         self.adventure_times = adv.times_per_day
+        start_time = adv.start_time
+        if isinstance(start_time, int):
+            # YAML 1.1 会把不带引号的 9:00 解析成分钟数 540，转回 HH:MM
+            start_time = f'{start_time // 60:02d}:{start_time % 60:02d}'
         try:
-            self.adventure_start = datetime.strptime(adv.start_time, '%H:%M').time()
+            self.adventure_start = datetime.strptime(start_time, '%H:%M').time()
         except ValueError:
             raise ValueError(
                 f'config.yaml 中 adventure.start_time 格式无效: {adv.start_time!r}，应为 HH:MM')

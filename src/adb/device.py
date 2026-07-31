@@ -2,7 +2,11 @@
 from __future__ import annotations
 
 import subprocess
+import sys
 import time
+
+# Windows 下隐藏 adb 子进程的命令行窗口（exe 无控制台模式下每次调用都会闪窗）
+_NO_WINDOW = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
 
 
 class AdbError(RuntimeError):
@@ -21,7 +25,8 @@ class Device:
         if self.serial:
             cmd += ["-s", self.serial]
         cmd += list(args)
-        proc = subprocess.run(cmd, capture_output=True, timeout=60)
+        proc = subprocess.run(cmd, capture_output=True, timeout=60,
+                              creationflags=_NO_WINDOW)
         if check and proc.returncode != 0:
             raise AdbError(
                 f"adb 命令失败: {' '.join(cmd)}\n{proc.stderr.decode('utf-8', 'replace')}"
@@ -33,7 +38,8 @@ class Device:
     def online_devices(self) -> list[str]:
         """返回在线设备序列号列表（不依赖 self.serial）。"""
         proc = subprocess.run(
-            [self.adb, "devices"], capture_output=True, timeout=30, check=True
+            [self.adb, "devices"], capture_output=True, timeout=30, check=True,
+            creationflags=_NO_WINDOW,
         )
         serials = []
         for line in proc.stdout.decode("utf-8", "replace").splitlines()[1:]:

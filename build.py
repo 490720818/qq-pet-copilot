@@ -21,6 +21,8 @@ ARGS = [
     '--windowed',          # 无控制台窗口
     '--onedir' if ONEDIR else '--onefile',
     '--name', 'QQPetCopilot',
+    # rapidocr 的 config.yaml 和 onnx 模型是包内数据文件，不会自动收集
+    '--collect-all', 'rapidocr_onnxruntime',
     # Windows 下 --add-data 用分号分隔 源;目标
     '--add-data', 'templates;templates',
     '--add-data', 'scrcpy-win64;scrcpy-win64',

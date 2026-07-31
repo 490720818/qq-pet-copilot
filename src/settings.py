@@ -4,6 +4,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from ruamel.yaml import YAML
+from ruamel.yaml.scalarstring import DoubleQuotedScalarString
 
 from .config import CONFIG_FILE
 
@@ -35,9 +36,10 @@ def validate_field(key: str, value):
     if key == 'adventure.start_time':
         try:
             datetime.strptime(str(value), '%H:%M')
-            return True, value
+            # 必须带引号写回：9:00 不带引号会被 YAML 1.1 解析成整数 540
+            return True, DoubleQuotedScalarString(str(value))
         except ValueError:
-            return False, default
+            return False, DoubleQuotedScalarString(str(default))
     if key == 'work.location':
         return (True, value) if str(value).strip() else (False, default)
     if key == 'school.attribute':
