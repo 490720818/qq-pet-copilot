@@ -111,3 +111,17 @@ tools/screenshot_tool.py  # 截图/模板采集工具（鼠标框选裁剪）
 
 鼠标左键框选（实时显示原图坐标），`c` 裁剪存模板，`s` 存全屏截图，`r` 重截，`q` 退出。
 坐标系与场景代码、`Device.tap` 一致，均为手机物理像素。
+
+## 致谢
+
+- [scrcpy](https://github.com/Genymobile/scrcpy)
+  Android 画面镜像与控制工具，本项目的实时画面嵌入和 adb 能力实现。
+
+## 免责声明
+
+本项目仅供学习研究 OpenCV 视觉识别技术使用。自动化操作可能违反游戏服务条款，
+由此产生的一切后果由使用者自行承担。
+
+## 许可证
+
+本项目采用 GNU General Public License v3.0 (GPLv3)，详见根目录 [LICENSE](LICENSE)。
