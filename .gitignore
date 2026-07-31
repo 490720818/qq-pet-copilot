@@ -9,3 +9,5 @@ dist/
 *.spec
 # 运行状态（进度、日志、调试图）
 runs/
+# 个人配置（模板为 config.example.yaml）
+config.yaml

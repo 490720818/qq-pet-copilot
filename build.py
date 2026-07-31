@@ -15,6 +15,10 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 
 ONEDIR = '--onedir' in sys.argv
 
+# config.yaml 不入库（个人配置），不存在时打包示例配置；
+# exe 首次运行会把它复制为 config.yaml
+CONFIG_SRC = 'config.yaml' if (PROJECT_ROOT / 'config.yaml').is_file() else 'config.example.yaml'
+
 ARGS = [
     sys.executable, '-m', 'PyInstaller',
     '--noconfirm', '--clean',
@@ -26,12 +30,16 @@ ARGS = [
     # Windows 下 --add-data 用分号分隔 源;目标
     '--add-data', 'templates;templates',
     '--add-data', 'scrcpy-win64;scrcpy-win64',
-    '--add-data', 'config.yaml;.',
+    '--add-data', f'{CONFIG_SRC};config.yaml',
     'main.py',
 ]
 
 
 def main() -> None:
+    # CI（GitHub Actions）控制台是 cp1252，打印中文会 UnicodeEncodeError
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, 'reconfigure'):
+            stream.reconfigure(encoding='utf-8', errors='replace')
     print('开始打包（' + ('onedir 目录模式' if ONEDIR else 'onefile 单文件模式') + '）...')
     subprocess.run(ARGS, check=True, cwd=PROJECT_ROOT)
     out = PROJECT_ROOT / 'dist' / ('QQPetCopilot/QQPetCopilot.exe' if ONEDIR else 'QQPetCopilot.exe')

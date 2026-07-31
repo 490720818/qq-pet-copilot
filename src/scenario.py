@@ -1,9 +1,10 @@
 """场景基类：设备连接、截图、模板点击、通用导航。"""
 from __future__ import annotations
 
+import atexit
 import time
 
-from .adb.device import Device
+from .adb.device import Device, restore_resolution, setup_resolution
 from .config import find_adb, load_config
 from .progress import count_cross, log
 from .vision import find, png_to_bgr
@@ -30,6 +31,24 @@ class DeviceScenario:
             dev = Device(find_adb(self.cfg.adb.path), self.cfg.adb.device_serial)
             log(f'设备在线: {dev.ensure_connected()}')
         self.dev = dev
+        self._setup_resolution()
+
+    def _setup_resolution(self) -> None:
+        """实机则调整为目标分辨率（每个 Device 只调一次），退出时恢复。"""
+        if getattr(self.dev, '_resolution_setup_done', False):
+            return
+        self.dev._resolution_setup_done = True
+        try:
+            if setup_resolution(self.dev):
+                atexit.register(self._restore_resolution)
+        except Exception as e:
+            log(f'分辨率调整跳过: {e}')
+
+    def _restore_resolution(self) -> None:
+        try:
+            restore_resolution(self.dev)
+        except Exception:
+            pass
 
     def screen(self):
         return png_to_bgr(self.dev.screenshot())
@@ -156,6 +175,10 @@ class DeviceScenario:
                     log('未找到 quit 按钮，直接返回')
                 count_cross('employed')  # 点完 quit 就计数
                 return
+            # 点击一次被雇佣画面防止设备休眠
+            cur = self.see('employed_in')
+            if cur:
+                self.click(cur[0], cur[1])
             log('仍在被雇佣中...')
             time.sleep(check_interval)
 

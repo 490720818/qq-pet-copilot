@@ -137,9 +137,11 @@ def load_config(config_path: str | Path | None = None) -> Config:
     path = Path(config_path) if config_path else CONFIG_FILE
     if not path.is_file():
         # 打包后首次运行：把随包默认配置复制到 exe 旁，便于用户修改
-        bundled = RESOURCE_ROOT / "config.yaml"
-        if bundled.is_file() and bundled.resolve() != path.resolve():
-            shutil.copy(bundled, path)
+        for name in ('config.yaml', 'config.example.yaml'):
+            bundled = RESOURCE_ROOT / name
+            if bundled.is_file() and bundled.resolve() != path.resolve():
+                shutil.copy(bundled, path)
+                break
     with open(path, encoding="utf-8") as f:
         raw = yaml.safe_load(f) or {}
     return Config(

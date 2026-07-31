@@ -5,6 +5,8 @@ import subprocess
 import sys
 import time
 
+from ..config import APP_ROOT
+
 # Windows 下隐藏 adb 子进程的命令行窗口（exe 无控制台模式下每次调用都会闪窗）
 _NO_WINDOW = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
 
@@ -66,6 +68,47 @@ class Device:
         size = out.strip().split(":")[-1].strip().split("x")
         return int(size[0]), int(size[1])
 
+    def set_resolution(self, width: int, height: int, density: int | None = None) -> None:
+        """修改分辨率（wm size），可同时设置密度（wm density）保持界面比例。"""
+        self._run("shell", "wm", "size", f"{width}x{height}")
+        if density:
+            self._run("shell", "wm", "density", str(density))
+
+    def reset_resolution(self) -> None:
+        """恢复默认物理分辨率和密度。
+
+        注意：部分 ROM 上 wm density reset 清不掉 override density，
+        所以先 reset 再显式把密度设回物理值（解析失败也有 reset 兜底）。
+        """
+        self._run("shell", "wm", "size", "reset")
+        self._run("shell", "wm", "density", "reset")
+        try:
+            physical = self.physical_density()
+            self._run("shell", "wm", "density", str(physical))
+        except AdbError:
+            pass
+
+    def physical_density(self) -> int:
+        """物理密度（解析 'Physical density: 480' 行）。"""
+        out = self._run("shell", "wm", "density").stdout.decode("utf-8", "replace")
+        for line in out.splitlines():
+            if "Physical density" in line:
+                return int(line.split(":")[-1].strip())
+        raise AdbError(f"无法解析物理密度: {out!r}")
+
+    def density(self) -> int:
+        """当前生效密度（有 override 取 override，否则物理值）。"""
+        out = self._run("shell", "wm", "density").stdout.decode("utf-8", "replace")
+        for line in out.splitlines():
+            if "Override density" in line:
+                return int(line.split(":")[-1].strip())
+        return self.physical_density()
+
+    def is_emulator(self) -> bool:
+        """根据 getprop 关键字判断是否为模拟器。"""
+        out = self._run("shell", "getprop").stdout.decode("utf-8", "replace").lower()
+        return any(k in out for k in ("qemu", "emulator", "x86", "vbox", "goldfish", "nox"))
+
     # ---- 感知 ----
 
     def screenshot(self) -> bytes:
@@ -125,3 +168,50 @@ class Device:
     @staticmethod
     def sleep(seconds: float) -> None:
         time.sleep(seconds)
+
+
+# 模板/坐标校准的目标分辨率（竖屏）
+TARGET_SIZE = (720, 1280)
+
+# 本程序修改过分辨率的标记文件（主进程/调度子进程共享，
+# 只有本程序改过才恢复，避免清掉用户自己的 wm 覆盖）
+_OVERRIDE_MARKER = APP_ROOT / 'runs' / 'resolution_override.json'
+
+
+def setup_resolution(dev: Device) -> bool:
+    """实机且分辨率不等于目标值时调整为目标分辨率，密度按比例一起调。返回是否做了修改。
+
+    模拟器直接跳过（模拟器分辨率由窗口决定，改了也没意义）。
+    """
+    from ..progress import log
+
+    if dev.is_emulator():
+        log('检测到模拟器，跳过分辨率调整')
+        return False
+    w, h = dev.screen_size()
+    if (w, h) == TARGET_SIZE:
+        return False
+    # 密度按物理值等比缩放（如 1080p@480 -> 720p@320），保持界面元素物理大小一致
+    density = round(dev.physical_density() * TARGET_SIZE[0] / w)
+    log(f'实机分辨率 {w}x{h}，调整为目标 {TARGET_SIZE[0]}x{TARGET_SIZE[1]}@{density}dpi'
+        f'（退出时恢复）')
+    dev.set_resolution(*TARGET_SIZE, density)
+    _OVERRIDE_MARKER.parent.mkdir(parents=True, exist_ok=True)
+    _OVERRIDE_MARKER.write_text('{"changed": true}', encoding='utf-8')
+    return True
+
+
+def restore_resolution(dev: Device) -> None:
+    """恢复默认物理分辨率（模拟器跳过；只有本程序改过才恢复）。"""
+    from ..progress import log
+
+    if dev.is_emulator():
+        return
+    if not _OVERRIDE_MARKER.is_file():
+        return
+    dev.reset_resolution()
+    try:
+        _OVERRIDE_MARKER.unlink()
+    except OSError:
+        pass
+    log('已恢复手机分辨率')
