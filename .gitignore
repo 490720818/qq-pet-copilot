@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+screenshots
+# 打包产物
+build/
+dist/
+*.spec
+# 运行状态（进度、日志、调试图）
+runs/
