@@ -70,7 +70,7 @@ class Runner:
         log(f'金币阈值: {self.threshold}，'
             f'每日点数上限: 学习x{self.school_factor}+打工x{self.work_factor} '
             f'> {self.daily_point_limit} 后只打工，'
-            f'冒险: 每天 {self.adventure_times} 次 @ {adv.start_time}')
+            f'冒险: 每天 {self.adventure_times} 次 @ {start_time}')
 
     def adventure_due(self) -> bool:
         """是否该冒险了：已到调度时间且当天次数未满。"""
@@ -167,7 +167,7 @@ class Runner:
                     _, adv_done, _ = load_progress(ADVENTURE_PROGRESS_FILE, quiet=True)
                     if adv_done >= self.adventure_times:
                         log(f'今日冒险 {adv_done}/{self.adventure_times} 次已满，'
-                            f'明天 {self.school.cfg.adventure.start_time} 后再冒险')
+                            f'明天 {self.adventure_start.strftime("%H:%M")} 后再冒险')
                     continue
                 adventure_dead = True
                 log('冒险执行失败，今天不再冒险')
@@ -180,7 +180,11 @@ class Runner:
                 # 每日点数超限：今天不再学习，只打工直到第二天清零
                 log('点数超限，今天不再学习，只打工')
 
-            coins = None if over_limit else self.read_main_coins()
+            try:
+                coins = None if over_limit else self.read_main_coins()
+            except RuntimeError as e:
+                log(f'金币读取失败: {e}，默认先去打工')
+                coins = None
             prefer_school = not over_limit and coins is not None and coins >= self.threshold
             if not over_limit:
                 if coins is None:

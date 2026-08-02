@@ -15,6 +15,11 @@ class AdbError(RuntimeError):
     pass
 
 
+# screencap 偶发整体卡死（设备休眠/adb 抖动），截图是只读操作可安全重试
+SCREENSHOT_RETRIES = 3         # 截图最多尝试次数
+SCREENSHOT_RETRY_INTERVAL = 3  # 超时重试间隔（秒）
+
+
 class Device:
     def __init__(self, adb_path: str, serial: str = ""):
         self.adb = adb_path
@@ -112,8 +117,19 @@ class Device:
     # ---- 感知 ----
 
     def screenshot(self) -> bytes:
-        """截图，直接返回 PNG 字节。"""
-        return self._run("exec-out", "screencap", "-p").stdout
+        """截图，直接返回 PNG 字节。超时自动重试（只读操作，重试无副作用）。"""
+        from ..progress import log
+        for attempt in range(1, SCREENSHOT_RETRIES + 1):
+            try:
+                return self._run("exec-out", "screencap", "-p").stdout
+            except subprocess.TimeoutExpired:
+                if attempt >= SCREENSHOT_RETRIES:
+                    raise AdbError(
+                        f'adb 截图超时（连续 {SCREENSHOT_RETRIES} 次），'
+                        '请检查设备连接或重新插拔 USB') from None
+                log(f'adb 截图超时，{SCREENSHOT_RETRY_INTERVAL}s 后重试 '
+                    f'({attempt}/{SCREENSHOT_RETRIES})')
+                time.sleep(SCREENSHOT_RETRY_INTERVAL)
 
     # ---- 操控 ----
 
