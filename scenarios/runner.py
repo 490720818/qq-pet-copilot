@@ -7,7 +7,7 @@
   -> 优先处理冒险，每次冒险后回主页面重新判断；当天次数用完后等第二天该时间再冒险
 - 每日点数规则：学习次数 x school_factor + 打工次数 x work_factor
   超过 daily_point_limit 后，今天不再学习只打工，第二天次数自动清零
-- 每轮先在主页面 OCR 金币数量（main_sign 后方 120 像素、上下 50 像素区域）
+- 每轮先在主页面 OCR 金币数量（顶部状态栏最右侧数值）
 - 金币 >= schedule.coin_threshold -> 优先学习
 - 金币 < 阈值 -> 先打工（每次打工一轮后重新判断），赚够了自然切换去学习
 - 金币识别失败 -> 默认先打工
@@ -25,9 +25,9 @@ from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.adb.device import Device
 from src.coins import read_coins
 from src.config import find_adb, load_config
+from src.ocr import get_engine
 from src.progress import (
     ADVENTURE_PROGRESS_FILE,
     SCHOOL_PROGRESS_FILE,
@@ -35,6 +35,7 @@ from src.progress import (
     load_progress,
     log,
 )
+from src.u2dev import U2Device
 from scenarios.adventure import AdventureScenario
 from scenarios.care import CareScenario
 from scenarios.school import ATTRIBUTE_COURSES, SchoolScenario
@@ -43,10 +44,12 @@ from scenarios.work import WorkScenario
 
 class Runner:
     def __init__(self):
-        # 共享一个 adb 连接，避免每个场景重复连接和打印
+        # 启动时就加载 OCR 引擎（模型加载要几秒，避免第一轮调度才卡）
+        log('加载 OCR 引擎...')
+        get_engine()
+        # 共享一个 u2 连接，避免每个场景重复连接和打印
         cfg = load_config()
-        dev = Device(find_adb(cfg.adb.path), cfg.adb.device_serial)
-        log(f'设备在线: {dev.ensure_connected()}')
+        dev = U2Device(find_adb(cfg.adb.path), cfg.adb.device_serial)
         self.school = SchoolScenario(dev)
         self.work = WorkScenario(dev)
         self.adventure = AdventureScenario(dev)
@@ -90,11 +93,10 @@ class Runner:
     def read_main_coins(self) -> int | None:
         """回主页面 OCR 金币数量，失败返回 None。"""
         self.school.ensure_main_page()
-        hit = self.school.see('main_sign')
-        if not hit:
-            log('未找到 main_sign，无法识别金币')
-            return None
-        return read_coins(self.school.screen(), hit)
+        coins = read_coins(self.school.screen())
+        if coins is None:
+            log('金币 OCR 识别失败')
+        return coins
 
     def run_one(self, scen, name: str) -> bool:
         """跑一个场景一轮（一节课/一次打工）。
@@ -231,11 +233,7 @@ def run_test(name: str) -> None:
     if name == 'coins':
         sc = SchoolScenario()  # 任意场景实例，仅借用设备与主页面导航
         sc.ensure_main_page()
-        hit = sc.see('main_sign')
-        if not hit:
-            log('未找到 main_sign，金币识别失败')
-            return
-        coins = read_coins(sc.screen(), hit)
+        coins = read_coins(sc.screen())
         log(f'金币数量: {coins if coins is not None else "识别失败"}')
         return
 

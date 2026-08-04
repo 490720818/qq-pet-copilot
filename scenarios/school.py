@@ -1,12 +1,12 @@
 """学校上课场景。
 
-流程（按手机物理像素模板识别）：
-1. 主页面（main_sign）-> 点击 leave_home 出门
+流程（u2 控件/OCR 文字定位，分辨率无关）：
+1. 主页面（main_sign="出门"）-> 点击 leave_home 出门
 2. 出门后若正在上课/工作/冒险/被雇佣中（school_in / work_in / adventure_in / employed_in）
    -> 等待结束并退出，等完的课程/工作计入对应场景的当天次数，
       回主页面结束本轮，由执行器重新判断限制条件后再决定下一步
 3. 每 1 秒点击一次 school，直到出现 school_start 按钮
-4. 选课：先拖动两次归位，再按配置的属性点点击对应课程
+4. 选课：先把第一框拖到第三框归位（两次），再点属性点（力量/智力/魅力）对应的选择框
 5. 点击 school_start，直到页面出现 school_in 标志（进入上课）
 6. 上课中：每 30 秒检查一次，直到出现 school_end 标志
 7. 点击 quit 结束，当天已学次数 +1 并持久化到 runs/school_progress.json
@@ -35,14 +35,12 @@ from src.scenario import CLICK_INTERVAL, DeviceScenario
 
 CLASS_CHECK_INTERVAL = 15.0  # 上课中检查 school_end 的间隔（秒）
 
-# 属性点 -> 课程点击坐标
+# 属性点 -> 三栏选择框定位名（力量/智力/魅力 对应第一/二/三框）
 ATTRIBUTE_COURSES = {
-    '力量': (185, 777),
-    '智力': (425, 777),
-    '魅力': (625, 777),
+    '力量': 'select_box_1',
+    '智力': 'select_box_2',
+    '魅力': 'select_box_3',
 }
-# 选课前拖动归位：从 (120, 777) 拖到 (630, 777)，做两次
-RESET_SWIPE = (120, 777, 630, 777)
 
 PROGRESS_FILE = SCHOOL_PROGRESS_FILE
 
@@ -78,13 +76,14 @@ class SchoolScenario(DeviceScenario):
         return None
 
     def select_course(self) -> None:
-        """选课：先拖动两次归位，再按配置的属性点点击对应课程。"""
-        for _ in range(2):
-            self.swipe(*RESET_SWIPE)
-            time.sleep(CLICK_INTERVAL)
-        x, y = ATTRIBUTE_COURSES[self.attribute]
-        log(f'选择课程: {self.attribute}')
-        self.click(x, y)
+        """选课：先把第一框拖到第三框归位（两次），再点属性点对应的选择框。"""
+        self.reset_select_boxes()
+        box = ATTRIBUTE_COURSES[self.attribute]
+        log(f'选择课程: {self.attribute} ({box})')
+        hit = self.see(box)
+        if not hit:
+            raise RuntimeError(f'未定位到课程选择框: {box}')
+        self.click(hit[0], hit[1])
         time.sleep(CLICK_INTERVAL)
 
     def wait_class_end(self) -> bool:

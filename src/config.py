@@ -4,8 +4,8 @@
 - APP_ROOT：可写数据根目录。开发时是项目根目录；打包后是 exe 所在目录。
   config.yaml、runs/（进度、日志）都放在这里。
 - RESOURCE_ROOT：只读资源根目录。打包后是 PyInstaller 解压目录（sys._MEIPASS），
-  templates/、scrcpy-win64/ 等随包资源从这里读；APP_ROOT 下存在同名资源时优先使用，
-  方便用户不重新打包直接替换模板。
+  scrcpy-win64/ 等随包资源从这里读；APP_ROOT 下存在同名资源时优先使用，
+  方便用户不重新打包直接替换。
 """
 from __future__ import annotations
 

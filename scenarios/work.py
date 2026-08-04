@@ -1,13 +1,13 @@
 """打工场景。
 
-流程（按手机物理像素模板识别 + RapidOCR 文字识别）：
+流程（u2 控件/OCR 文字定位，分辨率无关）：
 1. 主页面（main_sign）-> 点击 leave_home 出门
 2. 出门后若正在上课/工作/冒险/被雇佣中（school_in / work_in / adventure_in / employed_in）
    -> 等待结束并退出，等完的课程/工作计入对应场景的当天次数，
       回主页面结束本轮，由执行器重新判断限制条件后再决定下一步
 3. 点击 town 进入小镇
 4. 点击 (365, 400) 重置默认选择地点，OCR 整屏文字找到配置的打工地点并点击进入
-5. (120, 777) -> (630, 777) 拖动两次归位，点击 (425, 777) 选择第二个工作（最高收益）
+5. 把第一框拖到第三框归位（两次），点击第二框选择第二个工作（最高收益）
 6. 点击 work_outworker 进入雇佣好友界面：
    - 识别到 employ 按钮 -> 点击最上方的一个
    - 没有 -> 从 (365, 1200) 拖到 (365, 700) 边拖边找，找到点最上方一个
@@ -37,16 +37,10 @@ from src.progress import (
     save_progress,
 )
 from src.scenario import CLICK_INTERVAL, DeviceScenario, NAV_TIMEOUT
-from src.vision import find_all
 
 WORK_CHECK_INTERVAL = 15.0  # 工作中检查 work_end 的间隔（秒）
 
-# 小镇里重置默认选择地点的点击位置
-RESET_PLACE_POS = (100, 350)
-# 选工作前拖动归位：从 (120, 777) 拖到 (630, 777)，做两次
-RESET_SWIPE = (120, 777, 630, 777)
-# 第二个工作（最高收益）的点击位置
-SECOND_JOB_POS = (425, 777)
+# 以下坐标均为 720x1280 参考坐标，运行时按当前分辨率自动换算
 # 雇佣界面找不到按钮时的下滑拖动：从 (365, 1200) 拖到 (365, 700)
 EMPLOY_SCROLL = (365, 1200, 365, 700)
 
@@ -89,9 +83,14 @@ class WorkScenario(DeviceScenario):
         raise RuntimeError('出门后未找到 town 按钮')
 
     def select_place(self) -> None:
-        """重置默认地点后 OCR 整屏，找到配置的打工地点并点击进入。"""
+        """点 back 重置默认地点后 OCR 整屏，找到配置的打工地点并点击进入。"""
         for attempt in range(1, NAV_TIMEOUT + 1):
-            self.click(*RESET_PLACE_POS)
+            # 复用一次控件树快照：back 有多个 XPath 候选，
+            # 不传 source 每个候选都会单独 dump 全树（每次约 2-3 秒）
+            back = self.see('back', source=self.dev.hierarchy())
+            if not back:
+                raise RuntimeError('未找到 back 按钮，无法重置打工地点')
+            self.click(back[0], back[1])
             time.sleep(CLICK_INTERVAL)
             results = ocr_texts(self.screen())
             hit = find_text(results, self.location)
@@ -105,34 +104,38 @@ class WorkScenario(DeviceScenario):
         raise RuntimeError(f'OCR 多次未识别到打工地点: {self.location}')
 
     def select_job(self) -> None:
-        """拖动两次归位，点击第二个工作（最高收益），再点 work_outworker 进雇佣界面。"""
-        for _ in range(2):
-            self.swipe(*RESET_SWIPE)
-            time.sleep(CLICK_INTERVAL)
-        self.click(*SECOND_JOB_POS)
+        """先把第一框拖到第三框归位（两次），点第二个工作（最高收益），
+        再点 work_outworker 进雇佣界面。"""
+        self.reset_select_boxes()
+        hit = self.see('select_box_2')
+        if not hit:
+            raise RuntimeError('未定位到工作选择框: select_box_2')
+        self.click(hit[0], hit[1])
         time.sleep(CLICK_INTERVAL)
         self.click_until_gone_or_see('work_outworker', 'work_employ_close', '选择雇佣好友')
 
     def hire_friend(self) -> None:
-        """雇佣好友：优先点最上方的雇佣按钮；没有则边下滑边找；到上限就关闭。"""
-        btns = find_all(self.screen(), 'employ')
-        if btns:
-            log(f'找到 {len(btns)} 个雇佣按钮，点击最上方 ({btns[0][0]}, {btns[0][1]})')
-            self.click(btns[0][0], btns[0][1])
+        """雇佣好友：点 XPath 定位到的雇佣按钮；没有则边下滑边找；到上限就关闭。"""
+        # 每次查找复用一次控件树快照：employ 是深层 XPath，
+        # 不传 source 的实时查询每次要 dump 全树（约 2-4 秒）
+        btn = self.see('employ', source=self.dev.hierarchy())
+        if btn:
+            log(f'找到雇佣按钮，点击 ({btn[0]}, {btn[1]})')
+            self.click(btn[0], btn[1])
             time.sleep(CLICK_INTERVAL)
             return
         for i in range(1, self.employ_scroll_limit + 1):
             self.swipe(*EMPLOY_SCROLL)
             time.sleep(CLICK_INTERVAL)
-            btns = find_all(self.screen(), 'employ')
-            if btns:
-                log(f'下滑 {i} 次后找到雇佣按钮，点击最上方 ({btns[0][0]}, {btns[0][1]})')
-                self.click(btns[0][0], btns[0][1])
+            btn = self.see('employ', source=self.dev.hierarchy())
+            if btn:
+                log(f'下滑 {i} 次后找到雇佣按钮，点击 ({btn[0]}, {btn[1]})')
+                self.click(btn[0], btn[1])
                 time.sleep(CLICK_INTERVAL)
                 return
             log(f'未找到雇佣按钮，继续下滑 ({i}/{self.employ_scroll_limit})')
         log(f'拖动 {self.employ_scroll_limit} 次仍未找到雇佣按钮，关闭雇佣界面')
-        close = self.see('work_employ_close')
+        close = self.see('work_employ_close', source=self.dev.hierarchy())
         if not close:
             raise RuntimeError('雇佣界面未找到 work_employ_close 关闭按钮')
         self.click(close[0], close[1])

@@ -41,7 +41,7 @@ import win32con
 import win32gui
 
 from src import settings as settings_io
-from src.adb.device import Device, restore_resolution, setup_resolution
+from src.adb.device import Device
 from src.config import PROJECT_ROOT, find_adb, load_config, resource_path
 from src.progress import add_log_listener, log
 
@@ -267,14 +267,6 @@ class MainWindow(QMainWindow):
 
     def _start_all(self) -> None:
         kill_existing_scrcpy()
-        try:
-            # 启动 scrcpy 之前：实机先把分辨率调为目标值（模板坐标基于此）
-            cfg = load_config()
-            dev = Device(find_adb(cfg.adb.path), cfg.adb.device_serial)
-            if dev.online_devices():
-                setup_resolution(dev)
-        except Exception as e:
-            log(f'分辨率调整跳过: {e}')
         self._scrcpy_proc = start_scrcpy()
         if self._scrcpy_proc:
             self._embed_tries = 0
@@ -467,14 +459,19 @@ class MainWindow(QMainWindow):
     # ---- 日志刷新 ----
 
     def _drain_logs(self) -> None:
+        bar = self.log_view.verticalScrollBar()
+        # 只有用户本来就在底部时才跟随新日志；向上翻看时保持当前位置
+        was_at_bottom = bar.value() >= bar.maximum() - 2
+        added = False
         while True:
             try:
                 line = self._log_queue.get_nowait()
             except queue.Empty:
                 break
             self.log_view.appendPlainText(line)
-        bar = self.log_view.verticalScrollBar()
-        bar.setValue(bar.maximum())
+            added = True
+        if added and was_at_bottom:
+            bar.setValue(bar.maximum())
         # 按调度器进程状态同步按钮
         running = bool(self._runner_proc and self._runner_proc.poll() is None)
         self.btn_start.setEnabled(not running)
@@ -483,14 +480,6 @@ class MainWindow(QMainWindow):
     # ---- 退出 ----
 
     def closeEvent(self, event) -> None:
-        # adb 断开之前：实机把分辨率重置回去（wm size reset 未改过也是无操作）
-        try:
-            cfg = load_config()
-            dev = Device(find_adb(cfg.adb.path), cfg.adb.device_serial)
-            if dev.online_devices():
-                restore_resolution(dev)
-        except Exception as e:
-            log(f'恢复分辨率失败: {e}')
         if self._runner_proc and self._runner_proc.poll() is None:
             self._runner_proc.terminate()
         # 只结束由本程序拉起的 scrcpy

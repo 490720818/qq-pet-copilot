@@ -1,7 +1,7 @@
 """冒险场景。
 
-流程（按手机物理像素模板识别）：
-1. 主页面（main_sign）-> 点击出门（固定坐标）
+流程（u2 控件/OCR 文字定位，分辨率无关）：
+1. 主页面（main_sign="出门"）-> 点击出门
 2. 出门后若正在上课/工作/冒险/被雇佣中（school_in / work_in / adventure_in / employed_in）
    -> 等待结束并退出，回主页面结束本轮
 3. 点击 adventure 进入准备页面，直到出现 adventure_start 按钮

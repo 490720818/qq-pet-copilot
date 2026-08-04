@@ -5,7 +5,7 @@
 
 目录约定（打包后）：
 - exe 所在目录：可写数据（config.yaml 首次运行自动复制出来、runs/ 进度与日志）
-- exe 同级的 templates/、scrcpy-win64/ 若存在则优先于包内资源（方便替换模板）
+- exe 同级的 scrcpy-win64/ 若存在则优先于包内资源（方便替换）
 """
 import subprocess
 import sys
@@ -28,7 +28,6 @@ ARGS = [
     # rapidocr 的 config.yaml 和 onnx 模型是包内数据文件，不会自动收集
     '--collect-all', 'rapidocr_onnxruntime',
     # Windows 下 --add-data 用分号分隔 源;目标
-    '--add-data', 'templates;templates',
     '--add-data', 'scrcpy-win64;scrcpy-win64',
     '--add-data', f'{CONFIG_SRC};config.yaml',
     'main.py',

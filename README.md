@@ -1,6 +1,6 @@
 # QQ 宠物自动化助手（qq-pet-copilot）
 
-基于 adb + OpenCV 模板匹配 + RapidOCR 的 QQ 宠物自动托管工具。
+基于 uiautomator2 控件定位 + RapidOCR 文字识别的 QQ 宠物自动托管工具（分辨率无关）。
 PyQt6 图形界面内嵌 scrcpy 实时画面，按金币和每日点数规则自动调度
 **学习、打工、冒险**，并自动处理**被雇佣召回**和**体力/清洁照顾**。
 
@@ -26,6 +26,7 @@ python -m venv .venv
 ```
 
 1. 手机开 USB 调试并连接电脑（可用 `scrcpy-win64/adb.exe devices` 确认）。
+   首次运行时 uiautomator2 会自动往手机安装 atx-agent，需在手机弹窗上允许安装。
 2. 编辑 `config.yaml`（或在 GUI 设置页里改）。
 3. 启动：
 
@@ -75,8 +76,7 @@ GUI 打开后自动嵌入手机画面，点**开始**启动调度器（子进程
 .venv/Scripts/python build.py --onedir   # 目录模式
 ```
 
-打包后 `config.yaml` 首次运行自动复制到 exe 旁，`runs/` 也生成在 exe 旁；
-exe 旁放同名 `templates/` 可覆盖包内模板。冷启动需解压资源，会慢几秒。
+打包后 `config.yaml` 首次运行自动复制到 exe 旁，`runs/` 也生成在 exe 旁。冷启动需解压资源，会慢几秒。
 
 ## 目录结构
 
@@ -91,26 +91,23 @@ scenarios/
   adventure.py        # 冒险场景
   care.py             # 体力/清洁检查与喂食/洗澡
 src/
-  adb/device.py       # adb 封装：截图/点击/滑动/motionevent 持续按压
-  scenario.py         # 场景基类：模板导航、回主页面、等待结束、被雇佣召回
-  vision.py           # OpenCV 模板匹配（find / find_all）
+  u2dev.py            # uiautomator2 封装：连接/截图/点击/滑动/持续按压
+  locators.py         # UI 定位注册表（u2 控件选择器 + OCR 文字 + 相对坐标兜底）
+  adb/device.py       # adb 封装：设备在线管理、屏幕属性读取
+  scenario.py         # 场景基类：定位导航、回主页面、等待结束、被雇佣召回
   ocr.py              # RapidOCR 封装
   coins.py            # 主页金币 OCR
   progress.py         # 日志 + 每日次数持久化（含历史）
   settings.py         # config.yaml 读写（保留注释）
   config.py           # 配置加载与路径规划（兼容 PyInstaller）
-templates/            # 模板图片（手机物理像素坐标系）
-tools/screenshot_tool.py  # 截图/模板采集工具（鼠标框选裁剪）
 ```
 
-## 模板采集
+## 定位方式
 
-```bash
-.venv/Scripts/python tools/screenshot_tool.py
-```
-
-鼠标左键框选（实时显示原图坐标），`c` 裁剪存模板，`s` 存全屏截图，`r` 重截，`q` 退出。
-坐标系与场景代码、`Device.tap` 一致，均为手机物理像素。
+界面元素定位登记在 `src/locators.py` 的 `LOCATORS` 表：优先 u2 控件选择器
+（原生弹窗等），游戏内 canvas 自绘按钮靠 OCR 文字，少数无文字纯图形元素
+用 720x1280 参考坐标按当前分辨率等比换算。游戏更新后如识别失败，
+用 `--test` 单测真机逐屏校准该表即可，无需重新截图做模板。
 
 ## 致谢
 
@@ -119,7 +116,7 @@ tools/screenshot_tool.py  # 截图/模板采集工具（鼠标框选裁剪）
 
 ## 免责声明
 
-本项目仅供学习研究 OpenCV 视觉识别技术使用。自动化操作可能违反游戏服务条款，
+本项目仅供学习研究自动化与 OCR 识别技术使用。自动化操作可能违反游戏服务条款，
 由此产生的一切后果由使用者自行承担。
 
 ## 许可证
