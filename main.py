@@ -266,8 +266,16 @@ class MainWindow(QMainWindow):
     # ---- 启动流程 ----
 
     def _start_all(self) -> None:
-        kill_existing_scrcpy()
-        self._scrcpy_proc = start_scrcpy()
+        # Qt 槽里未捕获的异常会直接 abort 进程（无 traceback 的"闪退"），
+        # 启动失败记日志并继续，调度器仍可手动开始
+        try:
+            kill_existing_scrcpy()
+            self._scrcpy_proc = start_scrcpy()
+        except Exception:
+            import traceback
+
+            log(f'启动 scrcpy 失败:\n{traceback.format_exc()}')
+            self._scrcpy_proc = None
         if self._scrcpy_proc:
             self._embed_tries = 0
             self._embed_timer.start(500)

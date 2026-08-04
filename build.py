@@ -15,9 +15,9 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 
 ONEDIR = '--onedir' in sys.argv
 
-# config.yaml 不入库（个人配置），不存在时打包示例配置；
+# config.yaml 不入库（个人配置），打包一律用示例配置；
 # exe 首次运行会把它复制为 config.yaml
-CONFIG_SRC = 'config.yaml' if (PROJECT_ROOT / 'config.yaml').is_file() else 'config.example.yaml'
+CONFIG_SRC = 'config.example.yaml'
 
 ARGS = [
     sys.executable, '-m', 'PyInstaller',
@@ -27,9 +27,13 @@ ARGS = [
     '--name', 'QQPetCopilot',
     # rapidocr 的 config.yaml 和 onnx 模型是包内数据文件，不会自动收集
     '--collect-all', 'rapidocr_onnxruntime',
-    # Windows 下 --add-data 用分号分隔 源;目标
+    # uiautomator2 的 assets/u2.jar 等是包内数据文件（runner 连接设备时要 push）
+    '--collect-data', 'uiautomator2',
+    # Windows 下 --add-data 用分号分隔 源;目标（目标是目录）
     '--add-data', 'scrcpy-win64;scrcpy-win64',
-    '--add-data', f'{CONFIG_SRC};config.yaml',
+    # config 必须落到资源根目录下的文件 config.yaml（首启复制逻辑按
+    # RESOURCE_ROOT/config.yaml 找）；写 ';config.yaml' 会变成同名目录
+    '--add-data', f'{CONFIG_SRC};.',
     'main.py',
 ]
 
