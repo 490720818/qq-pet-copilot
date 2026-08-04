@@ -62,15 +62,11 @@ def ocr_screen(screen: np.ndarray) -> list[tuple[str, int, int, float]]:
     return _ocr_texts_cached(screen)
 
 
-# 学习/工作选择框共用前缀：三条 xpath 仅最后一段 FrameLayout 序号不同
+# 学习/工作选择框共用前缀：三条 xpath 仅最后一段 FrameLayout 序号不同。
+# 锚定"嵌套双层 RecyclerView"（选课面板里的卡片轮播），真机验证命中；
+# 之前从 ckj 出发的绝对路径层级深、随页面结构漂移，容易整链失效。
 SELECT_BOX_XPATH = (
-    '//*[@resource-id="com.tencent.mobileqq:id/ckj"]'
-    '/android.widget.FrameLayout[1]/android.widget.FrameLayout[1]'
-    '/android.widget.FrameLayout[1]/android.widget.FrameLayout[1]'
-    '/android.widget.FrameLayout[2]/android.widget.FrameLayout[1]'
-    '/android.widget.FrameLayout[1]/android.widget.FrameLayout[1]'
-    '/android.widget.FrameLayout[1]/android.widget.FrameLayout[4]'
-    '/androidx.recyclerview.widget.RecyclerView[1]'
+    '//androidx.recyclerview.widget.RecyclerView'
     '/android.widget.FrameLayout[1]/android.widget.FrameLayout[1]'
     '/androidx.recyclerview.widget.RecyclerView[1]'
     '/android.widget.FrameLayout[1]'
