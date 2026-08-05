@@ -86,6 +86,19 @@ class U2Device:
         x1, y1, x2, y2 = bounds
         return (x1 + x2) // 2, (y1 + y2) // 2
 
+    def find_xpath_all(self, path: str, source=None) -> list[tuple[int, int]]:
+        """按 XPath 找所有匹配控件，返回中心坐标列表（按从上到下、从左到右排序）。"""
+        if source is None:
+            els = self.d.xpath(path).all()
+        else:
+            els = source.find_elements(path)
+        centers = []
+        for e in els:
+            left, top, right, bottom = e.bounds
+            centers.append((int((left + right) / 2), int((top + bottom) / 2)))
+        centers.sort(key=lambda c: (c[1], c[0]))
+        return centers
+
     def find_xpath_bounds(self, path: str, source=None) -> tuple[int, int, int, int] | None:
         """按 XPath 找控件，命中返回范围 (x1, y1, x2, y2)，否则 None。"""
         if source is None:

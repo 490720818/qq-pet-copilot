@@ -25,6 +25,10 @@ DEFAULTS = {
     'schedule.daily_point_limit': 480,
     'adventure.times_per_day': 1,
     'adventure.start_time': '08:00',
+    'visit.times_per_day': 10,
+    'visit.start_time': '00:01',
+    'pk.times_per_day': 15,
+    'pk.start_time': '00:01',
     'care.energy_threshold': 60,
     'care.clean_threshold': 60,
 }
@@ -33,7 +37,7 @@ DEFAULTS = {
 def validate_field(key: str, value):
     """校验单个配置项，返回 (是否通过, 修正后的值)；不通过时给出默认值。"""
     default = DEFAULTS.get(key)
-    if key == 'adventure.start_time':
+    if key in ('adventure.start_time', 'visit.start_time', 'pk.start_time'):
         try:
             datetime.strptime(str(value), '%H:%M')
             # 必须带引号写回：9:00 不带引号会被 YAML 1.1 解析成整数 540

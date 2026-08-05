@@ -3,6 +3,7 @@
 - 启动前结束已有 scrcpy.exe 进程，再重新拉起并以 --window-borderless 嵌入
 - scrcpy 以 --turn-screen-off 运行（手机屏幕关闭，镜像照常）
 - 右侧顶部"开始/停止"按钮：开始 = 子进程启动调度器，停止 = 立即结束调度器进程
+- 右侧选项卡：日志（顶部当日统计条）/ 统计（各任务近 N 天平滑折线图）/ 设置
 - 调度器子进程的 stdout 实时显示在右侧日志区
 - scrcpy 看门狗：进程断开（设备 adb reboot/掉线）后自动重拉并重嵌入
 - 关闭窗口时结束由本程序拉起的 scrcpy 和调度器进程
@@ -26,6 +27,7 @@ from PyQt6.QtWidgets import (
     QComboBox,
     QFormLayout,
     QHBoxLayout,
+    QLabel,
     QLineEdit,
     QMainWindow,
     QPlainTextEdit,
@@ -33,7 +35,7 @@ from PyQt6.QtWidgets import (
     QScrollArea,
     QSpinBox,
     QSplitter,
-    QStackedWidget,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -44,7 +46,17 @@ import win32gui
 from src import settings as settings_io
 from src.adb.device import Device
 from src.config import PROJECT_ROOT, find_adb, load_config, resource_path
-from src.progress import add_log_listener, log
+from src.progress import (
+    ADVENTURE_PROGRESS_FILE,
+    PK_PROGRESS_FILE,
+    SCHOOL_PROGRESS_FILE,
+    VISIT_PROGRESS_FILE,
+    WORK_PROGRESS_FILE,
+    add_log_listener,
+    load_progress,
+    log,
+)
+from src.stats_chart import StatsPanel
 
 SCRCPY = resource_path('scrcpy-win64') / 'scrcpy.exe'
 SCRCPY_TITLE = 'QQPetCopilotScrcpy'
@@ -70,8 +82,6 @@ START_BTN_STYLE = 'QPushButton { background-color: #4CAF50; }' + _BTN_BASE.forma
     hover='#45a049', pressed='#3d8b40', disabled='#c8e6c9')
 STOP_BTN_STYLE = 'QPushButton { background-color: #f44336; }' + _BTN_BASE.format(
     hover='#e53935', pressed='#d32f2f', disabled='#ffcdd2')
-SETTINGS_BTN_STYLE = 'QPushButton { background-color: #607D8B; }' + _BTN_BASE.format(
-    hover='#546E7A', pressed='#455A64', disabled='#CFD8DC')
 
 # 设置页面字段：(点路径, 显示名, 类型)  类型: 'int' / 'str' / 'devices'(adb 设备下拉) / 选项列表
 SETTING_FIELDS = [
@@ -88,6 +98,10 @@ SETTING_FIELDS = [
     ('schedule.daily_point_limit', '每日点数上限', 'int'),
     ('adventure.times_per_day', '每天冒险次数（0 不冒险）', 'int'),
     ('adventure.start_time', '冒险调度时间（HH:MM）', 'str'),
+    ('visit.times_per_day', '每天踩踩次数（0 不踩）', 'int'),
+    ('visit.start_time', '踩踩调度时间（HH:MM）', 'str'),
+    ('pk.times_per_day', '每天 PK 次数（0 不 PK）', 'int'),
+    ('pk.start_time', 'PK 调度时间（HH:MM）', 'str'),
     ('care.energy_threshold', '体力阈值', 'int'),
     ('care.clean_threshold', '清洁阈值', 'int'),
 ]
@@ -215,32 +229,42 @@ class MainWindow(QMainWindow):
         self.log_view = QPlainTextEdit(readOnly=True)
         self.log_view.setMaximumBlockCount(5000)
 
-        # 右侧：顶部按钮行（开始/停止/设置）+ 页面（日志/设置切换）
+        # 右侧：顶部按钮行（开始/停止）+ 选项卡（日志/统计/设置）
         self.btn_start = QPushButton('开始')
         self.btn_stop = QPushButton('停止')
-        self.btn_settings = QPushButton('设置')
         self.btn_start.setStyleSheet(START_BTN_STYLE)
         self.btn_stop.setStyleSheet(STOP_BTN_STYLE)
-        self.btn_settings.setStyleSheet(SETTINGS_BTN_STYLE)
         self.btn_stop.setEnabled(False)
         self.btn_start.clicked.connect(self.start_runner)
         self.btn_stop.clicked.connect(self.stop_runner)
-        self.btn_settings.clicked.connect(self.toggle_settings)
         btn_row = QHBoxLayout()
         btn_row.addWidget(self.btn_start)
         btn_row.addWidget(self.btn_stop)
-        btn_row.addWidget(self.btn_settings)
         btn_row.addStretch()  # 按钮收缩到文字宽度，不铺满整行
 
-        self.pages = QStackedWidget()
-        self.pages.addWidget(self.log_view)  # 页 0：日志
-        self.pages.addWidget(self._build_settings_page())  # 页 1：设置
+        # 日志页：顶部当日统计条 + 日志区
+        self.stats_label = QLabel()
+        self.stats_label.setStyleSheet(
+            'color: #ddd; background: #263238; padding: 4px 8px; font-size: 13px;')
+        log_page = QWidget()
+        log_layout = QVBoxLayout(log_page)
+        log_layout.setContentsMargins(0, 0, 0, 0)
+        log_layout.setSpacing(0)
+        log_layout.addWidget(self.stats_label)
+        log_layout.addWidget(self.log_view)
+
+        self.tabs = QTabWidget()
+        self.tabs.addTab(log_page, '日志')
+        self.stats_panel = StatsPanel()
+        self.tabs.addTab(self.stats_panel, '统计')
+        self.tabs.addTab(self._build_settings_page(), '设置')
+        self.tabs.currentChanged.connect(self._on_tab_changed)
 
         right_panel = QWidget()
         right_layout = QVBoxLayout(right_panel)
         right_layout.setContentsMargins(0, 0, 0, 0)
         right_layout.addLayout(btn_row)
-        right_layout.addWidget(self.pages)
+        right_layout.addWidget(self.tabs)
 
         splitter = QSplitter()
         splitter.addWidget(self.scrcpy_view)
@@ -255,6 +279,10 @@ class MainWindow(QMainWindow):
         add_log_listener(self._log_queue.put)
         self._log_timer = QTimer(self, timeout=self._drain_logs)
         self._log_timer.start(100)
+        # 当日统计：每 5 秒从进度文件刷新一次
+        self._stats_timer = QTimer(self, timeout=self._refresh_stats)
+        self._stats_timer.start(5000)
+        self._refresh_stats()
 
         self._scrcpy_proc: subprocess.Popen | None = None
         self._runner_proc: subprocess.Popen | None = None
@@ -321,6 +349,27 @@ class MainWindow(QMainWindow):
         else:
             self._scrcpy_retry_at = now + SCRCPY_RETRY_INTERVAL
 
+    # ---- 当日统计 ----
+
+    def _refresh_stats(self) -> None:
+        """刷新日志页顶部的各任务当日统计（次数/上限，0 为不限只显示次数）。"""
+        try:
+            cfg = load_config()
+            tasks = [
+                ('学习', SCHOOL_PROGRESS_FILE, cfg.school.times_per_day),
+                ('打工', WORK_PROGRESS_FILE, cfg.work.times_per_day),
+                ('冒险', ADVENTURE_PROGRESS_FILE, cfg.adventure.times_per_day),
+                ('踩踩', VISIT_PROGRESS_FILE, cfg.visit.times_per_day),
+                ('PK', PK_PROGRESS_FILE, cfg.pk.times_per_day),
+            ]
+            parts = []
+            for label, progress_file, limit in tasks:
+                _, done, _ = load_progress(progress_file, quiet=True)
+                parts.append(f'{label} {done}/{limit}' if limit else f'{label} {done}')
+            self.stats_label.setText('今日: ' + '　'.join(parts))
+        except Exception as e:
+            self.stats_label.setText(f'今日统计读取失败: {e}')
+
     # ---- 设置页面 ----
 
     def _build_settings_page(self) -> QWidget:
@@ -353,15 +402,10 @@ class MainWindow(QMainWindow):
         layout.addWidget(scroll)
         return page
 
-    def toggle_settings(self) -> None:
-        """日志页 <-> 设置页切换，进入设置页时加载当前配置。"""
-        if self.pages.currentIndex() == 0:
+    def _on_tab_changed(self, index: int) -> None:
+        """切到设置页（第 3 个选项卡）时加载当前配置。"""
+        if index == 2:
             self.load_settings()
-            self.pages.setCurrentIndex(1)
-            self.btn_settings.setText('日志')
-        else:
-            self.pages.setCurrentIndex(0)
-            self.btn_settings.setText('设置')
 
     def load_settings(self) -> None:
         try:

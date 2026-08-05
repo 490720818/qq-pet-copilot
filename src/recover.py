@@ -66,7 +66,8 @@ def _click_pet_entry(dev: U2Device) -> None:
         ui = dev.d(descriptionStartsWith=PET_ENTRY_DESC_PREFIX)
         if ui.exists:
             x, y = ui.center()
-            log(f'找到 QQ 宠物入口 ({int(x)}, {int(y)})，紧凑双击进入宠物页面')
+            log(f'找到 QQ 宠物入口 ({int(x)}, {int(y)})，2s 后紧凑双击进入宠物页面')
+            time.sleep(2)  # 入口刚渲染出来时点击无效，等页面稳定再点
             dev.click(int(x), int(y))
             time.sleep(0.05)
             dev.click(int(x), int(y))

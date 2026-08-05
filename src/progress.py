@@ -12,6 +12,8 @@ SCHOOL_PROGRESS_FILE = PROJECT_ROOT / 'runs' / 'school_progress.json'
 WORK_PROGRESS_FILE = PROJECT_ROOT / 'runs' / 'work_progress.json'
 ADVENTURE_PROGRESS_FILE = PROJECT_ROOT / 'runs' / 'adventure_progress.json'
 EMPLOYED_PROGRESS_FILE = PROJECT_ROOT / 'runs' / 'employed_progress.json'
+VISIT_PROGRESS_FILE = PROJECT_ROOT / 'runs' / 'visit_progress.json'
+PK_PROGRESS_FILE = PROJECT_ROOT / 'runs' / 'pk_progress.json'
 
 
 def log(msg: str) -> None:

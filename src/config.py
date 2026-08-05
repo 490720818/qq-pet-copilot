@@ -103,6 +103,22 @@ class CareConfig:
 
 
 @dataclass
+class VisitConfig:
+    # 每天踩踩次数，0 为不踩
+    times_per_day: int = 10
+    # 踩踩调度时间（HH:MM），到达后开始处理
+    start_time: str = "00:01"
+
+
+@dataclass
+class PkConfig:
+    # 每天 PK 次数，0 为不 PK；每个好友可 PK 3 次，打完自动切换下一个好友
+    times_per_day: int = 15
+    # PK 调度时间（HH:MM），到达后开始处理
+    start_time: str = "00:01"
+
+
+@dataclass
 class Config:
     adb: AdbConfig = field(default_factory=AdbConfig)
     school: SchoolConfig = field(default_factory=SchoolConfig)
@@ -110,6 +126,8 @@ class Config:
     schedule: ScheduleConfig = field(default_factory=ScheduleConfig)
     adventure: AdventureConfig = field(default_factory=AdventureConfig)
     care: CareConfig = field(default_factory=CareConfig)
+    visit: VisitConfig = field(default_factory=VisitConfig)
+    pk: PkConfig = field(default_factory=PkConfig)
 
 
 def find_adb(configured_path: str = "") -> str:
@@ -151,4 +169,6 @@ def load_config(config_path: str | Path | None = None) -> Config:
         schedule=ScheduleConfig(**raw.get("schedule", {})),
         adventure=AdventureConfig(**raw.get("adventure", {})),
         care=CareConfig(**raw.get("care", {})),
+        visit=VisitConfig(**raw.get("visit", {})),
+        pk=PkConfig(**raw.get("pk", {})),
     )

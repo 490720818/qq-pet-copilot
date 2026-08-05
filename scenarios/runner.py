@@ -12,6 +12,10 @@
 - 金币 < 阈值 -> 先打工（每次打工一轮后重新判断），赚够了自然切换去学习
 - 金币识别失败 -> 默认先打工
 - 首选场景当天已达上限 -> 换另一个；都达上限则结束
+- 踩踩/PK：到达各自 start_time 且当天次数未满时处理；
+  场景长等待（上课/打工/冒险进行中）的间隙也会插空处理（wait_hook，run_inline）；
+  PK 每轮最多 16 局（超出下一轮接着跑），开始前检查体力/清洁
+  （每局各耗 5，不足则喂食/洗澡到 90）
 - 异常恢复：场景执行抛异常 -> adb reboot 重启设备 -> 启动 QQ ->
   点 Q宠-* 入口回宠物页面（src/recover.py）-> 重试该场景一次；
   连续恢复 RECOVERY_LIMIT 次仍失败则放弃
@@ -34,7 +38,9 @@ from src.config import find_adb, load_config
 from src.ocr import get_engine
 from src.progress import (
     ADVENTURE_PROGRESS_FILE,
+    PK_PROGRESS_FILE,
     SCHOOL_PROGRESS_FILE,
+    VISIT_PROGRESS_FILE,
     WORK_PROGRESS_FILE,
     load_progress,
     log,
@@ -43,11 +49,23 @@ from src.recover import reenter_pet
 from src.u2dev import U2Device
 from scenarios.adventure import AdventureScenario
 from scenarios.care import CareScenario
+from scenarios.pk import PKScenario
 from scenarios.school import ATTRIBUTE_COURSES, SchoolScenario
+from scenarios.visit import VisitScenario
 from scenarios.work import WorkScenario
 
 # 连续异常恢复（adb reboot）次数上限，超过认为设备/环境有硬故障，放弃
 RECOVERY_LIMIT = 3
+
+
+def parse_hhmm(value, field: str):
+    """解析 HH:MM 时间配置（YAML 1.1 会把不带引号的 9:00 解析成分钟数 540）。"""
+    if isinstance(value, int):
+        value = f'{value // 60:02d}:{value % 60:02d}'
+    try:
+        return datetime.strptime(value, '%H:%M').time()
+    except ValueError:
+        raise ValueError(f'config.yaml 中 {field} 格式无效: {value!r}，应为 HH:MM') from None
 
 
 class Runner:
@@ -62,7 +80,14 @@ class Runner:
         self.work = WorkScenario(dev)
         self.adventure = AdventureScenario(dev)
         self.care = CareScenario(dev)
+        self.visit = VisitScenario(dev)
+        self.pk = PKScenario(dev)
         self.recoveries = 0  # 连续异常恢复次数（成功跑完一轮清零）
+        self.visit_dead = False  # 踩踩今天不再可用（执行失败）
+        self.pk_dead = False     # PK 今天不再可用（执行失败）
+        # 场景长等待（上课/打工进行中）的间隙插空处理踩踩/PK
+        for scen in (self.school, self.work, self.adventure, self.care):
+            scen.wait_hook = self._idle_wait_hook
         sched = self.school.cfg.schedule
         self.threshold = sched.coin_threshold
         self.school_factor = sched.school_factor
@@ -83,6 +108,15 @@ class Runner:
             f'每日点数上限: 学习x{self.school_factor}+打工x{self.work_factor} '
             f'> {self.daily_point_limit} 后只打工，'
             f'冒险: 每天 {self.adventure_times} 次 @ {start_time}')
+        visit = self.school.cfg.visit
+        self.visit_times = visit.times_per_day
+        self.visit_start = parse_hhmm(visit.start_time, 'visit.start_time')
+        pk = self.school.cfg.pk
+        self.pk_times = pk.times_per_day
+        self.pk_start = parse_hhmm(pk.start_time, 'pk.start_time')
+        log(f'踩踩: 每天 {self.visit_times} 次 @ {self.visit_start.strftime("%H:%M")}'
+            f'（等待间隙插空处理），'
+            f'PK: 每天 {self.pk_times} 次 @ {self.pk_start.strftime("%H:%M")}')
 
     def adventure_due(self) -> bool:
         """是否该冒险了：已到调度时间且当天次数未满。"""
@@ -92,6 +126,35 @@ class Runner:
         if done >= self.adventure_times:
             return False
         return datetime.now().time() >= self.adventure_start
+
+    def visit_due(self) -> bool:
+        """是否该踩踩了：已到调度时间且当天次数未满。"""
+        if not self.visit_times:
+            return False
+        _, done, _ = load_progress(VISIT_PROGRESS_FILE, quiet=True)
+        if done >= self.visit_times:
+            return False
+        return datetime.now().time() >= self.visit_start
+
+    def pk_due(self) -> bool:
+        """是否该 PK 了：已到调度时间且当天次数未满。"""
+        if not self.pk_times:
+            return False
+        _, done, _ = load_progress(PK_PROGRESS_FILE, quiet=True)
+        if done >= self.pk_times:
+            return False
+        return datetime.now().time() >= self.pk_start
+
+    def _idle_wait_hook(self) -> None:
+        """场景长等待间隙的回调：到点且没满则插空处理踩踩/PK（scenario.wait_hook）。"""
+        if not self.visit_dead and self.visit_due():
+            log('等待间隙：插空处理踩踩')
+            if self.visit.run_inline():
+                log('等待间隙踩踩完成')
+        if not self.pk_dead and self.pk_due():
+            log('等待间隙：插空处理 PK')
+            if self.pk.run_inline():
+                log('等待间隙 PK 完成')
 
     def today_points(self) -> tuple[int, int, int]:
         """当天 (学习次数, 打工次数, 点数)。"""
@@ -143,7 +206,7 @@ class Runner:
         except Exception as e:
             log(f'恢复失败: {e}')
             return False
-        for scen in (self.school, self.work, self.adventure, self.care):
+        for scen in (self.school, self.work, self.adventure, self.care, self.visit, self.pk):
             scen.dev = dev
         log('恢复完成，继续调度')
         return True
@@ -186,6 +249,18 @@ class Runner:
         self.work.location = cfg.work.location
         self.work.times_per_day = cfg.work.times_per_day
         self.work.employ_scroll_limit = cfg.work.employ_scroll_limit
+        self.visit.times_per_day = cfg.visit.times_per_day
+        self.visit_times = cfg.visit.times_per_day
+        try:
+            self.visit_start = parse_hhmm(cfg.visit.start_time, 'visit.start_time')
+        except ValueError as e:
+            log(f'{e}，沿用旧值')
+        self.pk.times_per_day = cfg.pk.times_per_day
+        self.pk_times = cfg.pk.times_per_day
+        try:
+            self.pk_start = parse_hhmm(cfg.pk.start_time, 'pk.start_time')
+        except ValueError as e:
+            log(f'{e}，沿用旧值')
 
     def run(self) -> None:
         school_dead = False  # 学习今天不再可用（达上限/没有课程/执行失败）
@@ -211,6 +286,22 @@ class Runner:
                         continue
                     adventure_dead = True
                     log('冒险执行失败，今天不再冒险')
+
+                # 踩踩：到达调度时间且当天次数未满（等待间隙也会插空处理）
+                if not self.visit_dead and self.visit_due():
+                    log('到达踩踩调度时间，处理踩踩')
+                    if self.run_one(self.visit, '踩踩'):
+                        continue
+                    self.visit_dead = True
+                    log('踩踩执行失败，今天不再踩')
+
+                # PK：到达调度时间且当天次数未满
+                if not self.pk_dead and self.pk_due():
+                    log('到达 PK 调度时间，处理 PK')
+                    if self.run_one(self.pk, 'PK'):
+                        continue
+                    self.pk_dead = True
+                    log('PK 执行失败，今天不再 PK')
 
                 learned, worked, points = self.today_points()
                 over_limit = points > self.daily_point_limit
@@ -289,7 +380,8 @@ def run_test(name: str) -> None:
 
     scen_name, _, method = name.partition('.')
     scenarios = {'school': SchoolScenario, 'work': WorkScenario,
-                 'adventure': AdventureScenario, 'care': CareScenario}
+                 'adventure': AdventureScenario, 'care': CareScenario,
+                 'visit': VisitScenario, 'pk': PKScenario}
     if scen_name not in scenarios or not method:
         raise ValueError(f'--test 参数无效: {name!r}，应为 coins / recover 或 school./work./adventure./care. 开头的方法名')
     scen = scenarios[scen_name]()

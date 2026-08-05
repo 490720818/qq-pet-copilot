@@ -213,6 +213,28 @@ LOCATORS: dict[str, dict] = {
     },
     'employed_end': {'xpath': ['//*[@content-desc="分享"]/android.widget.FrameLayout[1]']},
 
+    # ---- 踩踩（访问好友） ----
+    'visit_friends': {'xpath': ['//*[@content-desc="好友"]']},
+    # 好友面板里每个好友行一个"访问"（自绘页面，无 clickable，按坐标点）；
+    # see() 取第一个命中 = 最上方好友
+    'visit': {'xpath': ['//*[@content-desc="访问"]']},
+    'visit_step': {
+        'xpath': ['//*[@resource-id="com.tencent.mobileqq:id/ckj"]'
+                  '/android.widget.FrameLayout[1]/android.widget.FrameLayout[1]'
+                  '/android.widget.FrameLayout[1]/android.widget.FrameLayout[1]'
+                  '/android.widget.FrameLayout[1]/android.widget.FrameLayout[3]'
+                  '/android.widget.FrameLayout[1]/android.widget.FrameLayout[2]'],
+    },
+    # 好友列表项（content-desc 形如 "好友 <昵称>"，注意带空格前缀，
+    # 和入口按钮"好友"区分）；切换逻辑见 visit.py（累积名单、按顺序切换）
+    'visit_friend_item': {'xpath': ['//*[starts-with(@content-desc, "好友 ")]']},
+
+    # ---- PK（好友对战） ----
+    'pk': {'xpath': ['//*[@content-desc="PK"]']},
+    'pk_start': {'xpath': ['//*[@content-desc="开始"]']},
+    'pk_end': {'xpath': ['//*[@content-desc="分享"]/android.widget.FrameLayout[1]']},
+    'pk_again': {'xpath': ['//*[@content-desc="再来一局"]']},
+
     # ---- 照顾 ----
     # 宠物状态面板区域：care.read_status 只裁这块做 OCR（整屏/半屏太慢）；
     # 位置固定，cache 命中一次后 see_bounds() 直接复用 bounds
@@ -228,7 +250,7 @@ LOCATORS: dict[str, dict] = {
         'xpath': ['//androidx.recyclerview.widget.RecyclerView'
                   '/android.widget.FrameLayout[1]/android.widget.FrameLayout[1]'],
     },
-    'shower': {'xpath': ['//*[@content-desc="shower"]/android.widget.FrameLayout[1]']},
+    'shower': {'xpath': ['//*[@content-desc="洗澡"]']},
     'shower_10': {
         'xpath': ['//androidx.recyclerview.widget.RecyclerView'
                   '/android.widget.FrameLayout[1]/android.widget.FrameLayout[1]'],

@@ -42,3 +42,15 @@ care:
   energy_threshold: 60
   # 清洁阈值：调度任务前检查，低于该值则洗澡到达标
   clean_threshold: 60
+
+visit:
+  # 每天踩踩次数，0 为不踩；进度按天持久化
+  times_per_day: 10
+  # 踩踩调度时间（HH:MM）：到达后开始处理；场景等待间隙（上课/打工进行中）也会插空处理
+  start_time: "00:01"
+
+pk:
+  # 每天 PK 次数，0 为不 PK；每个好友可 PK 3 次，打完自动切换下一个好友
+  times_per_day: 15
+  # PK 调度时间（HH:MM）：到达后开始处理
+  start_time: "00:01"

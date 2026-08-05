@@ -33,9 +33,10 @@ $PY build.py                     # PyInstaller 打包（onefile），--onedir �
 
 | 路径 | 职责 |
 | --- | --- |
-| `main.py` | PyQt6 GUI：scrcpy 窗口嵌入（SetParent）、日志页/设置页切换、调度器子进程控制、scrcpy 看门狗（设备重启后自动重拉重嵌入） |
+| `main.py` | PyQt6 GUI：scrcpy 窗口嵌入（SetParent）、选项卡（日志/统计/设置）、调度器子进程控制、scrcpy 看门狗（设备重启后自动重拉重嵌入） |
+| `src/stats_chart.py` | 统计页：各任务近 N 天次数的平滑折线图（QPainter 自绘 + Catmull-Rom 平滑，数据来自 `runs/*.json` 的 history） |
 | `scenarios/runner.py` | 统一调度器：每轮 = 状态检查 → 冒险（定时优先）→ 点数规则 → 金币 OCR → 学习/打工一轮；场景异常走 `recover()` 重启恢复并重试一次 |
-| `scenarios/school.py` `work.py` `adventure.py` `care.py` | 各场景，均继承 `DeviceScenario` |
+| `scenarios/school.py` `work.py` `adventure.py` `care.py` `visit.py` `pk.py` | 各场景，均继承 `DeviceScenario`（`pk.py` 继承 `visit.py` 复用好友导航） |
 | `src/scenario.py` | 场景基类：截图/u2+OCR 定位点击/回主页面/等待结束/被雇佣召回/四种进行中状态检测 |
 | `src/recover.py` | 异常恢复链路：adb reboot → 等开机 → 启动 QQ → 点 `Q宠-*` 入口（descriptionStartsWith 前缀匹配，后缀数字不固定）回宠物页，返回新 U2Device |
 | `src/u2dev.py` | uiautomator2 封装：连接（含 atx-agent 首装）、截图、`rel()` 参考坐标换算、`d.touch` 持续按压 |
@@ -83,6 +84,9 @@ $PY build.py                     # PyInstaller 打包（onefile），--onedir �
   `main.py` 的 `SETTING_FIELDS`（设置页表单）三处。
 - **GUI 线程纪律**：调度器是子进程（`scenarios/runner.py`，打包后为 `exe --runner`），
   日志经 stdout → 队列 → QTimer 上屏；worker 线程不直接碰 Qt 控件。
+- **踩踩/PK 插空**：场景基类有 `wait_hook`（`wait_end` / `wait_employed_back` 每个等待周期调用），
+  执行器把它设为踩踩/PK 回调：当前页面有"好友"入口时 `run_inline()` 插空执行，
+  结束点 back 收起面板回到原等待页，失败只记日志不打扰等待。
 - 控制台中文乱码是 Windows GBK 终端显示问题，日志文件（UTF-8）里是正常的，不要当 bug 修。
 - 不再修改手机分辨率/密度（wm size/density）：定位分辨率无关，无此需求。
 

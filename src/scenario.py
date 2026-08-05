@@ -26,6 +26,8 @@ class DeviceScenario:
         if dev is None:
             dev = U2Device(find_adb(self.cfg.adb.path), self.cfg.adb.device_serial)
         self.dev = dev
+        # 等待间隙回调（执行器设置，用来在上课/打工等长等待中插空处理踩踩）
+        self.wait_hook = None
 
     def screen(self):
         return self.dev.screenshot()
@@ -140,6 +142,7 @@ class DeviceScenario:
             if cur:
                 self.click(cur[0], cur[1])
             log('仍在进行中...')
+            self._run_wait_hook()
             time.sleep(check_interval)
         quit_hit = self.see('quit')
         if quit_hit:
@@ -147,6 +150,14 @@ class DeviceScenario:
             time.sleep(CLICK_INTERVAL)
         else:
             log('未找到 quit 按钮，直接返回')
+
+    def _run_wait_hook(self) -> None:
+        """等待间隙回调（执行器用来插空处理踩踩）；失败只记日志不打扰等待。"""
+        if self.wait_hook:
+            try:
+                self.wait_hook()
+            except Exception as e:
+                log(f'等待间隙任务失败: {e}')
 
     def see_employed_sign(self, screen):
         """被雇佣召回标志：面板分成比例行"雇佣者 x% 被雇佣者 y%"，
@@ -204,6 +215,7 @@ class DeviceScenario:
             if cur:
                 self.click(cur[0], cur[1])
             log('仍在被雇佣中...')
+            self._run_wait_hook()
             time.sleep(check_interval)
 
     def wait_busy_end(self, check_interval: float = 30.0) -> str | None:
