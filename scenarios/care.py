@@ -4,9 +4,9 @@
 1. 点击 pet_status（宠物状态按钮，xpath 定位）展开宠物状态
 2. OCR 状态面板区域（xpath 定范围）识别 体力/清洁/心情 三个数值及 账号名称/宠物名称
 3. 体力低于阈值 -> 喂食：点 feed -> 反复点 feed_10 并复测体力，直到达标
-4. 清洁低于阈值 -> 洗澡：点 shower -> 按住不松手（d.touch down/move/up）从
-   (365,1073) 拖到 (365,600)，再在 (365,750) 和 (365,600) 之间来回搓洗，
-   直到清洁达标后抬手
+4. 清洁低于阈值 -> 洗澡：点 shower -> 按住肥皂（shower_10 控件中心）不松手
+   （d.touch down/move/up）拖到 (50%, 40%)，再在 (50%, 67%) 和 (50%, 40%)
+   之间来回搓洗，直到清洁达标后抬手（点位按当前分辨率百分比换算）
 5. 若仍在喂食/洗澡界面（feed_10 / shower_10 可见）-> 点 back 退出
 6. 点击 pet_status 收起宠物状态
 
@@ -23,27 +23,26 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import numpy as np
 from PIL import Image
 
+from src.locators import see_bounds
 from src.ocr import ocr_texts
 from src.progress import log
 from src.scenario import CLICK_INTERVAL, DeviceScenario
+from src.u2dev import REF_SIZE
 
-# 以下坐标均为 720x1280 参考坐标，运行时按当前分辨率自动换算
-# 洗澡：按住从 (365,1073) 拖到 (365,600)，之后在这两点之间来回搓洗
-SHOWER_START = (365, 1073, 365, 600)
-SHOWER_A = (365, 750)
-SHOWER_B = (365, 600)
+# 洗澡搓洗点位：起点 = shower_10 控件中心（肥皂），其余按当前分辨率百分比换算
+SCRUB_TOP_PCT = (0.5, 0.40)     # 拖动终点 / 搓洗上端点
+SCRUB_BOTTOM_PCT = (0.5, 0.67)  # 搓洗下端点 / 抬手点
 # 状态数值 OCR 放大倍数（上半屏截图放大，提高小字识别率）
 STATUS_OCR_SCALE = 2
+# 状态数值配对的像素容差：按 720 宽参考分辨率的 OCR 结果调的，
+# 运行时按当前屏宽等比缩放（见 read_status）
+STATUS_ROW_TOL = 40  # 名字右侧同行数字的纵向容差
+STATUS_COL_TOL = 80  # 名字下方同列数字的横向容差
 FEED_RESULT_WAIT = 1.5  # 喂食后等数值刷新的时间（秒）
 MAX_FEED_ATTEMPTS = 10    # 喂食最多次数，超过认为异常
 MAX_SHOWER_ATTEMPTS = 25  # 搓洗最多回合数，超过认为异常
 
 STATUS_NAMES = ('体力', '清洁', '心情')
-# 宠物状态面板区域的 xpath（OCR 只裁这块，整屏/半屏 OCR 太慢）
-STATUS_REGION_XPATH = ('//*[@resource-id="com.tencent.mobileqq:id/ckj"]'
-                       '/android.widget.FrameLayout[1]/android.widget.FrameLayout[2]'
-                       '/android.widget.FrameLayout[1]/android.widget.FrameLayout[1]'
-                       '/android.widget.FrameLayout[1]/android.widget.FrameLayout[5]')
 
 
 def parse_panel_info(results: list[tuple[str, int, int, float]]) -> dict:
@@ -71,11 +70,12 @@ def parse_panel_info(results: list[tuple[str, int, int, float]]) -> dict:
     return info
 
 
-def parse_status(results: list[tuple[str, int, int, float]]) -> dict:
+def parse_status(results: list[tuple[str, int, int, float]], scale: float = 1.0) -> dict:
     """从状态区域 OCR 结果解析 体力/清洁/心情 数值（0-100）与 账号名称/宠物名称。
 
     兼容两种 OCR 输出：名字和数字在同一文本块（'体力85'），
     或被拆成两个块（'体力' + '85'，取名字右侧/下方最近的数字）。
+    scale：像素容差（STATUS_ROW_TOL/STATUS_COL_TOL）的缩放系数，按 OCR 图宽换算。
     """
     tokens = [(text.replace(' ', ''), x, y) for text, x, y, _ in results]
     status: dict[str, int] = {}
@@ -93,8 +93,8 @@ def parse_status(results: list[tuple[str, int, int, float]]) -> dict:
             continue
         ax, ay = anchors[0]
         # 优先取名字右侧同行的数字，其次取名字下方同列的数字
-        right = [n for n in nums if n[1] > ax and abs(n[2] - ay) < 40]
-        below = [n for n in nums if n[2] > ay and abs(n[1] - ax) < 80]
+        right = [n for n in nums if n[1] > ax and abs(n[2] - ay) < STATUS_ROW_TOL * scale]
+        below = [n for n in nums if n[2] > ay and abs(n[1] - ax) < STATUS_COL_TOL * scale]
         pick = right or below
         if pick:
             pick.sort(key=lambda n: (n[1] - ax) ** 2 + (n[2] - ay) ** 2)
@@ -113,11 +113,12 @@ class CareScenario(DeviceScenario):
     # ---- 状态识别 ----
 
     def read_status(self, screen=None, source=None) -> dict:
-        """OCR 宠物状态面板区域（xpath 定范围），返回体力/清洁/心情/账号名称/宠物名称
-        （识别不到的缺省）。调用方已截图/抓控件树时传入，避免重复采集。"""
+        """OCR 宠物状态面板区域（locators 的 status_region 定范围，bounds 有缓存），
+        返回体力/清洁/心情/账号名称/宠物名称（识别不到的缺省）。
+        调用方已截图/抓控件树时传入，避免重复采集。"""
         if screen is None:
             screen = self.screen()
-        bounds = self.dev.find_xpath_bounds(STATUS_REGION_XPATH, source)
+        bounds = see_bounds(self.dev, 'status_region', source)
         if bounds:
             x1, y1, x2, y2 = bounds
             region = screen[y1:y2, x1:x2]
@@ -131,7 +132,9 @@ class CareScenario(DeviceScenario):
         results = ocr_texts(np.asarray(img))
         log('状态区域 OCR: '
             + (', '.join(f'{t!r}@({x},{y})' for t, x, y, _ in results) or '无'))
-        return parse_status(results)
+        # 容差随分辨率等比缩放：OCR 图宽 = 区域宽 * SCALE，区域宽正比于屏宽
+        scale = screen.shape[1] / REF_SIZE[0]
+        return parse_status(results, scale)
 
     # ---- 照顾动作 ----
 
@@ -157,21 +160,21 @@ class CareScenario(DeviceScenario):
                 return
         raise RuntimeError(f'喂食 {MAX_FEED_ATTEMPTS} 次后体力仍未达到 {self.energy_threshold}')
 
-    def scrub_path(self, x: int, y_from: int, y_to: int,
+    def scrub_path(self, x1: int, y1: int, x2: int, y2: int,
                    steps: int = 5, step_sleep: float = 0.05) -> None:
-        """按住状态下从 (x, y_from) 匀速移动触摸点到 (x, y_to)（参考坐标，自动换算）。"""
-        ax, ay_from = self.dev.rel(x, y_from)
-        _, ay_to = self.dev.rel(x, y_to)
+        """按住状态下把触摸点从 (x1, y1) 匀速移动到 (x2, y2)（实际像素坐标）。"""
         for i in range(1, steps + 1):
-            self.dev.touch_move(ax, ay_from + (ay_to - ay_from) * i // steps)
+            self.dev.touch_move(x1 + (x2 - x1) * i // steps,
+                                y1 + (y2 - y1) * i // steps)
             time.sleep(step_sleep)
 
     def shower(self, source=None) -> None:
-        """洗澡：点 shower -> 按住不松手从 (365,1073) 拖到 (365,600)，
-        再在 (365,750) 和 (365,600) 之间来回搓洗，直到清洁达到阈值后抬手。
+        """洗澡：点 shower -> 按住肥皂（shower_10 控件中心）不松手拖到
+        (50%, 40%)，再在 (50%, 67%) 和 (50%, 40%) 之间来回搓洗，直到清洁达到阈值后抬手。
 
         用 u2 的 d.touch.down/move/up 分步注入，整个搓洗过程不抬手
         （普通 swipe 每次都会抬手，游戏不累计清洁度）。
+        搓洗点位按当前分辨率百分比换算（SCRUB_TOP_PCT / SCRUB_BOTTOM_PCT）。
         """
         hit = self.see('shower', source=source)
         if not hit:
@@ -179,15 +182,21 @@ class CareScenario(DeviceScenario):
         self.click(hit[0], hit[1])
         time.sleep(CLICK_INTERVAL)
         source = self.dev.hierarchy()
-        log('按住开始搓洗')
-        self.dev.touch_down(*self.dev.rel(*SHOWER_START[:2]))
+        soap = self.see('shower_10', source=source)
+        if not soap:
+            raise RuntimeError('洗澡界面未找到 shower_10 肥皂')
+        w, h = self.dev.window_size()
+        top = (round(w * SCRUB_TOP_PCT[0]), round(h * SCRUB_TOP_PCT[1]))
+        bottom = (round(w * SCRUB_BOTTOM_PCT[0]), round(h * SCRUB_BOTTOM_PCT[1]))
+        log(f'按住肥皂 ({soap[0]}, {soap[1]}) 拖到 {top} 开始搓洗')
+        self.dev.touch_down(soap[0], soap[1])
         try:
-            # 从 (365,1073) 慢速拖到 (365,600) 进入搓洗
-            self.scrub_path(365, SHOWER_START[1], SHOWER_START[3])
+            # 从肥皂慢速拖到搓洗上端点进入搓洗
+            self.scrub_path(soap[0], soap[1], *top)
             for attempt in range(1, MAX_SHOWER_ATTEMPTS + 1):
-                # 在 (365,750) 和 (365,600) 之间来回拖（截图复测不影响按压）
-                self.scrub_path(365, SHOWER_A[1], SHOWER_B[1])
-                self.scrub_path(365, SHOWER_B[1], SHOWER_A[1])
+                # 在 (50%, 67%) 和 (50%, 40%) 之间来回拖（截图复测不影响按压）
+                self.scrub_path(*bottom, *top)
+                self.scrub_path(*top, *bottom)
                 clean = self.read_status(self.screen(), source).get('清洁')
                 log(f'搓洗 {attempt} 回合后清洁: {clean}')
                 if clean is not None and clean >= self.clean_threshold:
@@ -195,7 +204,7 @@ class CareScenario(DeviceScenario):
                     return
             raise RuntimeError(f'搓洗 {MAX_SHOWER_ATTEMPTS} 回合后清洁仍未达到 {self.clean_threshold}')
         finally:
-            self.dev.touch_up(*self.dev.rel(*SHOWER_A))
+            self.dev.touch_up(*bottom)
 
     def exit_care_mode(self, source=None):
         """若仍在喂食/洗澡界面（feed_10 / shower_10 可见），点 back 退出。

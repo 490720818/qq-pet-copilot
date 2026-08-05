@@ -13,7 +13,8 @@ from .u2dev import U2Device
 
 # ---- 可调参数 ----
 CLICK_INTERVAL = 1.0       # 连续点击/重试间隔（秒）
-NAV_TIMEOUT = 60           # 单个阶段最多重试次数，超过认为卡死抛异常
+NAV_TIMEOUT = 10           # 单个阶段最多重试次数，超过认为卡死抛异常
+MAIN_PAGE_ATTEMPTS = 10    # 回主页面最多尝试次数（识别 main_sign / 点 back）
 BUSY_GATE_ATTEMPTS = 2     # 出门后进行中状态的检测次数（活动面板加载有几秒延迟）
 
 
@@ -91,7 +92,7 @@ class DeviceScenario:
         识别不到 main_sign 就直接点 back，然后立即重新抓控件树判断。
         返回的 source 可直接给同一个页面上的后续 XPath 定位复用。
         """
-        for attempt in range(1, NAV_TIMEOUT + 1):
+        for attempt in range(1, MAIN_PAGE_ATTEMPTS + 1):
             screen, source = self.snapshot()
             hit = self.see('main_sign', screen, source)
             if hit:
@@ -102,7 +103,7 @@ class DeviceScenario:
                 log(f'未识别到主页面，点击 back ({back[0]}, {back[1]})')
                 self.click(back[0], back[1])
                 continue
-            log(f'未识别到主页面也找不到 back，等待重试 ({attempt}/{NAV_TIMEOUT})')
+            log(f'未识别到主页面也找不到 back，等待重试 ({attempt}/{MAIN_PAGE_ATTEMPTS})')
             time.sleep(CLICK_INTERVAL)
         raise RuntimeError('无法回到主页面')
 

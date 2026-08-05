@@ -2,14 +2,21 @@
 
 引擎懒加载（首次调用时加载模型，约需几秒）。
 输入为 numpy RGB 图（u2dev.U2Device.screenshot 的输出）。
+整屏识别统一走 ocr_fullscreen()：先保持长宽比缩放到接近 720x1280 级别
+再 OCR（高分辨率截图识别慢，缩放后速度与设备分辨率无关），
+返回坐标已还原回原图像素，可直接用于点击。
 """
 from __future__ import annotations
 
 import re
 
 import numpy as np
+from PIL import Image
 
 _engine = None
+
+# 整屏 OCR 前把截图等比缩放到这个宽度（保持长宽比，接近 720x1280 级别）
+OCR_FULLSCREEN_WIDTH = 720
 
 
 def get_engine():
@@ -31,6 +38,21 @@ def ocr_texts(screen: np.ndarray) -> list[tuple[str, int, int, float]]:
         ys = [p[1] for p in box]
         out.append((text, int(sum(xs) / 4), int(sum(ys) / 4), float(score)))
     return out
+
+
+def ocr_fullscreen(screen: np.ndarray) -> list[tuple[str, int, int, float]]:
+    """整屏 OCR：先保持长宽比缩放到接近 720x1280 级别再识别。
+
+    返回坐标已除以缩放系数、还原回原图（截图）像素，可直接用于点击。
+    """
+    h, w = screen.shape[:2]
+    if w == OCR_FULLSCREEN_WIDTH:
+        return ocr_texts(screen)
+    scale = OCR_FULLSCREEN_WIDTH / w
+    img = Image.fromarray(screen)
+    img = img.resize((OCR_FULLSCREEN_WIDTH, round(h * scale)), Image.LANCZOS)
+    return [(text, round(x / scale), round(y / scale), score)
+            for text, x, y, score in ocr_texts(np.asarray(img))]
 
 
 def find_text(

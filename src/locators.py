@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from .ocr import find_all_text, find_text, ocr_texts
+from .ocr import find_all_text, find_text, ocr_fullscreen, ocr_texts
 from .u2dev import U2Device
 
 # OCR 命中的最低置信度
@@ -39,20 +39,27 @@ _ocr_cache: tuple[np.ndarray, tuple[int, int, int, int] | None,
 # 之后 see() 直接返回缓存点、不再走任何识别（只适合位置固定的元素，如 back）。
 _locate_cache: dict[str, tuple[int, int, float]] = {}
 
+# 区域 bounds 缓存：entry 标了 'cache': True 时，see_bounds() 第一次命中后
+# 记住 (x1, y1, x2, y2)，之后直接复用（只适合位置固定的裁剪区域，如 status_region）。
+_bounds_cache: dict[str, tuple[int, int, int, int]] = {}
+
 
 def _ocr_texts_cached(
     screen: np.ndarray, region: tuple[int, int, int, int] | None = None
 ) -> list[tuple[str, int, int, float]]:
-    """对 screen 的指定区域 OCR；同一 screen 同一区域直接复用结果。"""
+    """对 screen 的指定区域 OCR；同一 screen 同一区域直接复用结果。
+
+    整屏（region=None）走 ocr_fullscreen：先等比缩放到接近 720x1280 再识别，
+    坐标已还原回原图；裁剪区域直接用原图（调用方已自行缩放）。
+    """
     global _ocr_cache
     if _ocr_cache is not None and _ocr_cache[0] is screen and _ocr_cache[1] == region:
         return _ocr_cache[2]
     if region is None:
-        crop = screen
+        results = ocr_fullscreen(screen)
     else:
         x1, y1, x2, y2 = region
-        crop = screen[y1:y2, x1:x2]
-    results = ocr_texts(crop)
+        results = ocr_texts(screen[y1:y2, x1:x2])
     _ocr_cache = (screen, region, results)
     return results
 
@@ -81,6 +88,7 @@ LOCATORS: dict[str, dict] = {
     },
     # 主页面"出门"按钮（点击用）：xpath 优先，OCR 文字 + 参考坐标兜底
     'leave_home': {
+        'cache': True,
         'xpath': ['//*[@resource-id="com.tencent.mobileqq:id/ckj"]'
                   '/android.widget.FrameLayout[1]/android.widget.FrameLayout[2]'
                   '/android.widget.FrameLayout[1]/android.widget.FrameLayout[1]'
@@ -130,9 +138,11 @@ LOCATORS: dict[str, dict] = {
     },
 
     # ---- 学习 ----
-    'school': {'xpath': ['//*[@content-desc="map_blank"]/android.widget.FrameLayout[2]/android.widget.FrameLayout[1]']
+    'school': {
+        'xpath': ['//*[@content-desc="map_blank"]/android.widget.FrameLayout[2]/android.widget.FrameLayout[1]']
                ,'ocr': ['宠物学园']},
-    'school_start': {'xpath': ['//*[@content-desc="去上课"]/android.widget.FrameLayout[1]']
+    'school_start': {
+        'xpath': ['//*[@content-desc="去上课"]/android.widget.FrameLayout[1]']
                ,'ocr': ['去上课']},
     'school_in': {'ocr': ['正在学习']},
     'school_end': {'xpath': ['//*[@content-desc="分享"]/android.widget.FrameLayout[1]']},
@@ -144,6 +154,7 @@ LOCATORS: dict[str, dict] = {
     'work_in': {'ocr': ['正在工作']},
     'work_end': {'xpath': ['//*[@content-desc="分享"]/android.widget.FrameLayout[1]']},
     'work_outworker': {
+        'cache': True,
         'xpath': ['//*[@resource-id="com.tencent.mobileqq:id/ckj"]'
                   '/android.widget.FrameLayout[1]/android.widget.FrameLayout[1]'
                   '/android.widget.FrameLayout[1]/android.widget.FrameLayout[1]'
@@ -155,6 +166,7 @@ LOCATORS: dict[str, dict] = {
                   '/android.widget.FrameLayout[4]'],
     },
     'work_employ_close': {
+        'cache': True,
         'xpath': ['//*[@resource-id="com.tencent.mobileqq:id/ckj"]'
                   '/android.widget.FrameLayout[1]/android.widget.FrameLayout[1]'
                   '/android.widget.FrameLayout[1]/android.widget.FrameLayout[1]'
@@ -192,7 +204,7 @@ LOCATORS: dict[str, dict] = {
     # 整屏 OCR 关键词检测；不能加"雇佣规则"——它是按钮，
     # wait_employed_back 防休眠会点击命中点，点中会打开规则页；
     # "被雇佣中"标题和"剩余"标签都只是文字，点击安全。
-    'employed_in': {'ocr': ['被雇佣中', '雇佣中', '剩余']},
+    'employed_in': {'ocr': ['被雇佣中', '雇佣中']},
     # 召回标志不在注册表：分成比例要解析具体数值（雇佣者<=25% 且被雇佣者>=75%
     # 才命中，方向不能反），见 scenario.see_employed_sign / ocr.parse_employed_ratio
     'employed_come_back': {'ocr': ['现在召回', '召回']},
@@ -202,6 +214,15 @@ LOCATORS: dict[str, dict] = {
     'employed_end': {'xpath': ['//*[@content-desc="分享"]/android.widget.FrameLayout[1]']},
 
     # ---- 照顾 ----
+    # 宠物状态面板区域：care.read_status 只裁这块做 OCR（整屏/半屏太慢）；
+    # 位置固定，cache 命中一次后 see_bounds() 直接复用 bounds
+    'status_region': {
+        'cache': True,
+        'xpath': ['//*[@resource-id="com.tencent.mobileqq:id/ckj"]'
+                  '/android.widget.FrameLayout[1]/android.widget.FrameLayout[2]'
+                  '/android.widget.FrameLayout[1]/android.widget.FrameLayout[1]'
+                  '/android.widget.FrameLayout[1]/android.widget.FrameLayout[5]'],
+    },
     'feed': {'xpath': ['//*[@content-desc="feed"]/android.widget.FrameLayout[1]']},
     'feed_10': {
         'xpath': ['//androidx.recyclerview.widget.RecyclerView'
@@ -281,6 +302,29 @@ def _locate(
     if 'rel' in entry:
         x, y = dev.rel(*entry['rel'])
         return x, y, 1.0
+    return None
+
+
+def see_bounds(dev: U2Device, name: str, source=None) -> tuple[int, int, int, int] | None:
+    """定位 name 的元素范围，返回 (x1, y1, x2, y2)，未命中返回 None。
+
+    只支持 xpath 定位；用于位置固定的裁剪区域（如宠物状态面板 status_region）。
+    entry 标了 'cache': True 时，第一次命中后 bounds 记入 _bounds_cache，
+    之后直接返回缓存，不再查控件树。
+    """
+    entry = LOCATORS.get(name)
+    if entry is None:
+        raise KeyError(f'未定义的定位名: {name!r}（请在 src/locators.py 的 LOCATORS 中登记）')
+    if entry.get('cache'):
+        hit = _bounds_cache.get(name)
+        if hit:
+            return hit
+    for path in entry.get('xpath', []):
+        bounds = dev.find_xpath_bounds(path, source)
+        if bounds:
+            if entry.get('cache'):
+                _bounds_cache[name] = bounds
+            return bounds
     return None
 
 

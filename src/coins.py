@@ -10,7 +10,7 @@ import re
 
 import numpy as np
 
-from .ocr import ocr_texts
+from .ocr import ocr_fullscreen
 
 # 金币栏在屏幕顶部的纵向范围（相对高度比例）
 COIN_BAR_TOP = 0.08
@@ -38,7 +38,7 @@ def read_coins(screen: np.ndarray) -> int | None:
     h = screen.shape[0]
     y1, y2 = int(h * COIN_BAR_TOP), int(h * COIN_BAR_BOTTOM)
     candidates = []
-    for text, x, y, _ in ocr_texts(screen):
+    for text, x, y, _ in ocr_fullscreen(screen):
         if not (y1 <= y <= y2):
             continue
         coins = parse_coin(text)

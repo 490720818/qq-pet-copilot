@@ -4,6 +4,7 @@
 - scrcpy 以 --turn-screen-off 运行（手机屏幕关闭，镜像照常）
 - 右侧顶部"开始/停止"按钮：开始 = 子进程启动调度器，停止 = 立即结束调度器进程
 - 调度器子进程的 stdout 实时显示在右侧日志区
+- scrcpy 看门狗：进程断开（设备 adb reboot/掉线）后自动重拉并重嵌入
 - 关闭窗口时结束由本程序拉起的 scrcpy 和调度器进程
 
 运行：python main.py
@@ -49,6 +50,8 @@ SCRCPY = resource_path('scrcpy-win64') / 'scrcpy.exe'
 SCRCPY_TITLE = 'QQPetCopilotScrcpy'
 RUNNER_SCRIPT = PROJECT_ROOT / 'scenarios' / 'runner.py'
 EMBED_TRIES = 40  # 查找 scrcpy 窗口的次数（每次 500ms）
+SCRCPY_WATCHDOG_MS = 5000    # scrcpy 看门狗轮询间隔（毫秒）
+SCRCPY_RETRY_INTERVAL = 15.0  # 重拉失败后的退避（秒；设备重启要几十秒，别刷日志）
 
 # Windows 下隐藏子进程的命令行窗口（scrcpy/taskkill 等都是控制台程序）
 _NO_WINDOW = subprocess.CREATE_NO_WINDOW if sys.platform == 'win32' else 0
@@ -257,6 +260,10 @@ class MainWindow(QMainWindow):
         self._runner_proc: subprocess.Popen | None = None
         self._embed_tries = 0
         self._embed_timer = QTimer(self, timeout=self._try_embed)
+        # scrcpy 看门狗：设备重启/掉线后 scrcpy 进程会退出，自动重拉并重嵌入
+        self._scrcpy_retry_at = 0.0
+        self._scrcpy_watchdog = QTimer(self, timeout=self._check_scrcpy)
+        self._scrcpy_watchdog.start(SCRCPY_WATCHDOG_MS)
         # 配置保存后重启调度器的防抖定时器
         self._restart_timer = QTimer(self, singleShot=True, interval=1500,
                                      timeout=self._restart_runner)
@@ -290,6 +297,29 @@ class MainWindow(QMainWindow):
         if self._embed_tries >= EMBED_TRIES:
             self._embed_timer.stop()
             log('未找到 scrcpy 窗口，嵌入失败（调度器仍可正常开始）')
+
+    def _check_scrcpy(self) -> None:
+        """看门狗：scrcpy 进程掉了（设备 adb reboot/掉线会断开）就重拉并重嵌入。
+
+        重拉失败（设备还没开机完成）退避 SCRCPY_RETRY_INTERVAL 秒再试，
+        避免设备重启期间每 5 秒刷一次失败日志。
+        """
+        if not SCRCPY.is_file() or self._embed_timer.isActive():
+            return  # 没有 scrcpy 可拉，或启动/重嵌流程正在进行
+        if self._scrcpy_proc is not None and self._scrcpy_proc.poll() is None:
+            return  # 活着
+        now = time.monotonic()
+        if now < self._scrcpy_retry_at:
+            return
+        had_proc = self._scrcpy_proc is not None
+        self.scrcpy_view.set_hwnd(None)
+        self._scrcpy_proc = start_scrcpy()
+        if self._scrcpy_proc:
+            log('scrcpy 已重连' if had_proc else 'scrcpy 已启动')
+            self._embed_tries = 0
+            self._embed_timer.start(500)
+        else:
+            self._scrcpy_retry_at = now + SCRCPY_RETRY_INTERVAL
 
     # ---- 设置页面 ----
 

@@ -12,9 +12,13 @@
 - 金币 < 阈值 -> 先打工（每次打工一轮后重新判断），赚够了自然切换去学习
 - 金币识别失败 -> 默认先打工
 - 首选场景当天已达上限 -> 换另一个；都达上限则结束
+- 异常恢复：场景执行抛异常 -> adb reboot 重启设备 -> 启动 QQ ->
+  点 Q宠-* 入口回宠物页面（src/recover.py）-> 重试该场景一次；
+  连续恢复 RECOVERY_LIMIT 次仍失败则放弃
 
 运行：python scenarios/runner.py                     （调度循环，Ctrl+C 停止）
 单测：python scenarios/runner.py --test coins         （只测主页金币识别）
+      python scenarios/runner.py --test recover       （只测异常恢复链路：reboot -> 重进宠物页）
       python scenarios/runner.py --test work.select_place   （只跑某个阶段方法）
       python scenarios/runner.py --test school.select_course
 """
@@ -35,11 +39,15 @@ from src.progress import (
     load_progress,
     log,
 )
+from src.recover import reenter_pet
 from src.u2dev import U2Device
 from scenarios.adventure import AdventureScenario
 from scenarios.care import CareScenario
 from scenarios.school import ATTRIBUTE_COURSES, SchoolScenario
 from scenarios.work import WorkScenario
+
+# 连续异常恢复（adb reboot）次数上限，超过认为设备/环境有硬故障，放弃
+RECOVERY_LIMIT = 3
 
 
 class Runner:
@@ -54,6 +62,7 @@ class Runner:
         self.work = WorkScenario(dev)
         self.adventure = AdventureScenario(dev)
         self.care = CareScenario(dev)
+        self.recoveries = 0  # 连续异常恢复次数（成功跑完一轮清零）
         sched = self.school.cfg.schedule
         self.threshold = sched.coin_threshold
         self.school_factor = sched.school_factor
@@ -101,13 +110,43 @@ class Runner:
     def run_one(self, scen, name: str) -> bool:
         """跑一个场景一轮（一节课/一次打工）。
 
-        返回 False 或抛 RuntimeError 都视为该场景今天不再可用。
+        抛异常 -> adb reboot 恢复（重进宠物页面）-> 重试一次；
+        恢复失败或重试仍失败，返回 False 视为该场景今天不再可用。
         """
         try:
-            return scen.run(max_rounds=1)
-        except RuntimeError as e:
-            log(f'{name} 执行失败: {e}，今天不再执行该场景')
+            return self._run_round(scen)
+        except Exception as e:
+            log(f'{name} 执行异常: {e}，尝试重启设备恢复')
+        if self.recover():
+            try:
+                return self._run_round(scen)
+            except Exception as e:
+                log(f'{name} 恢复后重试仍失败: {e}，今天不再执行该场景')
+        else:
+            log(f'{name} 恢复失败，今天不再执行该场景')
+        return False
+
+    def _run_round(self, scen) -> bool:
+        result = scen.run(max_rounds=1)
+        self.recoveries = 0  # 成功跑完一轮，重置连续恢复计数
+        return result
+
+    def recover(self) -> bool:
+        """异常恢复：adb reboot -> 启动 QQ -> 点 Q宠-* 入口回宠物页面，
+        并刷新各场景的设备连接。返回是否成功。"""
+        if self.recoveries >= RECOVERY_LIMIT:
+            log(f'已连续恢复 {self.recoveries} 次仍异常，放弃恢复')
             return False
+        self.recoveries += 1
+        try:
+            dev = reenter_pet(self.school.dev.adb)
+        except Exception as e:
+            log(f'恢复失败: {e}')
+            return False
+        for scen in (self.school, self.work, self.adventure, self.care):
+            scen.dev = dev
+        log('恢复完成，继续调度')
+        return True
 
     def reload_config(self) -> None:
         """每轮重新读取 config.yaml，设置页热修改无需重启即生效（adb 连接除外）。
@@ -153,95 +192,106 @@ class Runner:
         work_dead = False    # 打工今天不再可用
         adventure_dead = False  # 冒险今天不再可用（执行失败）
         while True:
-            # 热修改：每轮调度前重读配置，设置页存盘最迟下一轮生效
-            self.reload_config()
-
-            # 所有任务开始之前：检查一次体力/清洁，不足则喂食/洗澡
             try:
+                # 热修改：每轮调度前重读配置，设置页存盘最迟下一轮生效
+                self.reload_config()
+
+                # 所有任务开始之前：检查一次体力/清洁，不足则喂食/洗澡；
+                # 失败直接抛给外层：走 adb reboot 恢复链路（src/recover.py）
                 self.care.check_and_care()
-            except RuntimeError as e:
-                log(f'宠物状态检查/照顾失败: {e}，继续调度')
 
-            # 冒险优先：到达调度时间且当天次数未满
-            if not adventure_dead and self.adventure_due():
-                log('到达冒险调度时间，优先处理冒险')
-                if self.run_one(self.adventure, '冒险'):
-                    _, adv_done, _ = load_progress(ADVENTURE_PROGRESS_FILE, quiet=True)
-                    if adv_done >= self.adventure_times:
-                        log(f'今日冒险 {adv_done}/{self.adventure_times} 次已满，'
-                            f'明天 {self.adventure_start.strftime("%H:%M")} 后再冒险')
+                # 冒险优先：到达调度时间且当天次数未满
+                if not adventure_dead and self.adventure_due():
+                    log('到达冒险调度时间，优先处理冒险')
+                    if self.run_one(self.adventure, '冒险'):
+                        _, adv_done, _ = load_progress(ADVENTURE_PROGRESS_FILE, quiet=True)
+                        if adv_done >= self.adventure_times:
+                            log(f'今日冒险 {adv_done}/{self.adventure_times} 次已满，'
+                                f'明天 {self.adventure_start.strftime("%H:%M")} 后再冒险')
+                        continue
+                    adventure_dead = True
+                    log('冒险执行失败，今天不再冒险')
+
+                learned, worked, points = self.today_points()
+                over_limit = points > self.daily_point_limit
+                log(f'今日点数: 学习{learned}次x{self.school_factor}+打工{worked}次x{self.work_factor}'
+                    f' = {points} / {self.daily_point_limit}')
+                if over_limit:
+                    # 每日点数超限：今天不再学习，只打工直到第二天清零
+                    log('点数超限，今天不再学习，只打工')
+
+                try:
+                    coins = None if over_limit else self.read_main_coins()
+                except RuntimeError as e:
+                    log(f'金币读取失败: {e}，默认先去打工')
+                    coins = None
+                prefer_school = not over_limit and coins is not None and coins >= self.threshold
+                if not over_limit:
+                    if coins is None:
+                        log('金币识别失败，默认先去打工')
+                    elif prefer_school:
+                        log(f'金币 {coins} >= 阈值 {self.threshold}，去学习')
+                    else:
+                        log(f'金币 {coins} < 阈值 {self.threshold}，先去打工')
+
+                first = (self.school, '学习', school_dead) if prefer_school else (self.work, '打工', work_dead)
+                second = (self.work, '打工', work_dead) if prefer_school else (self.school, '学习', school_dead)
+                if over_limit:
+                    # 点数超限时只打工，不回退到学习
+                    if work_dead:
+                        log('打工当天已达上限，结束')
+                        return
+                    if not self.run_one(self.work, '打工'):
+                        work_dead = True
+                        log('打工当天已达上限，结束')
+                        return
                     continue
-                adventure_dead = True
-                log('冒险执行失败，今天不再冒险')
-
-            learned, worked, points = self.today_points()
-            over_limit = points > self.daily_point_limit
-            log(f'今日点数: 学习{learned}次x{self.school_factor}+打工{worked}次x{self.work_factor}'
-                f' = {points} / {self.daily_point_limit}')
-            if over_limit:
-                # 每日点数超限：今天不再学习，只打工直到第二天清零
-                log('点数超限，今天不再学习，只打工')
-
-            try:
-                coins = None if over_limit else self.read_main_coins()
-            except RuntimeError as e:
-                log(f'金币读取失败: {e}，默认先去打工')
-                coins = None
-            prefer_school = not over_limit and coins is not None and coins >= self.threshold
-            if not over_limit:
-                if coins is None:
-                    log('金币识别失败，默认先去打工')
-                elif prefer_school:
-                    log(f'金币 {coins} >= 阈值 {self.threshold}，去学习')
-                else:
-                    log(f'金币 {coins} < 阈值 {self.threshold}，先去打工')
-
-            first = (self.school, '学习', school_dead) if prefer_school else (self.work, '打工', work_dead)
-            second = (self.work, '打工', work_dead) if prefer_school else (self.school, '学习', school_dead)
-            if over_limit:
-                # 点数超限时只打工，不回退到学习
-                if work_dead:
-                    log('打工当天已达上限，结束')
+                if not first[2] and self.run_one(first[0], first[1]):
+                    continue
+                if not first[2]:
+                    log(f'{first[1]}当天不可继续，切换到另一个')
+                    if prefer_school:
+                        school_dead = True
+                    else:
+                        work_dead = True
+                if not second[2] and self.run_one(second[0], second[1]):
+                    continue
+                if not second[2]:
+                    if prefer_school:
+                        work_dead = True
+                    else:
+                        school_dead = True
+                if school_dead and work_dead:
+                    log('学习和打工都已达当天上限，结束')
                     return
-                if not self.run_one(self.work, '打工'):
-                    work_dead = True
-                    log('打工当天已达上限，结束')
-                    return
-                continue
-            if not first[2] and self.run_one(first[0], first[1]):
-                continue
-            if not first[2]:
-                log(f'{first[1]}当天不可继续，切换到另一个')
-                if prefer_school:
-                    school_dead = True
-                else:
-                    work_dead = True
-            if not second[2] and self.run_one(second[0], second[1]):
-                continue
-            if not second[2]:
-                if prefer_school:
-                    work_dead = True
-                else:
-                    school_dead = True
-            if school_dead and work_dead:
-                log('学习和打工都已达当天上限，结束')
-                return
+            except Exception as e:
+                # 兜底：循环体内未捕获的异常（u2 断开、设备卡死等）走重启恢复，
+                # 恢复失败（连续 RECOVERY_LIMIT 次）才放弃
+                log(f'调度循环异常: {e}')
+                if not self.recover():
+                    raise
 
 
 def run_test(name: str) -> None:
-    """单模块测试：coins 或 <school|work>.<方法名>（手机需已在对应界面）。"""
+    """单模块测试：coins / recover 或 <school|work>.<方法名>（手机需已在对应界面）。"""
     if name == 'coins':
         sc = SchoolScenario()  # 任意场景实例，仅借用设备与主页面导航
         sc.ensure_main_page()
         coins = read_coins(sc.screen())
         log(f'金币数量: {coins if coins is not None else "识别失败"}')
         return
+    if name == 'recover':
+        # 异常恢复链路：adb reboot -> 启动 QQ -> 点 Q宠-* 入口回宠物页面
+        sc = SchoolScenario()  # 任意场景实例，仅借用 adb 连接
+        reenter_pet(sc.dev.adb)
+        log('recover 测试完成')
+        return
 
     scen_name, _, method = name.partition('.')
     scenarios = {'school': SchoolScenario, 'work': WorkScenario,
                  'adventure': AdventureScenario, 'care': CareScenario}
     if scen_name not in scenarios or not method:
-        raise ValueError(f'--test 参数无效: {name!r}，应为 coins 或 school./work./adventure./care. 开头的方法名')
+        raise ValueError(f'--test 参数无效: {name!r}，应为 coins / recover 或 school./work./adventure./care. 开头的方法名')
     scen = scenarios[scen_name]()
     fn = getattr(scen, method, None)
     if not callable(fn):

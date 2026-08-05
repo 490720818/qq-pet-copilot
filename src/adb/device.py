@@ -9,6 +9,7 @@ from __future__ import annotations
 import re
 import subprocess
 import sys
+import time
 
 # Windows 下隐藏 adb 子进程的命令行窗口（exe 无控制台模式下每次调用都会闪窗）
 _NO_WINDOW = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
@@ -80,6 +81,26 @@ class Device:
         # 形如 "Physical size: 1080x2400"
         size = out.strip().split(":")[-1].strip().split("x")
         return int(size[0]), int(size[1])
+
+    def reboot_and_wait(self, timeout: float = 180.0, interval: float = 5.0) -> None:
+        """重启设备并等待开机完成（sys.boot_completed=1），超时抛 AdbError。
+
+        开机过程中设备反复 offline/online，wait-for-device 容易卡在
+        子进程超时上，改为轮询 getprop：未就绪时 adb 直接报错返回，继续等。
+        """
+        self._run("reboot")
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            time.sleep(interval)
+            proc = self._run("shell", "getprop", "sys.boot_completed", check=False)
+            if proc.returncode == 0 and proc.stdout.decode("utf-8", "replace").strip() == "1":
+                return
+        raise AdbError(f"设备重启后 {timeout:.0f}s 内未完成开机")
+
+    def launch_app(self, package: str) -> None:
+        """用 monkey 启动应用主 Activity（无需知道具体 Activity 名）。"""
+        self._run("shell", "monkey", "-p", package,
+                  "-c", "android.intent.category.LAUNCHER", "1")
 
     def is_emulator(self) -> bool:
         """根据 getprop 的具体键值判断是否为模拟器。

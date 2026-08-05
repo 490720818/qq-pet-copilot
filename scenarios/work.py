@@ -6,7 +6,7 @@
    -> 等待结束并退出，等完的课程/工作计入对应场景的当天次数，
       回主页面结束本轮，由执行器重新判断限制条件后再决定下一步
 3. 点击 town 进入小镇
-4. 点击 (365, 400) 重置默认选择地点，OCR 整屏文字找到配置的打工地点并点击进入
+4. 点击 back 重置默认选择地点，OCR 整屏文字找到配置的打工地点并点击进入
 5. 把第一框拖到第三框归位（两次），点击第二框选择第二个工作（最高收益）
 6. 点击 work_outworker 进入雇佣好友界面：
    - 识别到 employ 按钮 -> 点击最上方的一个
@@ -27,7 +27,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.ocr import find_text, ocr_texts
+from src.ocr import find_text, ocr_fullscreen
 from src.progress import (
     WORK_PROGRESS_FILE,
     count_cross,
@@ -92,7 +92,7 @@ class WorkScenario(DeviceScenario):
                 raise RuntimeError('未找到 back 按钮，无法重置打工地点')
             self.click(back[0], back[1])
             time.sleep(CLICK_INTERVAL)
-            results = ocr_texts(self.screen())
+            results = ocr_fullscreen(self.screen())
             hit = find_text(results, self.location)
             if hit:
                 log(f'OCR 找到打工地点 {self.location} '
