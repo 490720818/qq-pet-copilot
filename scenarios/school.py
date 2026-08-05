@@ -6,7 +6,9 @@
    -> 等待结束并退出，等完的课程/工作计入对应场景的当天次数，
       回主页面结束本轮，由执行器重新判断限制条件后再决定下一步
 3. 每 1 秒点击一次 school，直到出现 school_start 按钮
-4. 选课：先把第一框拖到第三框归位（两次），再点属性点（力量/智力/魅力）对应的选择框
+4. 选课：先 OCR 上半屏识别学园阶段（初级/中级学园课程顺序固定为
+   力量/智力/魅力；高级学园/进修学院固定为 魅力/力量/智力，
+   每次上课前重新判断），再把第一框拖到第三框归位（两次），点击对应选择框
 5. 点击 school_start，直到页面出现 school_in 标志（进入上课）
 6. 上课中：每 30 秒检查一次，直到出现 school_end 标志
 7. 点击 quit 结束，当天已学次数 +1 并持久化到 runs/school_progress.json
@@ -18,11 +20,13 @@
 """
 
 import os
+import re
 import sys
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from src.ocr import ocr_texts
 from src.progress import (
     SCHOOL_PROGRESS_FILE,
     count_cross,
@@ -35,12 +39,25 @@ from src.scenario import CLICK_INTERVAL, DeviceScenario
 
 CLASS_CHECK_INTERVAL = 15.0  # 上课中检查 school_end 的间隔（秒）
 
-# 属性点 -> 三栏选择框定位名（力量/智力/魅力 对应第一/二/三框）
+# 属性点 -> 三栏选择框定位名（力量/智力/魅力 对应第一/二/三框；初级/中级学园用）
 ATTRIBUTE_COURSES = {
     '力量': 'select_box_1',
     '智力': 'select_box_2',
     '魅力': 'select_box_3',
 }
+
+# 高级学园/进修学院的课程顺序固定为 魅力/力量/智力（与初级/中级不同，
+# 选课前需 OCR 上半屏识别学园阶段来决定点哪个框）
+ADVANCED_ATTRIBUTE_COURSES = {
+    '魅力': 'select_box_1',
+    '力量': 'select_box_2',
+    '智力': 'select_box_3',
+}
+ADVANCED_STAGES = ('高级学园', '进修学院')
+# 必须带年级后缀（面板标题形如"初级学园 5年级"）：地图上的建筑气泡
+# 也写"XX学园"（没有年级），只匹配阶段名会把气泡误判成面板标题
+_STAGE_RE = re.compile(
+    r'(初级学园|中级学园|高级学园|进修学院)\s*[\d一二三四五六七八九十]+\s*年级')
 
 PROGRESS_FILE = SCHOOL_PROGRESS_FILE
 
@@ -76,15 +93,48 @@ class SchoolScenario(DeviceScenario):
         return None
 
     def select_course(self) -> None:
-        """选课：先把第一框拖到第三框归位（两次），再点属性点对应的选择框。"""
+        """选课：先 OCR 上半屏识别学园阶段决定点哪个框，
+        再把第一框拖到第三框归位（两次）后点选。"""
+        box = self.resolve_course_box()
         self.reset_select_boxes()
-        box = ATTRIBUTE_COURSES[self.attribute]
         log(f'选择课程: {self.attribute} ({box})')
         hit = self.see(box)
         if not hit:
             raise RuntimeError(f'未定位到课程选择框: {box}')
         self.click(hit[0], hit[1])
         time.sleep(CLICK_INTERVAL)
+
+    def resolve_course_box(self) -> str:
+        """OCR 上半屏识别学园阶段，返回该点哪个课程选择框。
+
+        初级/中级学园课程顺序固定 力量/智力/魅力 -> 第一/二/三框；
+        高级学园/进修学院固定 魅力/力量/智力。识别不到阶段回退默认顺序。
+        """
+        screen = self.screen()
+        results = ocr_texts(screen[: screen.shape[0] // 2])
+        stage = self._detect_stage(results)
+        if stage in ADVANCED_STAGES:
+            box = ADVANCED_ATTRIBUTE_COURSES[self.attribute]
+            log(f'学园阶段: {stage}，课程顺序 魅力/力量/智力，{self.attribute} -> {box}')
+            return box
+        box = ATTRIBUTE_COURSES[self.attribute]
+        log(f'学园阶段: {stage or "未识别"}，课程顺序 力量/智力/魅力，{self.attribute} -> {box}')
+        return box
+
+    @staticmethod
+    def _detect_stage(results: list[tuple[str, int, int, float]]) -> str | None:
+        """从上半屏 OCR 结果里识别学园阶段，返回匹配到的阶段名或 None。
+
+        用子串包含匹配（不是精确相等）：实际文案带年级后缀（'初级学园 5年级'）、
+        图标前缀等都能命中；单个文本块没命中时再拼全部文本兜底（防止拆块）。
+        """
+        for text, *_ in results:
+            m = _STAGE_RE.search(text.replace(' ', ''))
+            if m:
+                return m.group(1)
+        merged = ''.join(t.replace(' ', '') for t, *_ in results)
+        m = _STAGE_RE.search(merged)
+        return m.group(1) if m else None
 
     def wait_class_end(self) -> bool:
         """等待下课并点击 quit。返回 True 表示还能继续学。"""
