@@ -6,3 +6,5 @@ PyQt6>=6.5.0
 pywin32>=306; sys_platform == 'win32'
 ruamel.yaml>=0.17
 pyinstaller>=6.0
+onepush>=1.9.0
+winotify>=1.1.0; sys_platform == 'win32'

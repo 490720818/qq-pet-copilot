@@ -34,8 +34,8 @@ $PY build.py                     # PyInstaller 打包（onefile），--onedir �
 | 路径 | 职责 |
 | --- | --- |
 | `main.py` | PyQt6 GUI：scrcpy 窗口嵌入（SetParent）、选项卡（日志/统计/设置）、调度器子进程控制、scrcpy 看门狗（设备重启后自动重拉重嵌入） |
-| `src/stats_chart.py` | 统计页：各任务近 N 天次数的平滑折线图（QPainter 自绘 + Catmull-Rom 平滑，数据来自 `runs/*.json` 的 history） |
-| `scenarios/runner.py` | 统一调度器：每轮 = 状态检查 → 冒险（定时优先）→ 点数规则 → 金币 OCR → 学习/打工一轮；场景异常走 `recover()` 重启恢复并重试一次 |
+| `src/stats_chart.py` | 统计页：各任务近 N 天次数的平滑折线图（QPainter 自绘 + Catmull-Rom 平滑，数据来自 `runs/accounts/<账号>/*.json` 的 history，多账号下拉切换） |
+| `scenarios/runner.py` | 统一调度器：每轮 = 状态检查 → 冒险（定时优先）→ 点数规则 → 金币 OCR → 学习/打工一轮；场景异常分级重试（回主页面重进 → `recover()` 重启恢复）；都失败时主任务（学习/打工）发告警通知（`src/notify.py`）并退出，支线任务（冒险/踩踩/PK）延后 `SIDE_TASK_RETRY_DELAY` 秒重排期 |
 | `scenarios/school.py` `work.py` `adventure.py` `care.py` `visit.py` `pk.py` | 各场景，均继承 `DeviceScenario`（`pk.py` 继承 `visit.py` 复用好友导航） |
 | `src/scenario.py` | 场景基类：截图/u2+OCR 定位点击/回主页面/等待结束/被雇佣召回/四种进行中状态检测 |
 | `src/recover.py` | 异常恢复链路：adb reboot → 等开机 → 启动 QQ → 点 `Q宠-*` 入口（descriptionStartsWith 前缀匹配，后缀数字不固定）回宠物页，返回新 U2Device |
@@ -43,9 +43,11 @@ $PY build.py                     # PyInstaller 打包（onefile），--onedir �
 | `src/locators.py` | UI 定位注册表 `LOCATORS`：名字 → u2 选择器 / OCR 候选文案 / rel 兜底坐标；`see()` / `see_all()` |
 | `src/adb/device.py` | adb 封装：设备在线管理（start-server）、屏幕尺寸读取（scrcpy 嵌入比例用）、`reboot_and_wait()` / `launch_app()`（异常恢复用） |
 | `src/ocr.py` / `src/coins.py` | RapidOCR 封装；主页金币 = 顶部状态栏最右侧数值（全屏 OCR） |
-| `src/progress.py` | `log()`（控制台+文件+监听器）、每日次数持久化（含 history，跨天归档）、`count_cross` 交叉计数 |
+| `src/progress.py` | `log()`（控制台+文件+监听器）、每日次数持久化（含 history，跨天归档）、`count_cross` 交叉计数；多账号：识别到账号（status_cache 的 last_account）后 `load/save_progress` 自动重定向到 `runs/accounts/<账号>/`，首次识别迁移单账号时期的旧进度文件；`known_accounts()` 供 GUI 按账号显示（当前账号排最前） |
+| `src/status_cache.py` | 账号状态缓存（`runs/status_cache.json`，按账号名称组织，兼容多账号）：体力/清洁/心情（care 状态面板 OCR 后）、金币（主页 OCR 后）、香皂/饼干（喂食/洗澡结束时 OCR 控件附近小图；库存角标无文字，取离 `feed_10`/`shower_10` 控件最近的数字）；GUI 日志页顶部状态条每 5 秒读一次 |
 | `src/config.py` | dataclass 配置 + 路径规划：`APP_ROOT`（可写）/ `RESOURCE_ROOT`（包内资源），`resource_path()` APP_ROOT 优先 |
 | `src/settings.py` | ruamel 往返读写 config.yaml（保留注释），GUI 设置页用 |
+| `src/notify.py` | 失败告警通知：Windows Toast（winotify）+ OnePush 多渠道推送（Bark/PushPlus/Server酱/SMTP/自定义 webhook 等），发送失败只记日志 |
 | `tools/dump_hierarchy.py` | 抓当前屏幕控件树 XML 存到 `xml/page.xml`（校准 locators 的 xpath/content-desc 用；`xml/` 已 git 排除） |
 
 ## 关键约定（改动时必须遵守）
@@ -77,9 +79,15 @@ $PY build.py                     # PyInstaller 打包（onefile），--onedir �
 - **主页面点 back 会退出游戏**：`ensure_main_page` 必须保留 `BACK_GRACE_ATTEMPTS`
   宽限（连续多次识别不到 `main_sign`（"出门"）才允许点 back）。
 - **OCR 置信度**：命中下限 `src/locators.py` 的 `OCR_MIN_SCORE`（默认 0.5）。
-- **异常恢复**：场景执行或调度循环抛异常 → `Runner.recover()`（`src/recover.py`：
-  adb reboot → 启动 QQ → 等并点 `Q宠-*` 入口回宠物页）→ 重试该场景一次；
-  连续 `RECOVERY_LIMIT` 次仍失败才放弃。恢复成功后必须把新 U2Device 刷新到各场景的 `dev`。
+- **异常分级重试**：场景抛异常 → 先回主页面重进场景重试一次（页面错乱多半能
+  自愈，不必重启）→ 仍失败才走 `Runner.recover()`（`src/recover.py`：adb reboot →
+  启动 QQ → 等并点 `Q宠-*` 入口回宠物页）→ 最后再试一次；连续 `RECOVERY_LIMIT`
+  次恢复仍失败才放弃恢复。恢复成功后必须把新 U2Device 刷新到各场景的 `dev`。
+  多次重试均失败按任务类型分流：主任务（学习/打工）发告警通知（`src/notify.py`：
+  Windows Toast + OnePush，附当前手机截图存 `runs/alert_*.png`）并退出调度器
+  （SystemExit）；支线任务（冒险/踩踩/PK）不退出——抛 `ScenarioFailed`，
+  由调度循环重新排期延后 `SIDE_TASK_RETRY_DELAY` 秒重试（`retry_after`，
+  参考 qq-farm-copilot 的失败间隔队列机制），先执行其他任务。
 - **配置改动**：新配置项加到 `config.yaml` + `src/config.py` 的 dataclass +
   `main.py` 的 `SETTING_FIELDS`（设置页表单）三处。
 - **GUI 线程纪律**：调度器是子进程（`scenarios/runner.py`，打包后为 `exe --runner`），

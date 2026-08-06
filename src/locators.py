@@ -146,6 +146,10 @@ LOCATORS: dict[str, dict] = {
                ,'ocr': ['去上课']},
     'school_in': {'ocr': ['正在学习']},
     'school_end': {'xpath': ['//*[@content-desc="分享"]/android.widget.FrameLayout[1]']},
+    # 毕业标志：当前学园毕业后学校面板没有"去上课"，而是"去找同学玩"；
+    # 此时点"关闭"再点两次 back 回主页面，重新进学校选下一阶段课程
+    'school_graduated': {'xpath': ['//*[@content-desc="去找同学玩"]']},
+    'school_graduate_close': {'xpath': ['//*[@content-desc="关闭"]']},
 
     # ---- 打工 ----
     'town': {'xpath': ['//*[@content-desc="map_blank"]/android.widget.FrameLayout[4]/android.widget.FrameLayout[1]']

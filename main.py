@@ -24,6 +24,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from PyQt6.QtCore import QTimer
 from PyQt6.QtWidgets import (
     QApplication,
+    QCheckBox,
     QComboBox,
     QFormLayout,
     QHBoxLayout,
@@ -53,10 +54,13 @@ from src.progress import (
     VISIT_PROGRESS_FILE,
     WORK_PROGRESS_FILE,
     add_log_listener,
+    known_accounts,
     load_progress,
     log,
 )
 from src.stats_chart import StatsPanel
+from src.status_cache import FIELDS as STATUS_FIELDS
+from src.status_cache import load_accounts
 
 SCRCPY = resource_path('scrcpy-win64') / 'scrcpy.exe'
 SCRCPY_TITLE = 'QQPetCopilotScrcpy'
@@ -83,7 +87,24 @@ START_BTN_STYLE = 'QPushButton { background-color: #4CAF50; }' + _BTN_BASE.forma
 STOP_BTN_STYLE = 'QPushButton { background-color: #f44336; }' + _BTN_BASE.format(
     hover='#e53935', pressed='#d32f2f', disabled='#ffcdd2')
 
-# 设置页面字段：(点路径, 显示名, 类型)  类型: 'int' / 'str' / 'devices'(adb 设备下拉) / 选项列表
+# OnePush 各提供方参数配置教程（ALAS wiki 中文文档）
+ONEPUSH_HELP_URL = ('https://github.com/LmeSzinc/AzurLaneAutoScript'
+                    '/wiki/Onepush-configuration-%5BCN%5D')
+
+class _FocusOutPlainTextEdit(QPlainTextEdit):
+    """失焦时触发保存回调的多行文本框（QPlainTextEdit 没有 editingFinished）。"""
+
+    def __init__(self, on_focus_out):
+        super().__init__()
+        self._on_focus_out = on_focus_out
+
+    def focusOutEvent(self, event):
+        self._on_focus_out()
+        super().focusOutEvent(event)
+
+
+# 设置页面字段：(点路径, 显示名, 类型)
+# 类型: 'int' / 'str' / 'bool' / 'text'(多行文本) / 'devices'(adb 设备下拉) / 选项列表
 SETTING_FIELDS = [
     ('adb.path', 'adb 路径', 'str'),
     ('adb.device_serial', '设备序列号', 'devices'),
@@ -104,6 +125,8 @@ SETTING_FIELDS = [
     ('pk.start_time', 'PK 调度时间（HH:MM）', 'str'),
     ('care.energy_threshold', '体力阈值', 'int'),
     ('care.clean_threshold', '清洁阈值', 'int'),
+    ('notify.win_toast', '失败告警 Windows 通知', 'bool'),
+    ('notify.onepush_config', '失败告警 OnePush 配置', 'text'),
 ]
 
 
@@ -242,7 +265,10 @@ class MainWindow(QMainWindow):
         btn_row.addWidget(self.btn_stop)
         btn_row.addStretch()  # 按钮收缩到文字宽度，不铺满整行
 
-        # 日志页：顶部当日统计条 + 日志区
+        # 日志页：顶部账号状态条 + 当日统计条 + 日志区
+        self.status_label = QLabel()
+        self.status_label.setStyleSheet(
+            'color: #ffd54f; background: #263238; padding: 4px 8px; font-size: 13px;')
         self.stats_label = QLabel()
         self.stats_label.setStyleSheet(
             'color: #ddd; background: #263238; padding: 4px 8px; font-size: 13px;')
@@ -250,6 +276,7 @@ class MainWindow(QMainWindow):
         log_layout = QVBoxLayout(log_page)
         log_layout.setContentsMargins(0, 0, 0, 0)
         log_layout.setSpacing(0)
+        log_layout.addWidget(self.status_label)
         log_layout.addWidget(self.stats_label)
         log_layout.addWidget(self.log_view)
 
@@ -352,7 +379,21 @@ class MainWindow(QMainWindow):
     # ---- 当日统计 ----
 
     def _refresh_stats(self) -> None:
-        """刷新日志页顶部的各任务当日统计（次数/上限，0 为不限只显示次数）。"""
+        """刷新日志页顶部：账号状态条（状态缓存，每账号一行）+ 各任务当日统计。"""
+        try:
+            accounts = load_accounts()
+            if accounts:
+                # 多账号兼容：缓存里每个账号一行
+                lines = []
+                for name, st in accounts.items():
+                    parts = '　'.join(f'{label} {st.get(key, "-")}'
+                                      for key, label in STATUS_FIELDS)
+                    lines.append(f'账号 {name}　{parts}')
+                self.status_label.setText('\n'.join(lines))
+            else:
+                self.status_label.setText('账号状态: 暂无（调度器运行后自动更新）')
+        except Exception as e:
+            self.status_label.setText(f'账号状态读取失败: {e}')
         try:
             cfg = load_config()
             tasks = [
@@ -362,11 +403,18 @@ class MainWindow(QMainWindow):
                 ('踩踩', VISIT_PROGRESS_FILE, cfg.visit.times_per_day),
                 ('PK', PK_PROGRESS_FILE, cfg.pk.times_per_day),
             ]
-            parts = []
-            for label, progress_file, limit in tasks:
-                _, done, _ = load_progress(progress_file, quiet=True)
-                parts.append(f'{label} {done}/{limit}' if limit else f'{label} {done}')
-            self.stats_label.setText('今日: ' + '　'.join(parts))
+            accounts = known_accounts()
+            if not accounts:
+                accounts = ['']  # 未识别账号：读默认路径，单行显示（不带账号前缀）
+            lines = []
+            for name in accounts:
+                parts = []
+                for label, progress_file, limit in tasks:
+                    _, done, _ = load_progress(progress_file, quiet=True, account=name)
+                    parts.append(f'{label} {done}/{limit}' if limit else f'{label} {done}')
+                prefix = f'账号 {name}　今日: ' if name else '今日: '
+                lines.append(prefix + '　'.join(parts))
+            self.stats_label.setText('\n'.join(lines))
         except Exception as e:
             self.stats_label.setText(f'今日统计读取失败: {e}')
 
@@ -384,6 +432,26 @@ class MainWindow(QMainWindow):
                 # 体力/清洁是 0-100，其余次数/阈值放宽
                 w.setRange(0, 100 if key.startswith('care.') else 99999)
                 w.editingFinished.connect(lambda k=key: self.save_field(k))
+            elif kind == 'bool':
+                w = QCheckBox()
+                w.stateChanged.connect(lambda _s, k=key: self.save_field(k))
+            elif kind == 'text':
+                # 多行文本（如 OnePush YAML 配置）：失焦自动保存，下方附配置教程链接
+                w = _FocusOutPlainTextEdit(lambda k=key: self.save_field(k))
+                w.setMinimumHeight(60)
+                w.setMaximumHeight(110)
+                w.setPlaceholderText('provider: bark\nkey: 你的Key')
+                help_label = QLabel(f'<a href="{ONEPUSH_HELP_URL}">OnePush 配置教程</a>')
+                help_label.setOpenExternalLinks(True)
+                col = QWidget()
+                col_layout = QVBoxLayout(col)
+                col_layout.setContentsMargins(0, 0, 0, 0)
+                col_layout.setSpacing(4)
+                col_layout.addWidget(w)
+                col_layout.addWidget(help_label)
+                self._setting_widgets[key] = (w, kind)
+                form.addRow(label, col)
+                continue
             elif kind == 'devices' or isinstance(kind, list):
                 w = QComboBox()
                 if isinstance(kind, list):
@@ -394,6 +462,12 @@ class MainWindow(QMainWindow):
                 w.editingFinished.connect(lambda k=key: self.save_field(k))
             self._setting_widgets[key] = (w, kind)
             form.addRow(label, w)
+        # 通知测试：按当前 config.yaml 的 notify 配置发一条测试告警。
+        # 点击按钮会先让输入框失焦（失焦自动保存），未落盘的修改也会先生效；
+        # 各渠道发送结果见日志页
+        test_btn = QPushButton('发送通知测试')
+        test_btn.clicked.connect(self._test_notify)
+        form.addRow('通知测试', test_btn)
         form_widget = QWidget()
         form_widget.setLayout(form)
         scroll = QScrollArea()
@@ -406,6 +480,14 @@ class MainWindow(QMainWindow):
         """切到设置页（第 3 个选项卡）时加载当前配置。"""
         if index == 2:
             self.load_settings()
+
+    def _test_notify(self) -> None:
+        """设置页"通知测试"按钮：发一条测试告警，各渠道结果打到日志页。"""
+        from src.notify import send_alert  # 按需导入（winotify/onepush 均为懒加载）
+
+        log('发送通知测试...')
+        sent = send_alert('通知测试：收到这条说明告警渠道配置正常')
+        log('通知测试已送达' if sent else '通知测试未送达（检查配置，各渠道详情见上方日志）')
 
     def load_settings(self) -> None:
         try:
@@ -422,6 +504,11 @@ class MainWindow(QMainWindow):
                 self._fill_devices(w, str(value))
             elif kind == 'int':
                 w.setValue(int(value))
+            elif kind == 'bool':
+                # 配置里缺该键时回退 DEFAULTS，避免与运行时的 dataclass 默认值不一致
+                w.setChecked(bool(settings_io.DEFAULTS.get(key) if value == '' else value))
+            elif kind == 'text':
+                w.setPlainText(str(value))
             elif isinstance(kind, list):
                 w.setCurrentText(str(value))
             else:
@@ -451,6 +538,10 @@ class MainWindow(QMainWindow):
             value = w.currentData() or ''
         elif kind == 'int':
             value = w.value()
+        elif kind == 'bool':
+            value = w.isChecked()
+        elif kind == 'text':
+            value = w.toPlainText().strip()
         elif isinstance(kind, list):
             value = w.currentText()
         else:
@@ -464,6 +555,10 @@ class MainWindow(QMainWindow):
                 w.setCurrentIndex(idx if idx >= 0 else 0)
             elif kind == 'int':
                 w.setValue(fixed)
+            elif kind == 'bool':
+                w.setChecked(bool(fixed))
+            elif kind == 'text':
+                w.setPlainText(str(fixed))
             elif isinstance(kind, list):
                 w.setCurrentText(fixed)
             else:

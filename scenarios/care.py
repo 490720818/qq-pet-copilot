@@ -27,6 +27,7 @@ from src.locators import see_bounds
 from src.ocr import ocr_texts
 from src.progress import log
 from src.scenario import CLICK_INTERVAL, DeviceScenario
+from src.status_cache import update_status
 from src.u2dev import REF_SIZE
 
 # 洗澡搓洗点位：起点 = shower_10 控件中心（肥皂），其余按当前分辨率百分比换算
@@ -43,6 +44,14 @@ MAX_FEED_ATTEMPTS = 10    # 喂食最多次数，超过认为异常
 MAX_SHOWER_ATTEMPTS = 25  # 搓洗最多回合数，超过认为异常
 
 STATUS_NAMES = ('体力', '清洁', '心情')
+# 喂食/洗澡面板的物品库存：库存数字没有文字标签，只有图标 + 数字角标，
+# 取 OCR 下半屏里离 feed_10 / shower_10 控件中心最近的数字
+# （feed_10 -> 饼干 biscuit，shower_10 -> 香皂 soap，见 cache_care_items）
+ITEM_ANCHOR_KEYS = {'feed_10': 'biscuit', 'shower_10': 'soap'}
+# 物品库存 OCR 放大倍数（锚点附近小图放大，提高小字识别率）
+ITEM_OCR_SCALE = 2
+# 库存角标在图标附近：以控件 bounds 各边向外扩这么多像素裁剪 OCR 区域
+ITEM_CROP_MARGIN = 80
 
 
 def parse_panel_info(results: list[tuple[str, int, int, float]]) -> dict:
@@ -103,6 +112,24 @@ def parse_status(results: list[tuple[str, int, int, float]], scale: float = 1.0)
     return status
 
 
+def nearest_item_count(results: list[tuple[str, int, int, float]],
+                       px: float, py: float) -> int | None:
+    """OCR 结果里离 (px, py) 最近的纯数字（物品库存角标，兼容 'x12' / '×12'）。
+
+    库存角标没有文字标签，不能用"名字+邻近数字"：以 feed_10 / shower_10
+    控件中心为锚点，取最近的数字；没有数字返回 None。
+    """
+    best: tuple[float, int] | None = None
+    for text, x, y, _ in results:
+        m = re.fullmatch(r'[xX×]?(\d{1,4})', text.replace(' ', ''))
+        if not m:
+            continue
+        dist = (x - px) ** 2 + (y - py) ** 2
+        if best is None or dist < best[0]:
+            best = (dist, int(m.group(1)))
+    return best[1] if best else None
+
+
 class CareScenario(DeviceScenario):
     def __init__(self, dev=None):
         super().__init__(dev)
@@ -136,6 +163,55 @@ class CareScenario(DeviceScenario):
         scale = screen.shape[1] / REF_SIZE[0]
         return parse_status(results, scale)
 
+    def cache_care_items(self, anchor: str, **status_fields) -> None:
+        """喂食/洗澡结束时把物品库存写进状态缓存（供 GUI 日志页状态条显示）。
+
+        anchor：'feed_10'（喂食面板，库存记为饼干）/ 'shower_10'（洗澡面板，记为香皂）。
+        库存数字没有文字标签，OCR 控件附近区域后取离 anchor 控件中心最近的数字。
+        顺带刷新刚变化的体力/清洁；识别失败只记日志，不影响照顾流程。
+        """
+        try:
+            fields = dict(status_fields)
+            count = self._read_item_count(anchor)
+            if count is not None:
+                log(f'物品库存: {anchor} 库存={count}')
+                fields[ITEM_ANCHOR_KEYS[anchor]] = count
+            update_status(None, **fields)
+        except Exception as e:
+            log(f'物品库存识别失败: {e}')
+
+    def _read_item_count(self, anchor: str) -> int | None:
+        """OCR anchor 控件附近区域，取离控件中心最近的数字作为物品库存。
+
+        库存数字是图标旁的小角标：不能 OCR 整个下半屏——图太大会被检测模型
+        内部再缩小（det_limit_side_len），小角标识别不到；以控件 bounds 向外
+        扩 ITEM_CROP_MARGIN 裁小图再放大 OCR，并在日志里打印识别结果便于校准。
+        """
+        bounds = see_bounds(self.dev, anchor)
+        if not bounds:
+            log(f'未定位到 {anchor}，无法读取物品库存')
+            return None
+        screen = self.screen()
+        h, w = screen.shape[:2]
+        x1, y1, x2, y2 = bounds
+        m = ITEM_CROP_MARGIN
+        rx1, ry1 = max(0, x1 - m), max(0, y1 - m)
+        rx2, ry2 = min(w, x2 + m), min(h, y2 + m)
+        region = screen[ry1:ry2, rx1:rx2]
+        img = Image.fromarray(region)
+        img = img.resize((img.width * ITEM_OCR_SCALE, img.height * ITEM_OCR_SCALE),
+                         Image.LANCZOS)
+        results = ocr_texts(np.asarray(img))
+        log(f'库存区域 OCR: '
+            + (', '.join(f'{t!r}@({x},{y})' for t, x, y, _ in results) or '无'))
+        # 控件中心换算到裁剪 + 放大后的 OCR 图坐标
+        cx = ((x1 + x2) / 2 - rx1) * ITEM_OCR_SCALE
+        cy = ((y1 + y2) / 2 - ry1) * ITEM_OCR_SCALE
+        count = nearest_item_count(results, cx, cy)
+        if count is None:
+            log('库存区域 OCR 未找到数字')
+        return count
+
     # ---- 照顾动作 ----
 
     def feed(self, source=None) -> None:
@@ -157,6 +233,7 @@ class CareScenario(DeviceScenario):
             log(f'第 {attempt} 次喂食后体力: {energy}')
             if energy is not None and energy >= self.energy_threshold:
                 log(f'体力已达标（>= {self.energy_threshold}）')
+                self.cache_care_items('feed_10', energy=energy)
                 return
         raise RuntimeError(f'喂食 {MAX_FEED_ATTEMPTS} 次后体力仍未达到 {self.energy_threshold}')
 
@@ -201,6 +278,7 @@ class CareScenario(DeviceScenario):
                 log(f'搓洗 {attempt} 回合后清洁: {clean}')
                 if clean is not None and clean >= self.clean_threshold:
                     log(f'清洁已达标（>= {self.clean_threshold}）')
+                    self.cache_care_items('shower_10', clean=clean)
                     return
             raise RuntimeError(f'搓洗 {MAX_SHOWER_ATTEMPTS} 回合后清洁仍未达到 {self.clean_threshold}')
         finally:
@@ -247,6 +325,12 @@ class CareScenario(DeviceScenario):
         log(f'宠物状态: 体力={status.get("体力")} '
             f'清洁={status.get("清洁")} 心情={status.get("心情")} '
             f'账号名称={status.get("账号名称")} 宠物名称={status.get("宠物名称")}')
+        # 写状态缓存（GUI 日志页顶部状态条按账号显示）
+        update_status(status.get('账号名称'),
+                      pet_name=status.get('宠物名称'),
+                      energy=status.get('体力'),
+                      clean=status.get('清洁'),
+                      mood=status.get('心情'))
         cared = False
         energy = status.get('体力')
         if energy is not None and energy < self.energy_threshold:

@@ -54,3 +54,14 @@ pk:
   times_per_day: 15
   # PK 调度时间（HH:MM）：到达后开始处理
   start_time: "00:01"
+
+notify:
+  # 场景多次重试仍失败时的告警通知（主任务通知后调度器退出，需人工查看）
+  # Windows 桌面 Toast 通知：true/false
+  win_toast: true
+  # OnePush 推送配置（YAML，设置页里是多行输入框；留空不推送），
+  # 支持 Bark / PushPlus / Server酱 / Telegram / SMTP / 自定义 webhook 等，例如：
+  #   onepush_config: "{provider: bark, key: 你的Key}"
+  # 各提供方参数配置教程：
+  # https://github.com/LmeSzinc/AzurLaneAutoScript/wiki/Onepush-configuration-%5BCN%5D
+  onepush_config: ""

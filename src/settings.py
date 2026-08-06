@@ -3,8 +3,9 @@ from __future__ import annotations
 
 from datetime import datetime
 
+import yaml
 from ruamel.yaml import YAML
-from ruamel.yaml.scalarstring import DoubleQuotedScalarString
+from ruamel.yaml.scalarstring import DoubleQuotedScalarString, LiteralScalarString
 
 from .config import CONFIG_FILE
 
@@ -31,6 +32,8 @@ DEFAULTS = {
     'pk.start_time': '00:01',
     'care.energy_threshold': 60,
     'care.clean_threshold': 60,
+    'notify.win_toast': True,
+    'notify.onepush_config': '',
 }
 
 
@@ -50,6 +53,23 @@ def validate_field(key: str, value):
         return (True, value) if value in ('力量', '智力', '魅力') else (False, default)
     if key in ('care.energy_threshold', 'care.clean_threshold'):
         return (True, value) if 0 <= int(value) <= 100 else (False, default)
+    if key == 'notify.win_toast':
+        return (True, value) if isinstance(value, bool) else (False, default)
+    if key == 'notify.onepush_config':
+        # OnePush 推送配置（YAML，支持多行）：留空，或能解析出含 provider 的字典
+        text = str(value).strip()
+        if not text:
+            return True, ''
+        try:
+            cfg = yaml.safe_load(text)
+        except yaml.YAMLError:
+            return False, default
+        if not (isinstance(cfg, dict) and cfg.get('provider')):
+            return False, default
+        # 多行用块样式写回（保留换行可读性），单行仍用带引号标量
+        if '\n' in text:
+            return True, LiteralScalarString(text)
+        return True, DoubleQuotedScalarString(text)
     # 其余整数字段（次数/阈值/系数）非负即可，空字符串不允许
     if isinstance(DEFAULTS.get(key), int):
         try:

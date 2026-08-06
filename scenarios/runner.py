@@ -16,9 +16,17 @@
   场景长等待（上课/打工/冒险进行中）的间隙也会插空处理（wait_hook，run_inline）；
   PK 每轮最多 16 局（超出下一轮接着跑），开始前检查体力/清洁
   （每局各耗 5，不足则喂食/洗澡到 90）
-- 异常恢复：场景执行抛异常 -> adb reboot 重启设备 -> 启动 QQ ->
-  点 Q宠-* 入口回宠物页面（src/recover.py）-> 重试该场景一次；
-  连续恢复 RECOVERY_LIMIT 次仍失败则放弃
+- 异常分级重试：场景执行抛异常 -> 先回主页面重进场景重试一次（页面状态
+  错乱多半能自愈，不必重启）-> 仍失败才 adb reboot 重启设备 -> 启动 QQ ->
+  点 Q宠-* 入口回宠物页面（src/recover.py）-> 最后再试一次；
+  连续恢复 RECOVERY_LIMIT 次仍失败则放弃恢复
+- 多次重试仍失败按任务类型分流：
+  学习/打工是主任务 -> 发告警通知（src/notify.py：Windows Toast / OnePush，
+  见 config.yaml 的 notify 段；附当前手机屏幕截图）后退出调度器，
+  不静默挂起空跑——设备/游戏状态异常需要人工介入；
+  冒险/踩踩/PK 是支线任务 -> 重新排期延后 SIDE_TASK_RETRY_DELAY 秒重试
+  （参考 qq-farm-copilot 的 failure_interval 队列机制），先执行其他任务；
+  主任务当天结束后若还有延后重试的支线任务，调度器睡到重试点继续，不提前退出
 
 运行：python scenarios/runner.py                     （调度循环，Ctrl+C 停止）
 单测：python scenarios/runner.py --test coins         （只测主页金币识别）
@@ -29,12 +37,14 @@
 
 import os
 import sys
-from datetime import datetime
+import time
+from datetime import datetime, timedelta
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.coins import read_coins
-from src.config import find_adb, load_config
+from src.config import PROJECT_ROOT, find_adb, load_config
+from src.notify import send_alert
 from src.ocr import get_engine
 from src.progress import (
     ADVENTURE_PROGRESS_FILE,
@@ -46,7 +56,9 @@ from src.progress import (
     log,
 )
 from src.recover import reenter_pet
+from src.status_cache import update_status
 from src.u2dev import U2Device
+from PIL import Image
 from scenarios.adventure import AdventureScenario
 from scenarios.care import CareScenario
 from scenarios.pk import PKScenario
@@ -56,6 +68,14 @@ from scenarios.work import WorkScenario
 
 # 连续异常恢复（adb reboot）次数上限，超过认为设备/环境有硬故障，放弃
 RECOVERY_LIMIT = 3
+# 支线任务（冒险/踩踩/PK）多次重试仍失败后的延后重试间隔（秒）：
+# 参考 qq-farm-copilot 的 failure_interval 队列机制——失败任务重新排期，
+# 调度器先执行其他任务，到点后 due() 自动放行重试
+SIDE_TASK_RETRY_DELAY = 1800
+
+
+class ScenarioFailed(Exception):
+    """支线任务多次重试仍失败（内部信号：调用方捕获后重新排期，不退出调度器）。"""
 
 
 def parse_hhmm(value, field: str):
@@ -83,6 +103,7 @@ class Runner:
         self.visit = VisitScenario(dev)
         self.pk = PKScenario(dev)
         self.recoveries = 0  # 连续异常恢复次数（成功跑完一轮清零）
+        self.retry_after: dict[str, datetime] = {}  # 支线任务名 -> 失败后的下次可执行时间
         self.visit_dead = False  # 踩踩今天不再可用（执行失败）
         self.pk_dead = False     # PK 今天不再可用（执行失败）
         # 场景长等待（上课/打工进行中）的间隙插空处理踩踩/PK
@@ -118,9 +139,13 @@ class Runner:
             f'（等待间隙插空处理），'
             f'PK: 每天 {self.pk_times} 次 @ {self.pk_start.strftime("%H:%M")}')
 
+    def _deferred(self, name: str) -> bool:
+        """支线任务是否处于失败延后期（未到重新排期时间）。"""
+        return datetime.now() < self.retry_after.get(name, datetime.min)
+
     def adventure_due(self) -> bool:
-        """是否该冒险了：已到调度时间且当天次数未满。"""
-        if not self.adventure_times:
+        """是否该冒险了：已到调度时间、当天次数未满且不在失败延后期。"""
+        if not self.adventure_times or self._deferred('冒险'):
             return False
         _, done, _ = load_progress(ADVENTURE_PROGRESS_FILE, quiet=True)
         if done >= self.adventure_times:
@@ -128,8 +153,8 @@ class Runner:
         return datetime.now().time() >= self.adventure_start
 
     def visit_due(self) -> bool:
-        """是否该踩踩了：已到调度时间且当天次数未满。"""
-        if not self.visit_times:
+        """是否该踩踩了：已到调度时间、当天次数未满且不在失败延后期。"""
+        if not self.visit_times or self._deferred('踩踩'):
             return False
         _, done, _ = load_progress(VISIT_PROGRESS_FILE, quiet=True)
         if done >= self.visit_times:
@@ -137,8 +162,8 @@ class Runner:
         return datetime.now().time() >= self.visit_start
 
     def pk_due(self) -> bool:
-        """是否该 PK 了：已到调度时间且当天次数未满。"""
-        if not self.pk_times:
+        """是否该 PK 了：已到调度时间、当天次数未满且不在失败延后期。"""
+        if not self.pk_times or self._deferred('PK'):
             return False
         _, done, _ = load_progress(PK_PROGRESS_FILE, quiet=True)
         if done >= self.pk_times:
@@ -163,31 +188,86 @@ class Runner:
         return learned, worked, learned * self.school_factor + worked * self.work_factor
 
     def read_main_coins(self) -> int | None:
-        """回主页面 OCR 金币数量，失败返回 None。"""
+        """回主页面 OCR 金币数量，失败返回 None。识别成功写状态缓存（GUI 状态条）。"""
         self.school.ensure_main_page()
         coins = read_coins(self.school.screen())
         if coins is None:
             log('金币 OCR 识别失败')
+        else:
+            update_status(None, coins=coins)
         return coins
 
-    def run_one(self, scen, name: str) -> bool:
+    def run_one(self, scen, name: str, fatal: bool = True) -> bool:
         """跑一个场景一轮（一节课/一次打工）。
 
-        抛异常 -> adb reboot 恢复（重进宠物页面）-> 重试一次；
-        恢复失败或重试仍失败，返回 False 视为该场景今天不再可用。
+        抛异常分级重试：先回主页面重进场景试一次（页面状态错乱多半能自愈，
+        不必重启设备），仍失败才走 adb reboot 恢复（重进宠物页面）后试最后一次。
+        都失败时按任务类型分流：
+        - fatal=True（学习/打工主任务）：发告警通知并退出调度器
+          （设备/游戏状态异常，需要人工介入，不静默挂起空跑）；
+        - fatal=False（冒险/踩踩/PK 支线任务）：抛 ScenarioFailed，
+          由调度循环重新排期延后重试，先执行其他任务。
+        场景 run() 正常返回 False（达当天上限等）不算失败。
         """
         try:
             return self._run_round(scen)
         except Exception as e:
-            log(f'{name} 执行异常: {e}，尝试重启设备恢复')
+            log(f'{name} 执行异常: {e}，回主页面重试一次')
+        try:
+            return self._run_round(scen)
+        except Exception as e:
+            log(f'{name} 回主页面重试仍失败: {e}，尝试重启设备恢复')
         if self.recover():
             try:
                 return self._run_round(scen)
             except Exception as e:
-                log(f'{name} 恢复后重试仍失败: {e}，今天不再执行该场景')
+                last = f'{name} 恢复后重试仍失败: {e}'
         else:
-            log(f'{name} 恢复失败，今天不再执行该场景')
-        return False
+            last = f'{name} 恢复失败'
+        if fatal:
+            self._alert_and_exit(last)
+        raise ScenarioFailed(last)
+
+    def _reschedule(self, name: str) -> None:
+        """支线任务多次重试仍失败：延后 SIDE_TASK_RETRY_DELAY 秒重试
+        （参考 qq-farm-copilot 的失败重排期），先执行其他任务。"""
+        at = datetime.now() + timedelta(seconds=SIDE_TASK_RETRY_DELAY)
+        self.retry_after[name] = at
+        log(f'{name} 多次重试仍失败，延后到 {at:%H:%M} 重试，先执行其他任务')
+
+    def _wait_for_deferred(self, adventure_dead: bool) -> bool:
+        """主任务（学习/打工）当天结束后，若还有延后重试的支线任务，
+        睡到最近的重试点再继续调度（返回 True）；没有则返回 False（正常结束）。
+
+        不等待就直接退出会让延后重试永远不发生——调度器是长驻进程，
+        支线任务到点重试完（或再次失败重新排期）后才真正收工。
+        """
+        dead = {'冒险': adventure_dead, '踩踩': self.visit_dead, 'PK': self.pk_dead}
+        future = [at for name, at in self.retry_after.items()
+                  if at > datetime.now() and not dead.get(name, False)]
+        if not future:
+            return False
+        at = min(future)
+        log(f'学习/打工当天已结束，还有支线任务延后到 {at:%H:%M} 重试，调度器等待')
+        time.sleep(max(1.0, (at - datetime.now()).total_seconds()))
+        return True
+
+    def _alert_and_exit(self, reason: str) -> None:
+        """多次重试仍失败：发告警通知（附当前手机屏幕截图）后退出调度器。"""
+        log(f'{reason}，发送告警通知并退出调度器')
+        send_alert(reason, self._capture_alert_image())
+        raise SystemExit(1)
+
+    def _capture_alert_image(self) -> str | None:
+        """告警时截取当前手机屏幕存到 runs/，随通知附上；失败不阻塞告警。"""
+        try:
+            path = PROJECT_ROOT / 'runs' / f'alert_{datetime.now():%Y%m%d_%H%M%S}.png'
+            Image.fromarray(self.school.dev.screenshot()).save(path)
+            log(f'告警截图已保存: {path}')
+            return str(path)
+        except Exception as e:
+            log(f'告警截图失败: {e}')
+            return None
 
     def _run_round(self, scen) -> bool:
         result = scen.run(max_rounds=1)
@@ -278,30 +358,45 @@ class Runner:
                 # 冒险优先：到达调度时间且当天次数未满
                 if not adventure_dead and self.adventure_due():
                     log('到达冒险调度时间，优先处理冒险')
-                    if self.run_one(self.adventure, '冒险'):
-                        _, adv_done, _ = load_progress(ADVENTURE_PROGRESS_FILE, quiet=True)
-                        if adv_done >= self.adventure_times:
-                            log(f'今日冒险 {adv_done}/{self.adventure_times} 次已满，'
-                                f'明天 {self.adventure_start.strftime("%H:%M")} 后再冒险')
-                        continue
-                    adventure_dead = True
-                    log('冒险执行失败，今天不再冒险')
+                    try:
+                        done = self.run_one(self.adventure, '冒险', fatal=False)
+                    except ScenarioFailed:
+                        self._reschedule('冒险')  # 延后重试，继续判断后面的任务
+                    else:
+                        if done:
+                            _, adv_done, _ = load_progress(ADVENTURE_PROGRESS_FILE, quiet=True)
+                            if adv_done >= self.adventure_times:
+                                log(f'今日冒险 {adv_done}/{self.adventure_times} 次已满，'
+                                    f'明天 {self.adventure_start.strftime("%H:%M")} 后再冒险')
+                            continue
+                        adventure_dead = True
+                        log('冒险当天不可继续')
 
                 # 踩踩：到达调度时间且当天次数未满（等待间隙也会插空处理）
                 if not self.visit_dead and self.visit_due():
                     log('到达踩踩调度时间，处理踩踩')
-                    if self.run_one(self.visit, '踩踩'):
-                        continue
-                    self.visit_dead = True
-                    log('踩踩执行失败，今天不再踩')
+                    try:
+                        done = self.run_one(self.visit, '踩踩', fatal=False)
+                    except ScenarioFailed:
+                        self._reschedule('踩踩')
+                    else:
+                        if done:
+                            continue
+                        self.visit_dead = True
+                        log('踩踩当天不可继续')
 
                 # PK：到达调度时间且当天次数未满
                 if not self.pk_dead and self.pk_due():
                     log('到达 PK 调度时间，处理 PK')
-                    if self.run_one(self.pk, 'PK'):
-                        continue
-                    self.pk_dead = True
-                    log('PK 执行失败，今天不再 PK')
+                    try:
+                        done = self.run_one(self.pk, 'PK', fatal=False)
+                    except ScenarioFailed:
+                        self._reschedule('PK')
+                    else:
+                        if done:
+                            continue
+                        self.pk_dead = True
+                        log('PK 当天不可继续')
 
                 learned, worked, points = self.today_points()
                 over_limit = points > self.daily_point_limit
@@ -330,10 +425,14 @@ class Runner:
                 if over_limit:
                     # 点数超限时只打工，不回退到学习
                     if work_dead:
+                        if self._wait_for_deferred(adventure_dead):
+                            continue
                         log('打工当天已达上限，结束')
                         return
                     if not self.run_one(self.work, '打工'):
                         work_dead = True
+                        if self._wait_for_deferred(adventure_dead):
+                            continue
                         log('打工当天已达上限，结束')
                         return
                     continue
@@ -353,14 +452,16 @@ class Runner:
                     else:
                         school_dead = True
                 if school_dead and work_dead:
+                    if self._wait_for_deferred(adventure_dead):
+                        continue
                     log('学习和打工都已达当天上限，结束')
                     return
             except Exception as e:
                 # 兜底：循环体内未捕获的异常（u2 断开、设备卡死等）走重启恢复，
-                # 恢复失败（连续 RECOVERY_LIMIT 次）才放弃
+                # 恢复失败（连续 RECOVERY_LIMIT 次）发告警通知后退出
                 log(f'调度循环异常: {e}')
                 if not self.recover():
-                    raise
+                    self._alert_and_exit(f'调度循环异常且恢复失败: {e}')
 
 
 def run_test(name: str) -> None:

@@ -5,7 +5,9 @@
 2. 出门后若正在上课/工作/冒险/被雇佣中（school_in / work_in / adventure_in / employed_in）
    -> 等待结束并退出，等完的课程/工作计入对应场景的当天次数，
       回主页面结束本轮，由执行器重新判断限制条件后再决定下一步
-3. 每 1 秒点击一次 school，直到出现 school_start 按钮
+3. 每 1 秒点击一次 school，直到出现 school_start 按钮；
+   若出现毕业标志（"去找同学玩"——毕业时学校面板没有"去上课"），
+   点"关闭"再点两次 back 回主页面，重新进学校选择下一阶段课程
 4. 选课：先 OCR 上半屏识别学园阶段（初级/中级学园课程顺序固定为
    力量/智力/魅力；高级学园/进修学院固定为 魅力/力量/智力，
    每次上课前重新判断），再把第一框拖到第三框归位（两次），点击对应选择框
@@ -35,7 +37,7 @@ from src.progress import (
     log_history,
     save_progress,
 )
-from src.scenario import CLICK_INTERVAL, DeviceScenario
+from src.scenario import CLICK_INTERVAL, DeviceScenario, NAV_TIMEOUT
 
 CLASS_CHECK_INTERVAL = 15.0  # 上课中检查 school_end 的间隔（秒）
 
@@ -72,6 +74,9 @@ class SchoolScenario(DeviceScenario):
                 f'可选: {"/".join(ATTRIBUTE_COURSES)}'
             )
         self.times_per_day = self.cfg.school.times_per_day
+        # 毕业处理防循环标志：关闭毕业面板后重新进学校仍出现毕业标志时抛异常，
+        # 走重试链而不是无限"毕业->回主页面->再进"空转；成功看到 school_start 时重置
+        self._graduated_once = False
         log(f'属性点: {self.attribute}，每天学习次数: '
             f'{self.times_per_day if self.times_per_day else "不限"}')
 
@@ -82,15 +87,55 @@ class SchoolScenario(DeviceScenario):
 
         出门后若正在上课/工作/冒险/被雇佣中（上次中途停止），等待结束并退出、回主页面，
         返回等完的是哪种（'school' / 'work' / 'adventure' / 'employed'）——此时不再继续进学校，
-        由调用方/执行器重新判断限制条件后再决定下一步；正常情况返回 None。
+        由调用方/执行器重新判断限制条件后再决定下一步；
+        学校面板出现毕业标志（"去找同学玩"，没有"去上课"）时，点"关闭"再点两次 back
+        回主页面，返回 'graduated'，由 run() 重新进学校选择下一阶段课程；
+        正常情况返回 None。
         """
         self.leave_home()
         finished = self.wait_busy_end(CLASS_CHECK_INTERVAL)
         if finished:
             self.ensure_main_page()
             return finished
-        self.click_until_gone_or_see('school', 'school_start', '前往学校')
-        return None
+        clicked = False
+        for attempt in range(1, NAV_TIMEOUT + 1):
+            source = self.dev.hierarchy()
+            if self.see('school_start', None, source):
+                self._graduated_once = False
+                return None
+            if self.see('school_graduated', None, source):
+                if self._graduated_once:
+                    raise RuntimeError('毕业面板关闭后重新进学校仍出现毕业标志')
+                self._graduated_once = True
+                self._close_graduation()
+                return 'graduated'
+            school = self.see('school', None, source)
+            if school:
+                self.click(school[0], school[1])
+                clicked = True
+            elif clicked:
+                # 学校气泡点完消失但面板标志没识别到：已进入面板，继续选课
+                log('前往学校: school 已消失，进入选课')
+                return None
+            else:
+                log(f'前往学校: 未找到 school，等待重试 ({attempt}/{NAV_TIMEOUT})')
+            time.sleep(CLICK_INTERVAL)
+        raise RuntimeError(f'前往学校: 重试 {NAV_TIMEOUT} 次仍未出现 school_start')
+
+    def _close_graduation(self) -> None:
+        """毕业面板：点"关闭"按钮，再点两次 back 回主页面。"""
+        log('检测到毕业标志（去找同学玩），点关闭并回主页面重新进学校')
+        close = self.see('school_graduate_close')
+        if not close:
+            raise RuntimeError('毕业面板未找到"关闭"按钮')
+        self.click(close[0], close[1])
+        time.sleep(CLICK_INTERVAL)
+        for _ in range(2):
+            back = self.see('back')
+            if not back:
+                raise RuntimeError('毕业面板关闭后未找到 back 按钮')
+            self.click(back[0], back[1])
+            time.sleep(CLICK_INTERVAL)
 
     def select_course(self) -> None:
         """选课：先 OCR 上半屏识别学园阶段决定点哪个框，
@@ -174,6 +219,13 @@ class SchoolScenario(DeviceScenario):
             self.ensure_main_page()
             finished = self.goto_school()
             if finished:
+                if finished == 'graduated':
+                    # 毕业面板已关闭并回主页面：不计数，重新进学校选下一阶段课程；
+                    # 防循环由 goto_school 的 _graduated_once 保证
+                    if max_rounds and round_no >= max_rounds:
+                        return True
+                    log('毕业处理完成，重新进学校')
+                    continue
                 if finished == 'school':
                     # 出门时等完了一节上次未结束的课，计入当天次数
                     learned += 1

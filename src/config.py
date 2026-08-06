@@ -119,6 +119,14 @@ class PkConfig:
 
 
 @dataclass
+class NotifyConfig:
+    # 场景多次重试仍失败时的告警：Windows 桌面 Toast 通知
+    win_toast: bool = True
+    # OnePush 推送配置（YAML，支持多行），如 {provider: bark, key: xxx}；留空不推送
+    onepush_config: str = ""
+
+
+@dataclass
 class Config:
     adb: AdbConfig = field(default_factory=AdbConfig)
     school: SchoolConfig = field(default_factory=SchoolConfig)
@@ -128,6 +136,7 @@ class Config:
     care: CareConfig = field(default_factory=CareConfig)
     visit: VisitConfig = field(default_factory=VisitConfig)
     pk: PkConfig = field(default_factory=PkConfig)
+    notify: NotifyConfig = field(default_factory=NotifyConfig)
 
 
 def find_adb(configured_path: str = "") -> str:
@@ -171,4 +180,5 @@ def load_config(config_path: str | Path | None = None) -> Config:
         care=CareConfig(**raw.get("care", {})),
         visit=VisitConfig(**raw.get("visit", {})),
         pk=PkConfig(**raw.get("pk", {})),
+        notify=NotifyConfig(**raw.get("notify", {})),
     )
