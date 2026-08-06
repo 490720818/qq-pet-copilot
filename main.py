@@ -501,7 +501,8 @@ class MainWindow(QMainWindow):
         for key, (w, kind) in self._setting_widgets.items():
             value = settings_io.get_value(data, key)
             if value is None:
-                value = ''
+                # 旧 config.yaml 可能缺新增字段：回退默认值，避免 int('') 崩溃
+                value = settings_io.DEFAULTS.get(key, '')
             w.blockSignals(True)  # 加载时不触发自动保存
             if kind == 'devices':
                 self._fill_devices(w, str(value))
@@ -675,7 +676,10 @@ def main() -> None:
         # windowed 打包的程序 stdout 用本地编码(GBK)，强制改 UTF-8，否则 GUI 日志乱码
         for stream in (sys.stdout, sys.stderr):
             if stream is not None and hasattr(stream, 'reconfigure'):
-                stream.reconfigure(encoding='utf-8', errors='replace')
+                try:
+                    stream.reconfigure(encoding='utf-8', errors='replace')
+                except (OSError, ValueError):
+                    pass  # windowed 下 stdout/stderr 可能是无效流
         from scenarios.runner import Runner
 
         Runner().run()
