@@ -12,10 +12,9 @@
 分轮与状态检查：每局消耗 体力/清洁 各 5 点；一次 run() 最多 PK 16 局
 （配置次数 > 16 时本轮先做 16 局，剩余由执行器下一轮接着处理）。
 开始前检查：体力/清洁 都 >= 本轮计划局数 x 5 才开跑，
-不足则先喂食/洗澡补充到所需值（计划局数 x 5）（run_inline 插空模式不做检查，不离开等待页）。
+不足则先喂食/洗澡补充到所需值（计划局数 x 5）。
 
-两种运行方式（同 visit.py）：run() 独立运行回主页面；
-run_inline() 等待间隙插空运行，不导航、结束点 back 收起面板。
+运行方式（同 visit.py）：run() 独立运行回主页面。
 
 运行：python scenarios/pk.py            （Ctrl+C 停止）
       python scenarios/pk.py --times 5 （覆盖配置的每天 PK 次数，0 为不限）
@@ -227,28 +226,6 @@ class PKScenario(VisitScenario):
         self.close()  # 点 back 收掉好友相关页面，再确认回主页面
         self.ensure_main_page()
         return done > start_done
-
-    def run_inline(self, max_times: int | None = None) -> bool:
-        """等待间隙插空运行：不导航回主页面，结束点 back 收起好友面板。
-
-        当前页面没有好友入口时返回 False（不抛异常，不打扰原场景等待）。
-        插空模式不做体力/清洁检查（检查要回主页面展开状态面板，会离开等待页）。
-        """
-        if max_times is None:
-            max_times = self.times_per_day
-        if not self.see('visit_friends', source=self.dev.hierarchy()):
-            return False
-        today, done, history = load_progress(PROGRESS_FILE)
-        if max_times and done >= max_times:
-            return False
-        start_done = done
-        round_target = self._round_limit(max_times, done)
-        try:
-            done = self._pk_all(round_target, today, done, history)
-        finally:
-            self.close()
-        return done > start_done
-
 
 if __name__ == '__main__':
     import argparse

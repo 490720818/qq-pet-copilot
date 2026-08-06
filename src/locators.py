@@ -245,13 +245,9 @@ LOCATORS: dict[str, dict] = {
     'visit': {'xpath': ['//*[@content-desc="访问"]']},
     # 已踩标志：好友宠物页今天已踩过（踩踩按钮变成"已踩"），
     # 踩踩前检测到就跳过该好友直接切换下一个，不重复计数
-    'visit_stepped': {'xpath': ['//*[@content-desc="已踩"]']},
+    'visit_stepped': {'u2': [{'description': '已踩'}]},
     'visit_step': {
-        'xpath': ['//*[@resource-id="com.tencent.mobileqq:id/ckj"]'
-                  '/android.widget.FrameLayout[1]/android.widget.FrameLayout[1]'
-                  '/android.widget.FrameLayout[1]/android.widget.FrameLayout[1]'
-                  '/android.widget.FrameLayout[1]/android.widget.FrameLayout[3]'
-                  '/android.widget.FrameLayout[1]/android.widget.FrameLayout[2]'],
+        'u2': [{'description': '踩踩'}],
     },
     # 好友列表项（content-desc 形如 "好友 <昵称>"，注意带空格前缀，
     # 和入口按钮"好友"区分）；切换逻辑见 visit.py（累积名单、按顺序切换）

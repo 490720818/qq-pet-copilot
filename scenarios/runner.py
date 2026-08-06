@@ -12,8 +12,7 @@
 - 金币 < 阈值 -> 先打工（每次打工一轮后重新判断），赚够了自然切换去学习
 - 金币识别失败 -> 默认先打工
 - 首选场景当天已达上限 -> 换另一个；都达上限则结束
-- 踩踩/PK：到达各自 start_time 且当天次数未满时处理；
-  场景长等待（上课/打工/冒险进行中）的间隙也会插空处理（wait_hook，run_inline）；
+- 踩踩/PK：到达各自 start_time 且当天次数未满时，在主页面处理；
   PK 每轮最多 16 局（超出下一轮接着跑），开始前检查体力/清洁
   （每局各耗 5，不足则喂食/洗澡到 90）
 - 异常分级重试：场景执行抛异常 -> 先回主页面重进场景重试一次（页面状态
@@ -106,9 +105,6 @@ class Runner:
         self.retry_after: dict[str, datetime] = {}  # 支线任务名 -> 失败后的下次可执行时间
         self.visit_dead = False  # 踩踩今天不再可用（执行失败）
         self.pk_dead = False     # PK 今天不再可用（执行失败）
-        # 场景长等待（上课/打工进行中）的间隙插空处理踩踩/PK
-        for scen in (self.school, self.work, self.adventure, self.care):
-            scen.wait_hook = self._idle_wait_hook
         sched = self.school.cfg.schedule
         self.threshold = sched.coin_threshold
         self.school_factor = sched.school_factor
@@ -136,8 +132,7 @@ class Runner:
         self.pk_times = pk.times_per_day
         self.pk_start = parse_hhmm(pk.start_time, 'pk.start_time')
         log(f'踩踩: 每天 {self.visit_times} 次 @ {self.visit_start.strftime("%H:%M")}'
-            f'（等待间隙插空处理），'
-            f'PK: 每天 {self.pk_times} 次 @ {self.pk_start.strftime("%H:%M")}')
+            f'，PK: 每天 {self.pk_times} 次 @ {self.pk_start.strftime("%H:%M")}')
 
     def _deferred(self, name: str) -> bool:
         """支线任务是否处于失败延后期（未到重新排期时间）。"""
@@ -169,17 +164,6 @@ class Runner:
         if done >= self.pk_times:
             return False
         return datetime.now().time() >= self.pk_start
-
-    def _idle_wait_hook(self) -> None:
-        """场景长等待间隙的回调：到点且没满则插空处理踩踩/PK（scenario.wait_hook）。"""
-        if not self.visit_dead and self.visit_due():
-            log('等待间隙：插空处理踩踩')
-            if self.visit.run_inline():
-                log('等待间隙踩踩完成')
-        if not self.pk_dead and self.pk_due():
-            log('等待间隙：插空处理 PK')
-            if self.pk.run_inline():
-                log('等待间隙 PK 完成')
 
     def today_points(self) -> tuple[int, int, int]:
         """当天 (学习次数, 打工次数, 点数)。"""
@@ -377,7 +361,7 @@ class Runner:
                         adventure_dead = True
                         log('冒险当天不可继续')
 
-                # 踩踩：到达调度时间且当天次数未满（等待间隙也会插空处理）
+                # 踩踩：到达调度时间且当天次数未满
                 if not self.visit_dead and self.visit_due():
                     log('到达踩踩调度时间，处理踩踩')
                     try:

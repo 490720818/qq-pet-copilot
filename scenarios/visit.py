@@ -15,10 +15,8 @@
    重复直到踩满配置次数或没有更多好友
 5. 结束：关闭好友页面（点 back 直到 visit/visit_step 都消失）
 
-两种运行方式：
-- run()：独立运行，开头/结尾 ensure_main_page（执行器定时调度用）
-- run_inline()：别的场景等待间隙插空运行——不导航回主页面，
-  结束时点 back 收起好友面板，尽量回到进入前的页面（如上课等待页）
+运行方式：
+- run()：独立运行，开头/结尾 ensure_main_page（执行器在主页面调度用）
 
 运行：python scenarios/visit.py            （Ctrl+C 停止）
       python scenarios/visit.py --times 5 （覆盖配置的每天踩踩次数，0 为不限）
@@ -171,26 +169,6 @@ class VisitScenario(DeviceScenario):
         self.close()  # 先点 back 收掉好友相关页面，再确认回主页面
         self.ensure_main_page()
         return done > start_done
-
-    def run_inline(self, max_times: int | None = None) -> bool:
-        """等待间隙插空运行：不导航回主页面，结束点 back 收起好友面板。
-
-        当前页面没有好友入口时返回 False（不抛异常，不打扰原场景等待）。
-        """
-        if max_times is None:
-            max_times = self.times_per_day
-        if not self.see('visit_friends', source=self.dev.hierarchy()):
-            return False
-        today, done, history = load_progress(PROGRESS_FILE)
-        if max_times and done >= max_times:
-            return False
-        start_done = done
-        try:
-            done = self._visit_all(max_times, today, done, history)
-        finally:
-            self.close()
-        return done > start_done
-
 
 if __name__ == '__main__':
     import argparse

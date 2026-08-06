@@ -49,6 +49,7 @@ $PY build.py                     # PyInstaller 打包（onefile），--onedir �
 | `src/settings.py` | ruamel 往返读写 config.yaml（保留注释），GUI 设置页用 |
 | `src/notify.py` | 失败告警通知：Windows Toast（winotify）+ OnePush 多渠道推送（Bark/PushPlus/Server酱/SMTP/自定义 webhook 等），发送失败只记日志 |
 | `tools/dump_hierarchy.py` | 抓当前屏幕控件树 XML 存到 `xml/page.xml`（校准 locators 的 xpath/content-desc 用；`xml/` 已 git 排除） |
+| `tools/test_locator.py` | 测试 locator 的 xpath 在当前页面的命中稳定性（连设备连续多轮 dump，统计 live/snapshot 两种调用方式的命中率与 bounds 漂移，定位深层 xpath 时有时无/位置漂移问题） |
 
 ## 关键约定（改动时必须遵守）
 
@@ -93,9 +94,9 @@ $PY build.py                     # PyInstaller 打包（onefile），--onedir �
   `main.py` 的 `SETTING_FIELDS`（设置页表单）三处。
 - **GUI 线程纪律**：调度器是子进程（`scenarios/runner.py`，打包后为 `exe --runner`），
   日志经 stdout → 队列 → QTimer 上屏；worker 线程不直接碰 Qt 控件。
-- **踩踩/PK 插空**：场景基类有 `wait_hook`（`wait_end` / `wait_employed_back` 每个等待周期调用），
-  执行器把它设为踩踩/PK 回调：当前页面有"好友"入口时 `run_inline()` 插空执行，
-  结束点 back 收起面板回到原等待页，失败只记日志不打扰等待。
+- **踩踩/PK 调度**：执行器主循环在主页面按各自 `start_time` / 当天次数 / 失败延后期调度
+  （`visit_due()` / `pk_due()`），跑对应场景 `run()` 完整流程；不做长等待插空
+  （好友入口只在主页面，上课/打工/冒险等待页没有）。
 - 控制台中文乱码是 Windows GBK 终端显示问题，日志文件（UTF-8）里是正常的，不要当 bug 修。
 - 不再修改手机分辨率/密度（wm size/density）：定位分辨率无关，无此需求。
 
