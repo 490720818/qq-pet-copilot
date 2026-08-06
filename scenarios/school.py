@@ -12,7 +12,7 @@
    力量/智力/魅力；高级学园/进修学院固定为 魅力/力量/智力，
    每次上课前重新判断），再把第一框拖到第三框归位（两次），点击对应选择框
 5. 点击 school_start，直到页面出现 school_in 标志（进入上课）
-6. 上课中：每 30 秒检查一次，直到出现 school_end 标志
+6. 上课中：按配置的检查间隔（schedule.check_interval）检查，直到出现 school_end 标志
 7. 点击 quit 结束，当天已学次数 +1 并持久化到 runs/school_progress.json
    （含 history 字段按日期保存每天的学习次数，跨天自动归档）
 8. 一轮只上一节课就返回（供执行器逐节判断金币）；没有更多课程时结束
@@ -38,8 +38,6 @@ from src.progress import (
     save_progress,
 )
 from src.scenario import CLICK_INTERVAL, DeviceScenario, NAV_TIMEOUT
-
-CLASS_CHECK_INTERVAL = 15.0  # 上课中检查 school_end 的间隔（秒）
 
 # 属性点 -> 三栏选择框定位名（力量/智力/魅力 对应第一/二/三框；初级/中级学园用）
 ATTRIBUTE_COURSES = {
@@ -93,7 +91,7 @@ class SchoolScenario(DeviceScenario):
         正常情况返回 None。
         """
         self.leave_home()
-        finished = self.wait_busy_end(CLASS_CHECK_INTERVAL)
+        finished = self.wait_busy_end()
         if finished:
             self.ensure_main_page()
             return finished
@@ -183,7 +181,7 @@ class SchoolScenario(DeviceScenario):
 
     def wait_class_end(self) -> bool:
         """等待下课并点击 quit。返回 True 表示还能继续学。"""
-        self.wait_end('school_in', 'school_end', CLASS_CHECK_INTERVAL)
+        self.wait_end('school_in', 'school_end')
         again = self.see('school_start')
         if again:
             log('还可以继续学习')

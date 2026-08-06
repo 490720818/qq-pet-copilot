@@ -5,8 +5,10 @@
 2. 出门后若正在上课/工作/冒险/被雇佣中（school_in / work_in / adventure_in / employed_in）
    -> 等待结束并退出，回主页面结束本轮
 3. 点击 adventure 进入准备页面，直到出现 adventure_start 按钮
-4. 点击 adventure_start 开始冒险，直到出现 adventure_in 标志
-5. 冒险中每 15 秒检查一次，直到出现 adventure_end 标志
+4. 点击 adventure_start 开始冒险，直到出现 adventure_in 标志；
+   配置 adventure.skip_bad_weather 开启时，开始 5 秒后 OCR 冒险详情框：
+   含"天色不对"则点"召回"->"确认召回"，计入一次冒险，不再等冒险结束
+5. 冒险中按配置的检查间隔（schedule.check_interval）检查，直到出现 adventure_end 标志
 6. 退出并退回主页面，重新开始
 
 运行：python scenarios/adventure.py            （Ctrl+C 停止）
@@ -15,9 +17,12 @@
 
 import os
 import sys
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from src.locators import see_bounds
+from src.ocr import find_text, ocr_texts
 from src.progress import (
     ADVENTURE_PROGRESS_FILE,
     count_cross,
@@ -26,9 +31,11 @@ from src.progress import (
     log_history,
     save_progress,
 )
-from src.scenario import DeviceScenario
+from src.scenario import CLICK_INTERVAL, DeviceScenario, NAV_TIMEOUT
 
-ADVENTURE_CHECK_INTERVAL = 15.0  # 冒险中检查 adventure_end 的间隔（秒）
+BAD_WEATHER_WAIT = 5.0    # 开始冒险后等冒险详情框加载的时间（秒）
+BAD_WEATHER_KEYWORD = '天色不对'
+RECALL_KEYWORD = '召回'
 
 PROGRESS_FILE = ADVENTURE_PROGRESS_FILE
 
@@ -37,7 +44,9 @@ class AdventureScenario(DeviceScenario):
     def __init__(self, dev=None):
         super().__init__(dev)
         self.times_per_day = self.cfg.adventure.times_per_day
-        log(f'每天冒险次数: {self.times_per_day if self.times_per_day else "不冒险"}')
+        self.skip_bad_weather = self.cfg.adventure.skip_bad_weather
+        log(f'每天冒险次数: {self.times_per_day if self.times_per_day else "不冒险"}'
+            f'，跳过"天色不对": {"开" if self.skip_bad_weather else "关"}')
 
     # ---- 各阶段 ----
 
@@ -49,7 +58,7 @@ class AdventureScenario(DeviceScenario):
         由调用方/执行器重新判断后再决定下一步；正常情况返回 None。
         """
         self.leave_home()
-        finished = self.wait_busy_end(ADVENTURE_CHECK_INTERVAL)
+        finished = self.wait_busy_end()
         if finished:
             self.ensure_main_page()
             return finished
@@ -57,10 +66,47 @@ class AdventureScenario(DeviceScenario):
         return None
 
     def do_adventure(self) -> None:
-        """准备页面 -> 开始冒险 -> 等待 adventure_end -> 点 quit 退出。"""
+        """准备页面 -> 开始冒险 -> 等待 adventure_end -> 点 quit 退出。
+        开关开启时开始后先检测"天色不对"：命中则召回并确认，不再等冒险结束
+        （调用方照常计入一次冒险）。"""
         self.click_until_gone_or_see('adventure_start', 'adventure_in', '开始冒险')
+        if self.skip_bad_weather and self.recall_bad_weather():
+            return
         log('已开始冒险，等待结束...')
-        self.wait_end('adventure_in', 'adventure_end', ADVENTURE_CHECK_INTERVAL)
+        self.wait_end('adventure_in', 'adventure_end')
+
+    def recall_bad_weather(self) -> bool:
+        """开始冒险 BAD_WEATHER_WAIT 秒后 OCR 冒险详情框：
+        含"天色不对"则按区域内"召回"文字的坐标点击，再点"确认召回"，返回 True；
+        不含返回 False（照常冒险）。"""
+        time.sleep(BAD_WEATHER_WAIT)
+        bounds = see_bounds(self.dev, 'adventure_detail')
+        if not bounds:
+            log('未定位到冒险详情框，跳过天色检测')
+            return False
+        x1, y1, x2, y2 = bounds
+        screen = self.screen()
+        results = ocr_texts(screen[y1:y2, x1:x2])
+        log('冒险详情框 OCR: '
+            + (', '.join(f'{t!r}@({x},{y})' for t, x, y, _ in results) or '无'))
+        if not any(BAD_WEATHER_KEYWORD in text for text, *_ in results):
+            return False
+        # OCR 坐标是裁剪图内的，点击要加回区域左上角偏移
+        recall = find_text(results, RECALL_KEYWORD)
+        if not recall:
+            raise RuntimeError('检测到"天色不对"但未找到召回按钮')
+        log(f'检测到"天色不对"，点击召回 ({x1 + recall[0]}, {y1 + recall[1]})')
+        self.click(x1 + recall[0], y1 + recall[1])
+        time.sleep(CLICK_INTERVAL)
+        for attempt in range(1, NAV_TIMEOUT + 1):
+            confirm = self.see('adventure_recall_confirm')
+            if confirm:
+                self.click(confirm[0], confirm[1])
+                time.sleep(CLICK_INTERVAL)
+                return True
+            log(f'未找到确认召回按钮，等待重试 ({attempt}/{NAV_TIMEOUT})')
+            time.sleep(CLICK_INTERVAL)
+        raise RuntimeError('点击召回后未出现"确认召回"按钮')
 
     def run(self, max_times: int | None = None, max_rounds: int = 0) -> bool:
         """max_times: 当天冒险次数上限，0 表示不限；None 表示用配置值。

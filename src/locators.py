@@ -204,6 +204,15 @@ LOCATORS: dict[str, dict] = {
     'adventure_start': {'xpath': ['//*[@content-desc="开始"]/android.widget.FrameLayout[1]']},
     'adventure_in': {'ocr': ['正在冒险', '冒险中']},
     'adventure_end': {'xpath': ['//*[@content-desc="分享"]/android.widget.FrameLayout[1]']},
+    # 冒险详情框区域：开始冒险后检测"天色不对"用（see_bounds 取范围裁剪 OCR）；
+    # 命中后按区域内"召回"文字的坐标点击，再点"确认召回"，计入一次冒险
+    'adventure_detail': {
+        'xpath': ['//*[@resource-id="com.tencent.mobileqq:id/ckj"]'
+                  '/android.widget.FrameLayout[1]/android.widget.FrameLayout[1]'
+                  '/android.widget.FrameLayout[1]/android.widget.FrameLayout[1]'
+                  '/android.widget.FrameLayout[1]/android.widget.FrameLayout[4]'],
+    },
+    'adventure_recall_confirm': {'xpath': ['//*[@content-desc="确认召回"]']},
 
     # ---- 被雇佣 ----
     # 整屏 OCR 关键词检测；不能加"雇佣规则"——它是按钮，

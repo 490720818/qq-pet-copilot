@@ -24,8 +24,10 @@ DEFAULTS = {
     'schedule.school_factor': 20,
     'schedule.work_factor': 45,
     'schedule.daily_point_limit': 480,
+    'schedule.check_interval': 15,
     'adventure.times_per_day': 1,
     'adventure.start_time': '08:00',
+    'adventure.skip_bad_weather': False,
     'visit.times_per_day': 10,
     'visit.start_time': '00:01',
     'pk.times_per_day': 15,
@@ -56,7 +58,13 @@ def validate_field(key: str, value):
         return (True, value) if value in ('ocr检测', '一键护理') else (False, default)
     if key in ('care.energy_threshold', 'care.clean_threshold'):
         return (True, value) if 0 <= int(value) <= 100 else (False, default)
-    if key == 'notify.win_toast':
+    if key == 'schedule.check_interval':
+        # 检查间隔至少 1 秒（0 会变成无间隔死循环）
+        try:
+            return (True, value) if int(value) >= 1 else (False, default)
+        except (TypeError, ValueError):
+            return False, default
+    if key == 'notify.win_toast' or key == 'adventure.skip_bad_weather':
         return (True, value) if isinstance(value, bool) else (False, default)
     if key == 'notify.onepush_config':
         # OnePush 推送配置（YAML，支持多行）：留空，或能解析出含 provider 的字典

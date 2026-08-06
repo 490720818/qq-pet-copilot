@@ -13,7 +13,7 @@
    - 没有 -> 从 (365, 1200) 拖到 (365, 700) 边拖边找，找到点最上方一个
    - 拖动达到配置上限仍没有 -> 点击 work_employ_close 关闭
 7. 点击 work_start 开始工作，直到出现 work_in
-8. 工作中每 30 秒检查一次，直到出现 work_end，点击 quit 退出
+8. 工作中按配置的检查间隔（schedule.check_interval）检查，直到出现 work_end，点击 quit 退出
 9. 当天次数 +1 并持久化到 runs/work_progress.json（含 history 历史记录），
    回主页面重新开始
 
@@ -37,8 +37,6 @@ from src.progress import (
     save_progress,
 )
 from src.scenario import CLICK_INTERVAL, DeviceScenario, NAV_TIMEOUT
-
-WORK_CHECK_INTERVAL = 15.0  # 工作中检查 work_end 的间隔（秒）
 
 # 以下坐标均为 720x1280 参考坐标，运行时按当前分辨率自动换算
 # 雇佣界面找不到按钮时的下滑拖动：从 (365, 1200) 拖到 (365, 700)
@@ -68,7 +66,7 @@ class WorkScenario(DeviceScenario):
         由调用方/执行器重新判断限制条件后再决定下一步；正常情况返回 None。
         """
         self.leave_home()
-        finished = self.wait_busy_end(WORK_CHECK_INTERVAL)
+        finished = self.wait_busy_end()
         if finished:
             self.ensure_main_page()
             return finished
@@ -143,7 +141,7 @@ class WorkScenario(DeviceScenario):
 
     def wait_work_end(self) -> None:
         """等待 work_end 出现并点击 quit 退出。"""
-        self.wait_end('work_in', 'work_end', WORK_CHECK_INTERVAL)
+        self.wait_end('work_in', 'work_end')
 
     def run(self, max_times: int | None = None, max_rounds: int = 0) -> bool:
         """max_times: 当天打工次数上限，0 表示不限；None 表示用配置值。

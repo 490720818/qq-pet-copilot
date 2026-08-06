@@ -16,6 +16,7 @@ CLICK_INTERVAL = 1.0       # 连续点击/重试间隔（秒）
 NAV_TIMEOUT = 10           # 单个阶段最多重试次数，超过认为卡死抛异常
 MAIN_PAGE_ATTEMPTS = 10    # 回主页面最多尝试次数（识别 main_sign / 点 back）
 BUSY_GATE_ATTEMPTS = 2     # 出门后进行中状态的检测次数（活动面板加载有几秒延迟）
+WAIT_LOG_INTERVAL = 300.0  # 长等待期间的心跳日志间隔（秒），避免每轮检测刷屏
 
 
 class DeviceScenario:
@@ -31,6 +32,12 @@ class DeviceScenario:
 
     def screen(self):
         return self.dev.screenshot()
+
+    @property
+    def check_interval(self) -> float:
+        """进行中状态（上课/打工/冒险/被雇佣）的统一检查间隔（秒），
+        配置 schedule.check_interval。"""
+        return float(self.cfg.schedule.check_interval)
 
     def see(self, name: str, screen=None, source=None):
         """当前屏幕是否能看到名为 name 的元素，返回 (x, y, score) 或 None。
@@ -84,7 +91,8 @@ class DeviceScenario:
                 log(f'{stage}: {click_name} 已消失，进入下一阶段')
                 return
             else:
-                log(f'{stage}: 未找到 {click_name}，等待重试 ({attempt}/{NAV_TIMEOUT})')
+                if attempt == 1 or attempt == NAV_TIMEOUT:
+                    log(f'{stage}: 未找到 {click_name}，等待重试 ({attempt}/{NAV_TIMEOUT})')
             time.sleep(CLICK_INTERVAL)
         raise RuntimeError(f'{stage}: 重试 {NAV_TIMEOUT} 次仍未出现 {wait_name}')
 
@@ -106,7 +114,8 @@ class DeviceScenario:
                 log(f'未识别到主页面，点击 back ({back[0]}, {back[1]})')
                 self.click(back[0], back[1])
                 continue
-            log(f'未识别到主页面也找不到 back，等待重试 ({attempt}/{MAIN_PAGE_ATTEMPTS})')
+            if attempt == 1 or attempt == MAIN_PAGE_ATTEMPTS:
+                log(f'未识别到主页面也找不到 back，等待重试 ({attempt}/{MAIN_PAGE_ATTEMPTS})')
             time.sleep(CLICK_INTERVAL)
         raise RuntimeError('无法回到主页面')
 
@@ -131,8 +140,12 @@ class DeviceScenario:
             log('未定位到"出门"按钮')
         time.sleep(CLICK_INTERVAL)
 
-    def wait_end(self, in_name: str, end_name: str, check_interval: float) -> None:
-        """等待 end_name 出现并点 quit 退出，期间点 in_name 画面防设备休眠。"""
+    def wait_end(self, in_name: str, end_name: str, check_interval: float | None = None) -> None:
+        """等待 end_name 出现并点 quit 退出，期间点 in_name 画面防设备休眠。
+        check_interval=None 时用统一配置 schedule.check_interval。"""
+        if check_interval is None:
+            check_interval = self.check_interval
+        last_log_at = 0.0
         while True:
             screen, source = self.snapshot()
             hit = self.see(end_name, screen, source)
@@ -141,8 +154,11 @@ class DeviceScenario:
                 break
             cur = self.see(in_name, screen, source)
             if cur:
-                self.click(cur[0], cur[1])
-            log('仍在进行中...')
+                self.dev.click(cur[0], cur[1])  # 防休眠点击不记日志
+            now = time.monotonic()
+            if now - last_log_at >= WAIT_LOG_INTERVAL:
+                log('仍在进行中...')
+                last_log_at = now
             self._run_wait_hook()
             time.sleep(check_interval)
         quit_hit = self.see('quit')
@@ -166,10 +182,14 @@ class DeviceScenario:
         返回 (x, y, score) 或 None。"""
         return parse_employed_ratio(ocr_screen(screen))
 
-    def wait_employed_back(self, check_interval: float = 15.0) -> None:
-        """被雇佣中：每 15 秒识别一次，出现召回标志（分成比例终态）就点
+    def wait_employed_back(self, check_interval: float | None = None) -> None:
+        """被雇佣中：按检查间隔识别一次，出现召回标志（分成比例终态）就点
         employed_come_back 提前召回，再点 employed_come_back_confirm 确认；
-        确认后等待 employed_end 出现，点 quit 退出并计入被雇佣次数。"""
+        确认后等待 employed_end 出现，点 quit 退出并计入被雇佣次数。
+        check_interval=None 时用统一配置 schedule.check_interval。"""
+        if check_interval is None:
+            check_interval = self.check_interval
+        last_log_at = 0.0
         while True:
             screen, source = self.snapshot()
             sign = self.see_employed_sign(screen)
@@ -188,7 +208,8 @@ class DeviceScenario:
                     if back:
                         self.click(back[0], back[1])
                     else:
-                        log(f'未找到召回/确认按钮，重试 ({attempt}/{NAV_TIMEOUT})')
+                        if attempt == 1 or attempt == NAV_TIMEOUT:
+                            log(f'未找到召回/确认按钮，重试 ({attempt}/{NAV_TIMEOUT})')
                     time.sleep(CLICK_INTERVAL)
                 else:
                     raise RuntimeError('出现召回标志但召回/确认按钮未找到')
@@ -199,7 +220,8 @@ class DeviceScenario:
                     if end:
                         log(f'检测到被雇佣结束标志 employed_end (score={end[2]:.2f})')
                         break
-                    log(f'等待 employed_end 出现 ({attempt}/{NAV_TIMEOUT})')
+                    if attempt == 1 or attempt == NAV_TIMEOUT:
+                        log(f'等待 employed_end 出现 ({attempt}/{NAV_TIMEOUT})')
                     time.sleep(CLICK_INTERVAL)
                 else:
                     raise RuntimeError('召回确认后未出现 employed_end')
@@ -214,17 +236,23 @@ class DeviceScenario:
             # 点击一次被雇佣画面防止设备休眠
             cur = self.see('employed_in', screen, source)
             if cur:
-                self.click(cur[0], cur[1])
-            log('仍在被雇佣中...')
+                self.dev.click(cur[0], cur[1])  # 防休眠点击不记日志
+            now = time.monotonic()
+            if now - last_log_at >= WAIT_LOG_INTERVAL:
+                log('仍在被雇佣中...')
+                last_log_at = now
             self._run_wait_hook()
             time.sleep(check_interval)
 
-    def wait_busy_end(self, check_interval: float = 30.0) -> str | None:
+    def wait_busy_end(self, check_interval: float | None = None) -> str | None:
         """出门后检测是否正在上课/工作/冒险/被雇佣中，是则等待结束并退出。
 
         返回 'school' / 'work' / 'adventure' / 'employed' / None
         （等完的是哪种，用于计入对应计数）。
+        check_interval=None 时用统一配置 schedule.check_interval。
         """
+        if check_interval is None:
+            check_interval = self.check_interval
         # 整屏截图匹配关键词判断进行中状态（同一屏幕四次 see 共享一次 OCR，
         # 见 locators._ocr_texts_cached）。出门后活动面板有几秒加载延迟，
         # 未匹配到任何状态时重试几次再下结论。

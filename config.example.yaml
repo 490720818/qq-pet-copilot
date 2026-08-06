@@ -29,6 +29,8 @@ schedule:
   school_factor: 20
   work_factor: 45
   daily_point_limit: 480
+  # 进行中状态（上课/打工/冒险/被雇佣）的统一检查间隔（秒）
+  check_interval: 15
 
 adventure:
   # 每天冒险次数，0 为不冒险
@@ -36,6 +38,9 @@ adventure:
   # 冒险调度时间（HH:MM）：当天到达该时间后执行器优先处理冒险，
   # 当天次数用完后自动等第二天的该时间再冒险
   start_time: "08:00"
+  # 开始冒险 6 秒后检测冒险详情框：出现"天色不对"就点召回 -> 确认召回，
+  # 计入一次冒险完成；false 则照常等冒险结束
+  skip_bad_weather: false
 
 care:
   # 护理方式：ocr检测（读宠物状态，低于阈值手动喂食/洗澡）/

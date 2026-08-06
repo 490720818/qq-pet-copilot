@@ -307,9 +307,13 @@ class Runner:
         self.school_factor = sched.school_factor
         self.work_factor = sched.work_factor
         self.daily_point_limit = sched.daily_point_limit
+        # 统一检查间隔也要同步到各场景实例，设置页热修改后下一轮即生效
+        for scen in (self.school, self.work, self.adventure, self.care, self.visit, self.pk):
+            scen.cfg.schedule.check_interval = sched.check_interval
 
         adv = cfg.adventure
         self.adventure_times = adv.times_per_day
+        self.adventure.skip_bad_weather = adv.skip_bad_weather
         start_time = adv.start_time
         if isinstance(start_time, int):
             # YAML 1.1 会把不带引号的 9:00 解析成分钟数 540，转回 HH:MM

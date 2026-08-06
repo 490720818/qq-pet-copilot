@@ -84,6 +84,8 @@ class ScheduleConfig:
     school_factor: int = 20
     work_factor: int = 45
     daily_point_limit: int = 480
+    # 进行中状态（上课/打工/冒险/被雇佣）的统一检查间隔（秒）
+    check_interval: int = 15
 
 
 @dataclass
@@ -92,6 +94,8 @@ class AdventureConfig:
     times_per_day: int = 1
     # 冒险调度时间（HH:MM），到达后优先冒险
     start_time: str = "08:00"
+    # 开始冒险后检测冒险详情框：出现"天色不对"就点召回->确认召回，计入一次冒险
+    skip_bad_weather: bool = False
 
 
 @dataclass
