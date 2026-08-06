@@ -124,6 +124,17 @@ LOCATORS: dict[str, dict] = {
     },
     'quit': {'xpath': ['//*[@content-desc="返回"]/android.widget.FrameLayout[1]/android.widget.ImageView[1]','//*[@content-desc="返回"]/android.widget.ImageView[1]']},
 
+    # 宠物状态面板：进行中状态文字（如"正在打工"）所在区域（FL[4]/FL[5] 同位置）。
+    # xpath 命中后取元素顶部 8%×总屏幕高度 的一小块 OCR（见 scenario._busy_ocr_region），
+    # 避免整屏 OCR 慢、小字易漏；不 cache——面板大小可能随状态实时变化，
+    # 每次实时查 xpath 取最新 bounds
+    'status_banner': {
+        # 深路径 ckj/FL[1]/.../FL[5] 对 u2 xpath 引擎不稳定（时有时无），
+        # 实测 ckj//FrameLayout[@index="5"] 稳定唯一命中宠物状态面板
+        'xpath': ['//*[@resource-id="com.tencent.mobileqq:id/ckj"]'
+                  '//android.widget.FrameLayout[@index="5"]'],
+    },
+
     # ---- 学习/工作选择框（选课、选工作共用的三栏列表） ----
     # 三条 xpath 共用 SELECT_BOX_XPATH 前缀，仅最后一段序号不同；归位拖动和点选都用它们。
     # 注意：xpath 只匹配学习页（RecyclerView 结构）；打工页卡片是 H5 匿名 node，
@@ -156,7 +167,7 @@ LOCATORS: dict[str, dict] = {
     'town': {'xpath': ['//*[@content-desc="map_blank"]/android.widget.FrameLayout[4]/android.widget.FrameLayout[1]']
                ,'ocr': ['职业小镇']},
     'work_start': {'xpath': ['//*[@content-desc="去打工"]/android.widget.FrameLayout[1]']},
-    'work_in': {'ocr': ['正在工作']},
+    'work_in': {'ocr': ['正在打工']},
     'work_end': {'xpath': ['//*[@content-desc="分享"]/android.widget.FrameLayout[1]']},
     'work_outworker': {
         'cache': True,
@@ -266,6 +277,8 @@ LOCATORS: dict[str, dict] = {
     # 一键护理按钮（content-desc 以 one_click_care 开头，后缀不固定，前缀匹配）；
     # 护理方式配置为"一键护理"时，照顾流程只点它——不读状态、不手动喂食/洗澡
     'one_click_care': {'xpath': ['//*[starts-with(@content-desc, "one_click_care")]']},
+    # 一键护理后的支付确认按钮：点击护理按钮后若弹出"支付并护理"，必须点掉才完成护理
+    'one_click_pay': {'xpath': ['//*[@content-desc="支付并护理"]']},
     'feed_10': {
         'xpath': ['//androidx.recyclerview.widget.RecyclerView'
                   '/android.widget.FrameLayout[1]/android.widget.FrameLayout[1]'],

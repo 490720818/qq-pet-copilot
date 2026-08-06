@@ -4,10 +4,10 @@ from __future__ import annotations
 import time
 
 from .config import find_adb, load_config
-from .locators import ocr_screen
+from .locators import LOCATORS, OCR_MIN_SCORE, see_bounds
 from .locators import see as locate
 from .locators import see_all as locate_all
-from .ocr import parse_employed_ratio
+from .ocr import find_text, ocr_texts, parse_employed_ratio
 from .progress import count_cross, log
 from .u2dev import U2Device
 
@@ -16,6 +16,7 @@ CLICK_INTERVAL = 1.0       # 连续点击/重试间隔（秒）
 NAV_TIMEOUT = 10           # 单个阶段最多重试次数，超过认为卡死抛异常
 MAIN_PAGE_ATTEMPTS = 10    # 回主页面最多尝试次数（识别 main_sign / 点 back）
 BUSY_GATE_ATTEMPTS = 2     # 出门后进行中状态的检测次数（活动面板加载有几秒延迟）
+BUSY_BANNER_TOP_RATIO = 0.08  # 进行中状态 OCR 裁剪：状态面板顶部取 8%×总屏幕高度
 WAIT_LOG_INTERVAL = 300.0  # 长等待期间的心跳日志间隔（秒），避免每轮检测刷屏
 
 
@@ -244,36 +245,100 @@ class DeviceScenario:
             self._run_wait_hook()
             time.sleep(check_interval)
 
-    def wait_busy_end(self, check_interval: float | None = None) -> str | None:
+    def wait_busy_end(self, check_interval: float | None = None,
+                      attempts: int = BUSY_GATE_ATTEMPTS) -> str | None:
         """出门后检测是否正在上课/工作/冒险/被雇佣中，是则等待结束并退出。
 
         返回 'school' / 'work' / 'adventure' / 'employed' / None
         （等完的是哪种，用于计入对应计数）。
-        check_interval=None 时用统一配置 schedule.check_interval。
+        check_interval=None 时用统一配置 schedule.check_interval；
+        attempts: 最多检测次数，默认 BUSY_GATE_ATTEMPTS。
         """
+        time.sleep(0.5)
         if check_interval is None:
             check_interval = self.check_interval
-        # 整屏截图匹配关键词判断进行中状态（同一屏幕四次 see 共享一次 OCR，
-        # 见 locators._ocr_texts_cached）。出门后活动面板有几秒加载延迟，
-        # 未匹配到任何状态时重试几次再下结论。
-        for attempt in range(1, BUSY_GATE_ATTEMPTS + 1):
-            screen = self.screen()
-            if self.see('school_in', screen):
+        # 只在状态面板裁剪区（status_banner xpath 内、取元素顶部 8%×总屏幕高度）OCR
+        # 匹配关键词判断进行中状态；面板没定位到就跳过检测（不截图不 OCR）。
+        # 出门后活动面板有几秒加载延迟，未定位到或未匹配时重试几次再下结论。
+        for attempt in range(1, attempts + 1):
+            region = self._busy_ocr_region()
+            if region is None:
+                # 没定位到宠物状态面板：直接跳过本次检测
+                if attempt == 1 or attempt == attempts:
+                    log(f'未定位到宠物状态面板，跳过进行中状态检测 ({attempt}/{attempts})')
+                if attempt < attempts:
+                    time.sleep(CLICK_INTERVAL)
+                continue
+            state = self._match_busy_state(region)
+            if state == 'school':
                 log('检测到正在上课，等待这节课结束...')
                 self.wait_end('school_in', 'school_end', check_interval)
                 return 'school'
-            if self.see('work_in', screen):
-                log('检测到正在工作，等待这次工作结束...')
+            if state == 'work':
+                log('检测到正在打工，等待这次工作结束...')
                 self.wait_end('work_in', 'work_end', check_interval)
                 return 'work'
-            if self.see('adventure_in', screen):
+            if state == 'adventure':
                 log('检测到正在冒险，等待这次冒险结束...')
                 self.wait_end('adventure_in', 'adventure_end', check_interval)
                 return 'adventure'
-            if self.see('employed_in', screen):
+            if state == 'employed':
                 log('检测到被雇佣中，等待召回...')
                 self.wait_employed_back()
                 return 'employed'
-            if attempt < BUSY_GATE_ATTEMPTS:
+            if attempt < attempts:
                 time.sleep(CLICK_INTERVAL)
+        return None
+
+    def _busy_ocr_region(self) -> tuple[int, int, int, int] | None:
+        """进行中状态 OCR 的裁剪区域：status_banner（宠物状态面板）顶部 8% 屏幕高度。
+
+        top = 8% × 总屏幕高度（如 1080x2160 → 172px），从元素顶部往下取这么高；
+        不缓存 bounds——面板大小可能随状态实时变化，每次实时查 xpath 取最新范围；
+        元素没定位到返回 None（不检测）。
+        """
+        bounds = see_bounds(self.dev, 'status_banner')
+        if not bounds:
+            return None
+        x1, y1, x2, y2 = bounds
+        w, h = self.dev.window_size()
+        top = int(h * BUSY_BANNER_TOP_RATIO)
+        x1 = max(x1, 0)
+        x2 = min(x2, w)
+        y2 = min(y2, y1 + top)
+        if x2 <= x1 or y2 <= y1:
+            return None
+        return (x1, y1, x2, y2)
+
+    def _match_busy_state(self, region: tuple[int, int, int, int]) -> str | None:
+        """对宠物状态面板顶部裁剪区截图并 OCR，匹配进行中状态。
+
+        返回 'school' / 'work' / 'adventure' / 'employed' / None；
+        只在传入的裁剪区 OCR，不做整屏兜底；命中阈值沿用 OCR_MIN_SCORE。
+        """
+        x1, y1, x2, y2 = region
+        screen = self.screen()
+        results = ocr_texts(screen[y1:y2, x1:x2])
+        for state, name in (('school', 'school_in'), ('work', 'work_in'),
+                            ('adventure', 'adventure_in'), ('employed', 'employed_in')):
+            for target in LOCATORS[name]['ocr']:
+                hit = find_text(results, target)
+                if hit and hit[2] >= OCR_MIN_SCORE:
+                    return state
+        return None
+
+    def _recheck_busy_after_nav(self, stage: str) -> str | None:
+        """出门后入口导航失败（RuntimeError）时重新检测进行中状态。
+
+        出门后活动面板加载有几秒延迟，wait_busy_end 首轮检测窗口可能错过
+        正在上课/打工/冒险/被雇佣的状态——此时点活动入口不会进入准备页，
+        导航必然超时（见各场景 goto_*）。导航失败说明屏幕早已稳定，重新
+        检测一次：命中则等待结束并回主页面，返回等完的类型（由调用方计数）；
+        未命中返回 None，由调用方原样抛出导航异常。
+        """
+        log(f'{stage}: 导航失败，重新检测进行中状态...')
+        finished = self.wait_busy_end()
+        if finished:
+            self.ensure_main_page()
+            return finished
         return None

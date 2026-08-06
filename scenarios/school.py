@@ -95,30 +95,38 @@ class SchoolScenario(DeviceScenario):
         if finished:
             self.ensure_main_page()
             return finished
-        clicked = False
-        for attempt in range(1, NAV_TIMEOUT + 1):
-            source = self.dev.hierarchy()
-            if self.see('school_start', None, source):
-                self._graduated_once = False
-                return None
-            if self.see('school_graduated', None, source):
-                if self._graduated_once:
-                    raise RuntimeError('毕业面板关闭后重新进学校仍出现毕业标志')
-                self._graduated_once = True
-                self._close_graduation()
-                return 'graduated'
-            school = self.see('school', None, source)
-            if school:
-                self.click(school[0], school[1])
-                clicked = True
-            elif clicked:
-                # 学校气泡点完消失但面板标志没识别到：已进入面板，继续选课
-                log('前往学校: school 已消失，进入选课')
-                return None
-            else:
-                log(f'前往学校: 未找到 school，等待重试 ({attempt}/{NAV_TIMEOUT})')
-            time.sleep(CLICK_INTERVAL)
-        raise RuntimeError(f'前往学校: 重试 {NAV_TIMEOUT} 次仍未出现 school_start')
+        try:
+            clicked = False
+            for attempt in range(1, NAV_TIMEOUT + 1):
+                source = self.dev.hierarchy()
+                if self.see('school_start', None, source):
+                    self._graduated_once = False
+                    return None
+                if self.see('school_graduated', None, source):
+                    if self._graduated_once:
+                        raise RuntimeError('毕业面板关闭后重新进学校仍出现毕业标志')
+                    self._graduated_once = True
+                    self._close_graduation()
+                    return 'graduated'
+                school = self.see('school', None, source)
+                if school:
+                    self.click(school[0], school[1])
+                    clicked = True
+                elif clicked:
+                    # 学校气泡点完消失但面板标志没识别到：已进入面板，继续选课
+                    log('前往学校: school 已消失，进入选课')
+                    return None
+                else:
+                    log(f'前往学校: 未找到 school，等待重试 ({attempt}/{NAV_TIMEOUT})')
+                time.sleep(CLICK_INTERVAL)
+            raise RuntimeError(f'前往学校: 重试 {NAV_TIMEOUT} 次仍未出现 school_start')
+        except RuntimeError:
+            # 正在打工/冒险等时点学校入口不会进入选课面板，导航必然超时；
+            # 屏幕早已稳定，重新检测一次进行中状态再下结论
+            finished = self._recheck_busy_after_nav('前往学校')
+            if finished:
+                return finished
+            raise
 
     def _close_graduation(self) -> None:
         """毕业面板：点"关闭"按钮，再点两次 back 回主页面。"""

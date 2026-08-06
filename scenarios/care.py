@@ -43,6 +43,7 @@ FEED_RESULT_WAIT = 1.5  # 喂食后等数值刷新的时间（秒）
 MAX_FEED_ATTEMPTS = 10    # 喂食最多次数，超过认为异常
 MAX_SHOWER_ATTEMPTS = 25  # 搓洗最多回合数，超过认为异常
 STATUS_READ_RETRIES = 4   # 状态面板数值是异步加载的，刚展开可能只有账号/宠物名，重试读
+ONE_CLICK_PAY_RETRIES = 2 # 点击一键护理后确认"支付并护理"弹窗的重试次数（每次等 1 秒）
 
 STATUS_NAMES = ('体力', '清洁', '心情')
 # 护理方式（care.method 配置）：ocr检测 = 读状态手动喂食/洗澡；一键护理 = 直接点主页面一键护理按钮
@@ -336,6 +337,7 @@ class CareScenario(DeviceScenario):
         """一键护理：主页面找 one_click_care* 按钮（content-desc 前缀匹配），
         有就点并结束照顾流程；不读状态、不手动喂食/洗澡。
         按钮只在体力/清洁不足时出现：没有按钮视为状态正常，跳过护理。
+        点击后若有"支付并护理"确认弹窗则一并点掉。
         点完后体力/清洁/心情/饼干/香皂的缓存值不再可信，从状态缓存清空（GUI 显示回 -）。
         返回是否点击了。"""
         hit = self.see('one_click_care')
@@ -345,7 +347,16 @@ class CareScenario(DeviceScenario):
             return False
         log('使用一键护理')
         self.click(hit[0], hit[1])
-        time.sleep(CLICK_INTERVAL)
+        # 确认弹窗可能比护理按钮点击晚一拍出现，短等几次再判断
+        for attempt in range(1, ONE_CLICK_PAY_RETRIES + 1):
+            pay = self.see('one_click_pay')
+            if pay:
+                log('检测到"支付并护理"，点击确认')
+                self.click(pay[0], pay[1])
+                time.sleep(CLICK_INTERVAL)
+                break
+            if attempt < ONE_CLICK_PAY_RETRIES:
+                time.sleep(CLICK_INTERVAL)
         clear_status_fields('energy', 'clean', 'mood', 'biscuit', 'soap')
         return True
 

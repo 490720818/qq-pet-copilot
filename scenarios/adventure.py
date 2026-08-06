@@ -62,7 +62,15 @@ class AdventureScenario(DeviceScenario):
         if finished:
             self.ensure_main_page()
             return finished
-        self.click_until_gone_or_see('adventure', 'adventure_start', '前往冒险')
+        try:
+            self.click_until_gone_or_see('adventure', 'adventure_start', '前往冒险')
+        except RuntimeError:
+            # 正在打工/上课等时点冒险入口不会进入准备页，导航必然超时；
+            # 屏幕早已稳定，重新检测一次进行中状态再下结论
+            finished = self._recheck_busy_after_nav('前往冒险')
+            if finished:
+                return finished
+            raise
         return None
 
     def do_adventure(self) -> None:

@@ -70,15 +70,23 @@ class WorkScenario(DeviceScenario):
         if finished:
             self.ensure_main_page()
             return finished
-        for attempt in range(1, NAV_TIMEOUT + 1):
-            town = self.see('town')
-            if town:
-                self.click(town[0], town[1])
+        try:
+            for attempt in range(1, NAV_TIMEOUT + 1):
+                town = self.see('town')
+                if town:
+                    self.click(town[0], town[1])
+                    time.sleep(CLICK_INTERVAL)
+                    return None
+                log(f'未找到 town 按钮，等待重试 ({attempt}/{NAV_TIMEOUT})')
                 time.sleep(CLICK_INTERVAL)
-                return None
-            log(f'未找到 town 按钮，等待重试 ({attempt}/{NAV_TIMEOUT})')
-            time.sleep(CLICK_INTERVAL)
-        raise RuntimeError('出门后未找到 town 按钮')
+            raise RuntimeError('出门后未找到 town 按钮')
+        except RuntimeError:
+            # 正在上课/冒险等时点小镇入口可能无响应，导航超时；
+            # 屏幕早已稳定，重新检测一次进行中状态再下结论
+            finished = self._recheck_busy_after_nav('前往小镇')
+            if finished:
+                return finished
+            raise
 
     def select_place(self) -> None:
         """点 back 重置默认地点后 OCR 整屏，找到配置的打工地点并点击进入。"""
