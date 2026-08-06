@@ -12,7 +12,7 @@
 分轮与状态检查：每局消耗 体力/清洁 各 5 点；一次 run() 最多 PK 16 局
 （配置次数 > 16 时本轮先做 16 局，剩余由执行器下一轮接着处理）。
 开始前检查：体力/清洁 都 >= 本轮计划局数 x 5 才开跑，
-不足则先喂食/洗澡补充到 90（run_inline 插空模式不做检查，不离开等待页）。
+不足则先喂食/洗澡补充到所需值（计划局数 x 5）（run_inline 插空模式不做检查，不离开等待页）。
 
 两种运行方式（同 visit.py）：run() 独立运行回主页面；
 run_inline() 等待间隙插空运行，不导航、结束点 back 收起面板。
@@ -44,7 +44,6 @@ PK_END_TIMEOUT = 13.0  # 等 PK 结果（分享按钮）的超时（秒），超
 PK_ENTER_TIMEOUT = 3.0  # 点 PK 后等开始按钮的短超时：上限只弹 toast 不跳页，不用长等
 PK_ROUND_CAP = 16     # 一次 run() 最多 PK 局数（超出由执行器下一轮接着处理）
 PK_STAT_COST = 5      # 每局消耗体力/清洁
-PK_STAT_TARGET = 90   # 体力/清洁不足时补充到该值
 
 PROGRESS_FILE = PK_PROGRESS_FILE
 
@@ -164,27 +163,33 @@ class PKScenario(VisitScenario):
 
     def _prepare_stats(self, planned: int) -> None:
         """PK 前检查体力/清洁：每局各消耗 PK_STAT_COST，
-        不足 planned*5 则喂食/洗澡补充到 PK_STAT_TARGET（流程同 care.check_and_care）。
+        不足 planned*5 则喂食/洗澡补充到所需值 planned*5（流程同 care.check_and_care）。
+        护理方式为"一键护理"时不读状态：有一键护理按钮就点，然后直接开跑。
         """
-        need = planned * PK_STAT_COST
         care = CareScenario(self.dev)
+        if care.method == '一键护理':
+            self.ensure_main_page()
+            care.one_click_care()
+            return
+        need = planned * PK_STAT_COST
         source = self.ensure_main_page()
         care.toggle_status(source)
-        screen, source = care.snapshot()
-        status = care.read_status(screen, source)
+        # 数值异步加载（刚展开可能只有账号/宠物名），重试读到体力/清洁为止
+        status = care.read_status_ready()
+        source = self.dev.hierarchy()
         energy = status.get('体力')
         clean = status.get('清洁')
         log(f'PK 前状态: 体力={energy} 清洁={clean}，本轮计划 {planned} 局（各需 {need}）')
         cared = False
         if energy is not None and energy < need:
-            log(f'体力 {energy} 不足 {need}，喂食到 {PK_STAT_TARGET}')
-            care.energy_threshold = PK_STAT_TARGET
+            log(f'体力 {energy} 不足 {need}，喂食到 {need}')
+            care.energy_threshold = need
             care.feed(source)
             cared = True
             source = self.dev.hierarchy()
         if clean is not None and clean < need:
-            log(f'清洁 {clean} 不足 {need}，洗澡到 {PK_STAT_TARGET}')
-            care.clean_threshold = PK_STAT_TARGET
+            log(f'清洁 {clean} 不足 {need}，洗澡到 {need}')
+            care.clean_threshold = need
             care.shower(source)
             cared = True
             source = self.dev.hierarchy()

@@ -44,7 +44,7 @@ $PY build.py                     # PyInstaller 打包（onefile），--onedir �
 | `src/adb/device.py` | adb 封装：设备在线管理（start-server）、屏幕尺寸读取（scrcpy 嵌入比例用）、`reboot_and_wait()` / `launch_app()`（异常恢复用） |
 | `src/ocr.py` / `src/coins.py` | RapidOCR 封装；主页金币 = 顶部状态栏最右侧数值（全屏 OCR） |
 | `src/progress.py` | `log()`（控制台+文件+监听器）、每日次数持久化（含 history，跨天归档）、`count_cross` 交叉计数；多账号：识别到账号（status_cache 的 last_account）后 `load/save_progress` 自动重定向到 `runs/accounts/<账号>/`，首次识别迁移单账号时期的旧进度文件；`known_accounts()` 供 GUI 按账号显示（当前账号排最前） |
-| `src/status_cache.py` | 账号状态缓存（`runs/status_cache.json`，按账号名称组织，兼容多账号）：体力/清洁/心情（care 状态面板 OCR 后）、金币（主页 OCR 后）、香皂/饼干（喂食/洗澡结束时 OCR 控件附近小图；库存角标无文字，取离 `feed_10`/`shower_10` 控件最近的数字）；GUI 日志页顶部状态条每 5 秒读一次 |
+| `src/status_cache.py` | 账号状态缓存（`runs/status_cache.json`，按账号名称组织，兼容多账号）：体力/清洁/心情（care 状态面板 OCR 后）、金币（主页 OCR 后）、香皂/饼干（喂食/洗澡结束时 OCR 控件附近小图；库存角标无文字，取离 `feed_10`/`shower_10` 控件最近的数字）；一键护理后清空体力/清洁/心情/饼干/香皂；GUI 日志页顶部状态条每 5 秒读一次 |
 | `src/config.py` | dataclass 配置 + 路径规划：`APP_ROOT`（可写）/ `RESOURCE_ROOT`（包内资源），`resource_path()` APP_ROOT 优先 |
 | `src/settings.py` | ruamel 往返读写 config.yaml（保留注释），GUI 设置页用 |
 | `src/notify.py` | 失败告警通知：Windows Toast（winotify）+ OnePush 多渠道推送（Bark/PushPlus/Server酱/SMTP/自定义 webhook 等），发送失败只记日志 |
@@ -54,7 +54,8 @@ $PY build.py                     # PyInstaller 打包（onefile），--onedir �
 
 - **定位方式**：新 UI 元素登记到 `src/locators.py` 的 `LOCATORS`（沿用 `xxx_in` 进行中标志、
   `xxx_end` 结束标志、`quit`、`back`、`main_sign` 命名）。优先 xpath / u2 选择器
-  （`main_sign` 就是 xpath `//*[@content-desc="宠物状态"]/...` 检测主页面）；
+  （`main_sign` 是 xpath `//*[@content-desc="金币胶囊"]` 检测主页面——只有自己主页面
+  有该元素，好友宠物页没有；care 解析账号名时另有"加好友"守卫防止把好友昵称当账号）；
   进行中状态文字（`xxx_in`）用整屏 OCR 关键词（状态区域 xpath  bounds 随页面
   结构漂移，裁剪 OCR 不可靠；同一张 screen 连续多次 `see()` 共享一次整屏 OCR，
   见 `_ocr_texts_cached`）；整屏 OCR 统一走 `src/ocr.py` 的 `ocr_fullscreen()`

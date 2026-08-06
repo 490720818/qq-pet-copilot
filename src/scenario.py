@@ -91,7 +91,8 @@ class DeviceScenario:
     def ensure_main_page(self):
         """确认在主页面；不在则点 back 直到回来，返回主页面控件树快照。
 
-        识别不到 main_sign 就直接点 back，然后立即重新抓控件树判断。
+        识别不到 main_sign（金币胶囊，只有自己主页面有，好友宠物页没有）
+        就直接点 back，然后立即重新抓控件树判断。
         返回的 source 可直接给同一个页面上的后续 XPath 定位复用。
         """
         for attempt in range(1, MAIN_PAGE_ATTEMPTS + 1):

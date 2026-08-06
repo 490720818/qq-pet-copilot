@@ -321,6 +321,7 @@ class Runner:
 
         self.care.energy_threshold = cfg.care.energy_threshold
         self.care.clean_threshold = cfg.care.clean_threshold
+        self.care.method = cfg.care.method
         self.school.times_per_day = cfg.school.times_per_day
         if cfg.school.attribute in ATTRIBUTE_COURSES:
             self.school.attribute = cfg.school.attribute

@@ -32,6 +32,7 @@ DEFAULTS = {
     'pk.start_time': '00:01',
     'care.energy_threshold': 60,
     'care.clean_threshold': 60,
+    'care.method': 'ocr检测',
     'notify.win_toast': True,
     'notify.onepush_config': '',
 }
@@ -51,6 +52,8 @@ def validate_field(key: str, value):
         return (True, value) if str(value).strip() else (False, default)
     if key == 'school.attribute':
         return (True, value) if value in ('力量', '智力', '魅力') else (False, default)
+    if key == 'care.method':
+        return (True, value) if value in ('ocr检测', '一键护理') else (False, default)
     if key in ('care.energy_threshold', 'care.clean_threshold'):
         return (True, value) if 0 <= int(value) <= 100 else (False, default)
     if key == 'notify.win_toast':

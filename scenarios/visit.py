@@ -4,7 +4,9 @@
 1. 点击 好友（visit_friends）打开好友面板
 2. 点击 访问（visit）进入第一个好友的宠物页
 3. 点击 踩踩（visit_step），当天次数 +1 并持久化到 runs/visit_progress.json
-   （访问进入时默认就是好友列表的第一个好友）
+   （访问进入时默认就是好友列表的第一个好友）；
+   若出现已踩标志（visit_stepped，"已踩"——今天已踩过该好友），
+   跳过不计数，直接切换下一个好友
 4. 切换下一个好友：重新抓取好友列表（content-desc 以 "好友 " 开头的项，
    注意空格，和入口按钮"好友"区分），按列表顺序点下一个。
    列表是滚动加载的，控件树里只有当前可见项，所以内部维护一份
@@ -58,14 +60,18 @@ class VisitScenario(DeviceScenario):
         time.sleep(1)  # 好友列表刚渲染出来时点访问点不中，等 1 秒再点
         self.click_until_gone_or_see('visit', 'visit_step', '访问好友')
 
-    def step_once(self) -> None:
-        """点一次踩踩（切换好友后按钮有加载延迟，重试几次）。"""
+    def step_once(self) -> str:
+        """点一次踩踩，返回 'stepped'；检测到已踩标志（今天踩过该好友）
+        返回 'already' 由调用方跳过切换下一个（切换好友后按钮有加载延迟，重试几次）。"""
         for attempt in range(1, STEP_RETRIES + 1):
-            hit = self.see('visit_step', source=self.dev.hierarchy())
+            source = self.dev.hierarchy()
+            if self.see('visit_stepped', source=source):
+                return 'already'
+            hit = self.see('visit_step', source=source)
             if hit:
                 self.click(hit[0], hit[1])
                 time.sleep(CLICK_INTERVAL)
-                return
+                return 'stepped'
             log(f'未找到踩踩按钮，等待重试 ({attempt}/{STEP_RETRIES})')
             time.sleep(CLICK_INTERVAL)
         raise RuntimeError('好友页未找到踩踩按钮')
@@ -131,12 +137,14 @@ class VisitScenario(DeviceScenario):
         self._friend_index = 0    # 访问进入时默认第一个好友
         self.goto_first_friend()
         while not max_times or done < max_times:
-            self.step_once()
-            done += 1
-            save_progress(PROGRESS_FILE, today, done, history)
-            log(f'已踩踩 {done} 次' + (f' / 目标 {max_times} 次' if max_times else ''))
-            if max_times and done >= max_times:
-                break
+            if self.step_once() == 'already':
+                log('该好友今天已踩过，跳过')
+            else:
+                done += 1
+                save_progress(PROGRESS_FILE, today, done, history)
+                log(f'已踩踩 {done} 次' + (f' / 目标 {max_times} 次' if max_times else ''))
+                if max_times and done >= max_times:
+                    break
             if not self.next_friend():
                 log('没有更多好友了')
                 break

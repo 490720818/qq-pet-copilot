@@ -52,6 +52,31 @@ def load_accounts() -> dict[str, dict]:
     return _load()['accounts']
 
 
+def _save(data: dict) -> None:
+    try:
+        STATUS_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        STATUS_CACHE_FILE.write_text(
+            json.dumps(data, ensure_ascii=False, indent=2), encoding='utf-8')
+    except OSError as e:
+        log(f'状态缓存写入失败: {e}')
+
+
+def clear_status_fields(*keys: str, account: str | None = None) -> None:
+    """删除账号条目里的指定字段（GUI 显示回 '-'）。
+
+    一键护理后不读状态面板，体力/清洁/饼干/香皂的缓存值不再可信，调用方清空。
+    account=None 时操作最近使用的账号。
+    """
+    data = _load()
+    account = account or data.get('last_account')
+    entry = data['accounts'].get(account or '')
+    if not entry:
+        return
+    for key in keys:
+        entry.pop(key, None)
+    _save(data)
+
+
 def _normalize_account(account: str) -> str:
     """账号名归一化：状态面板 OCR 可能把长昵称截断成 'Hydrogeniu...'，
     去掉尾部省略号/空白，避免同一账号因截断形式不同产生多个条目。"""
@@ -83,9 +108,4 @@ def update_status(account: str | None, **fields) -> None:
     entry.update(fields)
     entry['updated'] = time.strftime('%Y-%m-%d %H:%M:%S')
     data['last_account'] = account
-    try:
-        STATUS_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
-        STATUS_CACHE_FILE.write_text(
-            json.dumps(data, ensure_ascii=False, indent=2), encoding='utf-8')
-    except OSError as e:
-        log(f'状态缓存写入失败: {e}')
+    _save(data)

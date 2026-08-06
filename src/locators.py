@@ -81,10 +81,11 @@ SELECT_BOX_XPATH = (
 
 
 LOCATORS: dict[str, dict] = {
-    # 主页面标志：控件树里的"宠物状态"容器（仅用于检测是否在主页面，
-    # 不要点它——点出门用 leave_home）；xpath 失效时回退 OCR "出门"
+    # 主页面标志：金币胶囊（仅用于检测是否在主页面，不要点它——点出门用
+    # leave_home）。只有自己主页面有这个元素，好友宠物页没有
+    # （之前用"宠物状态"容器会被好友页误判成主页面）
     'main_sign': {
-        'xpath': ['//*[@content-desc="宠物状态"]/android.widget.FrameLayout[1]']
+        'xpath': ['//*[@content-desc="金币胶囊"]']
     },
     # 主页面"出门"按钮（点击用）：xpath 优先，OCR 文字 + 参考坐标兜底
     'leave_home': {
@@ -222,6 +223,9 @@ LOCATORS: dict[str, dict] = {
     # 好友面板里每个好友行一个"访问"（自绘页面，无 clickable，按坐标点）；
     # see() 取第一个命中 = 最上方好友
     'visit': {'xpath': ['//*[@content-desc="访问"]']},
+    # 已踩标志：好友宠物页今天已踩过（踩踩按钮变成"已踩"），
+    # 踩踩前检测到就跳过该好友直接切换下一个，不重复计数
+    'visit_stepped': {'xpath': ['//*[@content-desc="已踩"]']},
     'visit_step': {
         'xpath': ['//*[@resource-id="com.tencent.mobileqq:id/ckj"]'
                   '/android.widget.FrameLayout[1]/android.widget.FrameLayout[1]'
@@ -250,6 +254,9 @@ LOCATORS: dict[str, dict] = {
                   '/android.widget.FrameLayout[1]/android.widget.FrameLayout[5]'],
     },
     'feed': {'xpath': ['//*[@content-desc="feed"]/android.widget.FrameLayout[1]']},
+    # 一键护理按钮（content-desc 以 one_click_care 开头，后缀不固定，前缀匹配）；
+    # 护理方式配置为"一键护理"时，照顾流程只点它——不读状态、不手动喂食/洗澡
+    'one_click_care': {'xpath': ['//*[starts-with(@content-desc, "one_click_care")]']},
     'feed_10': {
         'xpath': ['//androidx.recyclerview.widget.RecyclerView'
                   '/android.widget.FrameLayout[1]/android.widget.FrameLayout[1]'],

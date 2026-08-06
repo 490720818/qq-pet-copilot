@@ -27,7 +27,7 @@ from src.locators import see_bounds
 from src.ocr import ocr_texts
 from src.progress import log
 from src.scenario import CLICK_INTERVAL, DeviceScenario
-from src.status_cache import update_status
+from src.status_cache import clear_status_fields, update_status
 from src.u2dev import REF_SIZE
 
 # 洗澡搓洗点位：起点 = shower_10 控件中心（肥皂），其余按当前分辨率百分比换算
@@ -42,8 +42,11 @@ STATUS_COL_TOL = 80  # 名字下方同列数字的横向容差
 FEED_RESULT_WAIT = 1.5  # 喂食后等数值刷新的时间（秒）
 MAX_FEED_ATTEMPTS = 10    # 喂食最多次数，超过认为异常
 MAX_SHOWER_ATTEMPTS = 25  # 搓洗最多回合数，超过认为异常
+STATUS_READ_RETRIES = 4   # 状态面板数值是异步加载的，刚展开可能只有账号/宠物名，重试读
 
 STATUS_NAMES = ('体力', '清洁', '心情')
+# 护理方式（care.method 配置）：ocr检测 = 读状态手动喂食/洗澡；一键护理 = 直接点主页面一键护理按钮
+CARE_METHODS = ('ocr检测', '一键护理')
 # 喂食/洗澡面板的物品库存：库存数字没有文字标签，只有图标 + 数字角标，
 # 取 OCR 下半屏里离 feed_10 / shower_10 控件中心最近的数字
 # （feed_10 -> 饼干 biscuit，shower_10 -> 香皂 soap，见 cache_care_items）
@@ -65,6 +68,10 @@ def parse_panel_info(results: list[tuple[str, int, int, float]]) -> dict:
     tokens = sorted(((text.replace(' ', ''), x, y) for text, x, y, _ in results),
                     key=lambda t: (t[2], t[1]))
     info: dict[str, str] = {}
+    # 好友的宠物页（面板带"加好友"按钮）不是自己的状态面板：不解析名称，
+    # 防止把好友昵称当成账号写进状态缓存、污染按账号的进度目录
+    if any('加好友' in text for text, *_ in results):
+        return info
     keys = ('账号名称', '宠物名称')
     idx = 0
     for text, _, _ in tokens:
@@ -135,7 +142,13 @@ class CareScenario(DeviceScenario):
         super().__init__(dev)
         self.energy_threshold = self.cfg.care.energy_threshold
         self.clean_threshold = self.cfg.care.clean_threshold
-        log(f'体力阈值: {self.energy_threshold}，清洁阈值: {self.clean_threshold}')
+        self.method = self.cfg.care.method
+        if self.method not in CARE_METHODS:
+            raise ValueError(
+                f'config.yaml 中 care.method 配置无效: {self.method!r}，'
+                f'可选: {"/".join(CARE_METHODS)}')
+        log(f'护理方式: {self.method}，体力阈值: {self.energy_threshold}，'
+            f'清洁阈值: {self.clean_threshold}')
 
     # ---- 状态识别 ----
 
@@ -162,6 +175,19 @@ class CareScenario(DeviceScenario):
         # 容差随分辨率等比缩放：OCR 图宽 = 区域宽 * SCALE，区域宽正比于屏宽
         scale = screen.shape[1] / REF_SIZE[0]
         return parse_status(results, scale)
+
+    def read_status_ready(self, attempts: int = STATUS_READ_RETRIES) -> dict:
+        """读状态面板数值：刚展开时数值可能还没加载（OCR 只有账号/宠物名），
+        体力/清洁都读到才返回，否则每次重新截图重试（最后一次原样返回）。"""
+        status: dict = {}
+        for attempt in range(1, attempts + 1):
+            screen, source = self.snapshot()
+            status = self.read_status(screen, source)
+            if status.get('体力') is not None and status.get('清洁') is not None:
+                return status
+            log(f'状态数值未加载，等待重试 ({attempt}/{attempts})')
+            time.sleep(CLICK_INTERVAL)
+        return status
 
     def cache_care_items(self, anchor: str, **status_fields) -> None:
         """喂食/洗澡结束时把物品库存写进状态缓存（供 GUI 日志页状态条显示）。
@@ -306,6 +332,23 @@ class CareScenario(DeviceScenario):
 
     # ---- 主流程 ----
 
+    def one_click_care(self) -> bool:
+        """一键护理：主页面找 one_click_care* 按钮（content-desc 前缀匹配），
+        有就点并结束照顾流程；不读状态、不手动喂食/洗澡。
+        按钮只在体力/清洁不足时出现：没有按钮视为状态正常，跳过护理。
+        点完后体力/清洁/心情/饼干/香皂的缓存值不再可信，从状态缓存清空（GUI 显示回 -）。
+        返回是否点击了。"""
+        hit = self.see('one_click_care')
+        if not hit:
+            # 一键护理按钮只在体力/清洁不足时出现：没有按钮 = 状态正常，跳过护理
+            log('未找到一键护理按钮（体力/清洁正常），跳过护理')
+            return False
+        log('使用一键护理')
+        self.click(hit[0], hit[1])
+        time.sleep(CLICK_INTERVAL)
+        clear_status_fields('energy', 'clean', 'mood', 'biscuit', 'soap')
+        return True
+
     def toggle_status(self, source=None) -> None:
         """点击宠物状态按钮（xpath 定位）展开/收起状态面板。"""
         hit = self.see('pet_status', source=source)
@@ -315,13 +358,18 @@ class CareScenario(DeviceScenario):
         time.sleep(CLICK_INTERVAL)
 
     def check_and_care(self) -> None:
-        """检查一次体力/清洁，低于阈值则喂食/洗澡，最后收起状态面板。"""
+        """检查一次体力/清洁，低于阈值则喂食/洗澡，最后收起状态面板。
+        护理方式为"一键护理"时不读状态：主页面有一键护理按钮就点，然后直接结束。"""
+        if self.method == '一键护理':
+            self.ensure_main_page()
+            self.one_click_care()
+            return
         source = self.ensure_main_page()
         self.toggle_status(source)
-        # 状态面板展开后必须重新截图/抓控件树，后续状态区域和 feed/shower 入口按钮共用这份快照
-        # （feed_10/shower_10 只有点了对应入口才会出现，之后在对应流程里重新抓控件树）
-        screen, source = self.snapshot()
-        status = self.read_status(screen, source)
+        # 状态面板展开后重新读状态；数值异步加载（刚展开可能只有账号/宠物名），
+        # read_status_ready 内部重新截图重试；feed/shower 入口按钮重新抓控件树
+        status = self.read_status_ready()
+        source = self.dev.hierarchy()
         log(f'宠物状态: 体力={status.get("体力")} '
             f'清洁={status.get("清洁")} 心情={status.get("心情")} '
             f'账号名称={status.get("账号名称")} 宠物名称={status.get("宠物名称")}')

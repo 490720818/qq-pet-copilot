@@ -96,6 +96,8 @@ class AdventureConfig:
 
 @dataclass
 class CareConfig:
+    # 护理方式：ocr检测（读宠物状态，低于阈值手动喂食/洗澡）/ 一键护理（直接点主页面的一键护理按钮）
+    method: str = "ocr检测"
     # 体力阈值：低于则喂食到达标
     energy_threshold: int = 60
     # 清洁阈值：低于则洗澡到达标
