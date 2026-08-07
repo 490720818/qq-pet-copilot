@@ -43,8 +43,13 @@ PK_END_TIMEOUT = 13.0  # 等 PK 结果（分享按钮）的超时（秒），超
 PK_ENTER_TIMEOUT = 3.0  # 点 PK 后等开始按钮的短超时：上限只弹 toast 不跳页，不用长等
 PK_ROUND_CAP = 16     # 一次 run() 最多 PK 局数（超出由执行器下一轮接着处理）
 PK_STAT_COST = 5      # 每局消耗体力/清洁
+PK_TIMEOUT_STREAK_LIMIT = 2  # 连续几次"PK 结果超时"就临时推迟 PK 任务
 
 PROGRESS_FILE = PK_PROGRESS_FILE
+
+
+class PKDeferred(Exception):
+    """PK 结果连续超时：临时推迟 PK 任务（调度器延后重试，不做重启恢复）。"""
 
 
 class PKScenario(VisitScenario):
@@ -129,14 +134,20 @@ class PKScenario(VisitScenario):
             log(f'第 {i}/{PK_PER_FRIEND} 局 PK 中...')
             time.sleep(PK_DURATION)
             if not self.wait_pk_end():
-                # 超时没出结果：点 quit 退出该局（不计数），换下一个好友
-                log(f'{PK_END_TIMEOUT:.0f}s 未出 PK 结果，点 quit 切换下一个好友')
+                # 超时没出结果：连续出现多次说明 PK 环境异常（网络/加载卡住），
+                # 点 quit 退出该局（不计数）换下一个好友；连续达到上限则临时推迟整个 PK 任务
+                self._pk_timeout_streak += 1
+                log(f'{PK_END_TIMEOUT:.0f}s 未出 PK 结果，点 quit 切换下一个好友'
+                    f'（连续第 {self._pk_timeout_streak}/{PK_TIMEOUT_STREAK_LIMIT} 次）')
+                if self._pk_timeout_streak >= PK_TIMEOUT_STREAK_LIMIT:
+                    raise PKDeferred('PK 结果连续超时，临时推迟 PK 任务')
                 quit_hit = self.see('quit')
                 if quit_hit:
                     self.click(quit_hit[0], quit_hit[1])
                     time.sleep(CLICK_INTERVAL)
                 return done
             done += 1
+            self._pk_timeout_streak = 0  # PK 成功，清零连续超时计数
             save_progress(PROGRESS_FILE, today, done, history)
             log(f'已完成 {done} 次 PK' + (f' / 目标 {max_times} 次' if max_times else ''))
             if i < PK_PER_FRIEND and (not max_times or done < max_times):
@@ -147,6 +158,7 @@ class PKScenario(VisitScenario):
         """从好友面板开始逐好友 PK，直到次数满或没有更多好友，返回新的当天次数。"""
         self._friends = []        # 累积好友名单（只增不减），见 visit.py
         self._friend_index = 0    # 访问进入时默认第一个好友
+        self._pk_timeout_streak = 0  # 连续 PK 结果超时计数（本轮内连续，成功清零）
         self.goto_first_friend()
         while not max_times or done < max_times:
             done = self.pk_friend(max_times, today, done, history)

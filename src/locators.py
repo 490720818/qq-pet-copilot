@@ -249,6 +249,8 @@ LOCATORS: dict[str, dict] = {
     # 一键护理按钮（content-desc 以 one_click_care 开头，后缀不固定，前缀匹配）；
     # 护理方式配置为"一键护理"时，照顾流程只点它——不读状态、不手动喂食/洗澡
     'one_click_care': {'xpath': ['//*[starts-with(@content-desc, "one_click_care")]']},
+    # one_click_care 的父级"照顾区域"：踩踩时 OCR 判断是否有"exp"经验值（经验日常）
+    'care_region': {'xpath': ['//*[starts-with(@content-desc, "one_click_care")]/parent::*']},
     # 一键护理后的支付确认按钮：点击护理按钮后若弹出"支付并护理"，必须点掉才完成护理
     'one_click_pay': {'xpath': ['//*[@content-desc="支付并护理"]']},
     'feed_10': {

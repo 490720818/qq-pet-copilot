@@ -191,6 +191,68 @@ def increment_progress(progress_file: Path) -> int:
     return done
 
 
+# ---- 经验日常（踩踩时顺带做：好友页照顾区域有 exp 就点一键护理） ----
+EXP_DAILY_PROGRESS_FILE = PROJECT_ROOT / 'runs' / 'exp_daily_progress.json'
+
+
+def load_exp_daily(quiet: bool = False, account: str | None = None) -> tuple[str, bool, dict]:
+    """读取经验日常进度，返回 (今天日期, 当日是否完成, 历史记录 {日期: 是否完成})。"""
+    progress_file = resolve_progress_file(EXP_DAILY_PROGRESS_FILE, account)
+    today = date.today().isoformat()
+    history: dict[str, bool] = {}
+    done = False
+    try:
+        data = json.loads(progress_file.read_text(encoding='utf-8'))
+        history = {str(d): bool(v) for d, v in (data.get('history') or {}).items()}
+        saved_date = data.get('date')
+        if saved_date == today:
+            done = bool(data.get('done', False))
+        elif saved_date:
+            history[saved_date] = bool(data.get('done', False))
+    except (OSError, ValueError):
+        pass
+    history[today] = done
+    if not quiet:
+        log(f'经验日常: ' + ('已完成' if done else '未完成'))
+    return today, done, history
+
+
+def save_exp_daily(done: bool, today: str | None = None, history: dict | None = None,
+                   account: str | None = None) -> None:
+    """持久化当天经验日常是否完成和历史记录（account 同 load_progress）。"""
+    progress_file = resolve_progress_file(EXP_DAILY_PROGRESS_FILE, account)
+    if today is None or history is None:
+        t, d, h = load_exp_daily(quiet=True, account=account)
+        if today is None:
+            today = t
+        if history is None:
+            history = h
+    history[today] = done
+    progress_file.parent.mkdir(parents=True, exist_ok=True)
+    progress_file.write_text(
+        json.dumps({'date': today, 'done': done, 'history': history},
+                   ensure_ascii=False, indent=2),
+        encoding='utf-8',
+    )
+
+
+def exp_daily_done() -> bool:
+    """今天经验日常是否已完成（供调度判断是否仍需处理）。"""
+    _, done, _ = load_exp_daily(quiet=True)
+    return done
+
+
+def log_exp_daily() -> None:
+    """打印经验日常当天状态与历史（日志/GUI 显示用）。"""
+    today, done, history = load_exp_daily(quiet=True)
+    past = {d: v for d, v in sorted(history.items()) if d != today}
+    line = f'经验日常: ' + ('已完成' if done else '未完成')
+    if past:
+        line += '（历史: ' + '，'.join(f'{d} ' + ('完成' if v else '未完成')
+                                      for d, v in past.items()) + '）'
+    log(line)
+
+
 # 活动类型 -> (进度文件, 中文量词, 计数名)，用于出门时等完别的活动后的交叉计数
 CROSS_PROGRESS = {
     'school': (SCHOOL_PROGRESS_FILE, '一节课', '学习'),

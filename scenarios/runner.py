@@ -51,6 +51,7 @@ from src.progress import (
     SCHOOL_PROGRESS_FILE,
     VISIT_PROGRESS_FILE,
     WORK_PROGRESS_FILE,
+    exp_daily_done,
     load_progress,
     log,
 )
@@ -60,7 +61,7 @@ from src.u2dev import U2Device
 from PIL import Image
 from scenarios.adventure import AdventureScenario
 from scenarios.care import CareScenario
-from scenarios.pk import PKScenario
+from scenarios.pk import PKDeferred, PKScenario
 from scenarios.school import ATTRIBUTE_COURSES, SchoolScenario
 from scenarios.visit import VisitScenario
 from scenarios.work import WorkScenario
@@ -148,11 +149,12 @@ class Runner:
         return datetime.now().time() >= self.adventure_start
 
     def visit_due(self) -> bool:
-        """是否该踩踩了：已到调度时间、当天次数未满且不在失败延后期。"""
+        """是否该踩踩了：已到调度时间、当天次数未满且不在失败延后期；
+        或踩满但经验日常未完成（需继续遍历好友做经验照顾）。"""
         if not self.visit_times or self._deferred('踩踩'):
             return False
         _, done, _ = load_progress(VISIT_PROGRESS_FILE, quiet=True)
-        if done >= self.visit_times:
+        if done >= self.visit_times and exp_daily_done():
             return False
         return datetime.now().time() >= self.visit_start
 
@@ -195,6 +197,8 @@ class Runner:
         """
         try:
             return self._run_round(scen)
+        except PKDeferred:
+            raise  # 场景主动要求临时推迟（如 PK 连续超时），不做重试/恢复
         except Exception as e:
             log(f'{name} 执行异常: {e}，回主页面重试一次')
         try:
@@ -352,7 +356,8 @@ class Runner:
                     try:
                         done = self.run_one(self.adventure, '冒险', fatal=False)
                     except ScenarioFailed:
-                        self._reschedule('冒险')  # 延后重试，继续判断后面的任务
+                        self._reschedule('冒险')  # 延后重试，回顶部先检查体力/清洁再判断其他任务
+                        continue
                     else:
                         if done:
                             _, adv_done, _ = load_progress(ADVENTURE_PROGRESS_FILE, quiet=True)
@@ -370,6 +375,7 @@ class Runner:
                         done = self.run_one(self.visit, '踩踩', fatal=False)
                     except ScenarioFailed:
                         self._reschedule('踩踩')
+                        continue
                     else:
                         if done:
                             continue
@@ -381,8 +387,18 @@ class Runner:
                     log('到达 PK 调度时间，处理 PK')
                     try:
                         done = self.run_one(self.pk, 'PK', fatal=False)
-                    except ScenarioFailed:
+                    except (PKDeferred, ScenarioFailed):
                         self._reschedule('PK')
+                        # 推迟后先把页面退回主页面，再继续调度其他任务
+                        # （PK 中断时页面停在好友/PK 页，主任务正常会自己回主页面，
+                        #   但主任务当天已结束时会在 _wait_for_deferred 里长睡，先退回来更稳）
+                        try:
+                            self.school.ensure_main_page()
+                        except Exception as e:
+                            log(f'PK 推迟后回主页面失败: {e}')
+                        # 回循环顶部重新检查体力/清洁（PK 会消耗体力/清洁），
+                        # 再判断冒险/踩踩/主任务；PK 已延后，due() 不会立即放行
+                        continue
                     else:
                         if done:
                             continue

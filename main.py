@@ -55,6 +55,7 @@ from src.progress import (
     WORK_PROGRESS_FILE,
     add_log_listener,
     known_accounts,
+    load_exp_daily,
     load_progress,
     log,
 )
@@ -417,6 +418,10 @@ class MainWindow(QMainWindow):
                 for label, progress_file, limit in tasks:
                     _, done, _ = load_progress(progress_file, quiet=True, account=name)
                     parts.append(f'{label} {done}/{limit}' if limit else f'{label} {done}')
+                    if label == '踩踩':
+                        # 经验日常（好友照顾）当日是否完成：踩踩次数满但经验未完成时仍会继续
+                        _, exp_done, _ = load_exp_daily(quiet=True, account=name)
+                        parts.append('经验日常' + ('✓' if exp_done else '✗'))
                 prefix = f'账号 {name}　今日: ' if name else '今日: '
                 lines.append(prefix + '　'.join(parts))
             self.stats_label.setText('\n'.join(lines))

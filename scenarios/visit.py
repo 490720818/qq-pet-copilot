@@ -28,15 +28,21 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.locators import LOCATORS
+from src.locators import LOCATORS, see_bounds
+from src.ocr import ocr_texts
 from src.progress import (
     VISIT_PROGRESS_FILE,
+    exp_daily_done,
+    load_exp_daily,
     load_progress,
     log,
+    log_exp_daily,
     log_history,
+    save_exp_daily,
     save_progress,
 )
 from src.scenario import CLICK_INTERVAL, DeviceScenario
+from scenarios.care import ONE_CLICK_PAY_RETRIES
 
 FRIEND_ITEM_XPATH = LOCATORS['visit_friend_item']['xpath'][0]
 STEP_RETRIES = 5  # 切换好友后踩踩按钮有几秒加载延迟，重试次数
@@ -48,6 +54,7 @@ class VisitScenario(DeviceScenario):
     def __init__(self, dev=None):
         super().__init__(dev)
         self.times_per_day = self.cfg.visit.times_per_day
+        self._exp_handled = False  # 本轮是否处理过经验照顾（点击/判定完成）
         log(f'每天踩踩次数: {self.times_per_day if self.times_per_day else "不限"}')
 
     # ---- 各阶段 ----
@@ -130,23 +137,70 @@ class VisitScenario(DeviceScenario):
         log('关闭好友页面失败（可能未回到进入前的页面）')
 
     def _visit_all(self, max_times: int, today: str, done: int, history: dict) -> int:
-        """从好友面板开始踩满剩余次数，返回新的当天次数。"""
+        """从好友面板开始踩满剩余次数，期间顺带做经验日常（好友页照顾区域有 exp 就点）。
+
+        踩踩次数已满但经验日常未完成时，仍继续遍历好友做经验照顾，跳过已踩/踩踩判断。
+        """
         self._friends = []        # 累积好友名单（content-desc），只增不减
         self._friend_index = 0    # 访问进入时默认第一个好友
+        self._exp_handled = False  # 本轮是否处理过经验照顾（点击/判定完成）
         self.goto_first_friend()
-        while not max_times or done < max_times:
-            if self.step_once() == 'already':
-                log('该好友今天已踩过，跳过')
-            else:
-                done += 1
-                save_progress(PROGRESS_FILE, today, done, history)
-                log(f'已踩踩 {done} 次' + (f' / 目标 {max_times} 次' if max_times else ''))
-                if max_times and done >= max_times:
-                    break
+        exp_today, exp_done, exp_history = load_exp_daily(quiet=True)
+        while True:
+            if not max_times or done < max_times:
+                # 已踩/踩踩 判断处理
+                if self.step_once() == 'already':
+                    log('该好友今天已踩过，跳过')
+                else:
+                    done += 1
+                    save_progress(PROGRESS_FILE, today, done, history)
+                    log(f'已踩踩 {done} 次' + (f' / 目标 {max_times} 次' if max_times else ''))
+            # 切换好友前：经验日常未完成则先处理照顾
+            if not exp_done:
+                exp_done = self._try_exp_daily(exp_today, exp_history)
+            done_full = bool(max_times) and done >= max_times
+            if done_full and exp_done:
+                break
             if not self.next_friend():
                 log('没有更多好友了')
                 break
         return done
+
+    def _try_exp_daily(self, exp_today: str, exp_history: dict) -> bool:
+        """当前好友宠物页尝试经验日常：有 one_click_care 时 OCR 其父级"照顾区域"，
+        含"exp/经验"就点 one_click_care；区域无则视为当日经验日常完成并持久化。
+        返回经验日常是否已完成。"""
+        # 一次控件树快照复用：one_click_care 和父级 care_region 同一次 dump 里查
+        source = self.dev.hierarchy()
+        care = self.see('one_click_care', source=source)
+        if not care:
+            return False  # 没有照顾按钮，跳过（不标记完成）
+        bounds = see_bounds(self.dev, 'care_region', source=source)
+        if not bounds:
+            return False
+        x1, y1, x2, y2 = bounds
+        results = ocr_texts(self.screen()[y1:y2, x1:x2])
+        log('照顾区域 OCR: '
+            + (', '.join(f'{t!r}@({x},{y})' for t, x, y, _ in results) or '无'))
+        if any(('exp' in (t or '').lower()) or ('经验' in (t or '')) for t, *_ in results):
+            log(f'照顾区域含 exp 经验值，点击一键护理 ({care[0]}, {care[1]})')
+            self.click(care[0], care[1])
+            self._exp_handled = True
+            # 支付确认弹窗可能比护理按钮点击晚一拍出现，短等几次再判断（同 care.py）
+            for attempt in range(1, ONE_CLICK_PAY_RETRIES + 1):
+                pay = self.see('one_click_pay')
+                if pay:
+                    log(f'检测到"支付并护理"，点击确认 ({pay[0]}, {pay[1]})')
+                    self.click(pay[0], pay[1])
+                    time.sleep(CLICK_INTERVAL)
+                    break
+                if attempt < ONE_CLICK_PAY_RETRIES:
+                    time.sleep(CLICK_INTERVAL)
+            return False
+        log('照顾区域无 exp，经验日常已完成')
+        save_exp_daily(True, exp_today, exp_history)
+        self._exp_handled = True
+        return True
 
     # ---- 入口 ----
 
@@ -160,15 +214,20 @@ class VisitScenario(DeviceScenario):
             max_times = self.times_per_day
         today, done, history = load_progress(PROGRESS_FILE)
         log_history(history, today)
+        log_exp_daily()  # 显示经验日常当天状态与历史
         if max_times and done >= max_times:
-            log(f'今天已踩满 {max_times} 次，无需再踩')
-            return False
+            if exp_daily_done():
+                log(f'今天已踩满 {max_times} 次且经验日常已完成，无需再踩')
+                return False
+            log(f'今天已踩满 {max_times} 次，经验日常未完成，继续处理经验日常')
         start_done = done
         self.ensure_main_page()
         done = self._visit_all(max_times, today, done, history)
         self.close()  # 先点 back 收掉好友相关页面，再确认回主页面
         self.ensure_main_page()
-        return done > start_done
+        # 踩了或处理过经验照顾（点击/判定完成）都算本轮有产出；
+        # 不能把"早已完成的经验日常"算产出——那会让调度器反复重跑踩踩空转
+        return done > start_done or self._exp_handled
 
 if __name__ == '__main__':
     import argparse
