@@ -3,10 +3,9 @@ __pycache__/
 *.pyc
 .env
 screenshots
-# 打包产物
+# 打包产物（spec 是 build.py 的输入，需入库，不再忽略）
 build/
 dist/
-*.spec
 # 运行状态（进度、日志、调试图）
 runs/
 # 控件树抓页产物（tools/dump_hierarchy.py）

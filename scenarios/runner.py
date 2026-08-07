@@ -294,6 +294,7 @@ class Runner:
         # 统一检查间隔也要同步到各场景实例，设置页热修改后下一轮即生效
         for scen in (self.school, self.work, self.adventure, self.care, self.visit, self.pk):
             scen.cfg.schedule.check_interval = sched.check_interval
+            scen.cfg.employed.action = cfg.employed.action
 
         adv = cfg.adventure
         self.adventure_times = adv.times_per_day

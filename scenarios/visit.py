@@ -55,7 +55,7 @@ class VisitScenario(DeviceScenario):
     def goto_first_friend(self) -> None:
         """好友面板 -> 访问 -> 第一个好友宠物页（出现踩踩按钮）。"""
         self.click_until_gone_or_see('visit_friends', 'visit', '打开好友列表')
-        time.sleep(1)  # 好友列表刚渲染出来时点访问点不中，等 1 秒再点
+        # 不额外等固定 1 秒：点访问靠 click_until_gone_or_see 重试（点不中下一轮再点）
         self.click_until_gone_or_see('visit', 'visit_step', '访问好友')
 
     def step_once(self) -> str:

@@ -43,7 +43,6 @@ _locate_cache: dict[str, tuple[int, int, float]] = {}
 # 记住 (x1, y1, x2, y2)，之后直接复用（只适合位置固定的裁剪区域，如 status_region）。
 _bounds_cache: dict[str, tuple[int, int, int, int]] = {}
 
-
 def _ocr_texts_cached(
     screen: np.ndarray, region: tuple[int, int, int, int] | None = None
 ) -> list[tuple[str, int, int, float]]:
@@ -63,22 +62,21 @@ def _ocr_texts_cached(
     _ocr_cache = (screen, region, results)
     return results
 
-
 def ocr_screen(screen: np.ndarray) -> list[tuple[str, int, int, float]]:
     """整屏 OCR（同一 screen 复用结果）；给 see() 之外的自定义解析用。"""
     return _ocr_texts_cached(screen)
 
-
 # 学习/工作选择框共用前缀：三条 xpath 仅最后一段 FrameLayout 序号不同。
 # 锚定"嵌套双层 RecyclerView"（选课面板里的卡片轮播），真机验证命中；
 # 之前从 ckj 出发的绝对路径层级深、随页面结构漂移，容易整链失效。
+# 选课/选工作三栏容器：纯子节点步进（中间不再用 // 后代搜索），u2 引擎解析更快更稳。
+# 外层 RecyclerView(首命中) -> FL[1] -> FL[1] -> 内层 RecyclerView[1] -> FL[1]（课程卡容器）
 SELECT_BOX_XPATH = (
     '//androidx.recyclerview.widget.RecyclerView'
     '/android.widget.FrameLayout[1]/android.widget.FrameLayout[1]'
     '/androidx.recyclerview.widget.RecyclerView[1]'
     '/android.widget.FrameLayout[1]'
 )
-
 
 LOCATORS: dict[str, dict] = {
     # 主页面标志：金币胶囊（仅用于检测是否在主页面，不要点它——点出门用
@@ -90,58 +88,25 @@ LOCATORS: dict[str, dict] = {
     # 主页面"出门"按钮（点击用）：xpath 优先，OCR 文字 + 参考坐标兜底
     'leave_home': {
         'cache': True,
-        'xpath': ['//*[@resource-id="com.tencent.mobileqq:id/ckj"]'
-                  '/android.widget.FrameLayout[1]/android.widget.FrameLayout[2]'
-                  '/android.widget.FrameLayout[1]/android.widget.FrameLayout[1]'
-                  '/android.widget.FrameLayout[1]/android.widget.FrameLayout[3]'
-                  '/android.widget.FrameLayout[3]/android.widget.FrameLayout[1]'
-                  '/android.widget.FrameLayout[3]/android.widget.Button[1]'
-                  '/android.widget.FrameLayout[1]'],
+        'xpath': ['//*[@content-desc="出门"]'],
         'rel': (359, 1103),
     },
     # 宠物状态面板展开/收起按钮（点击用）：xpath 优先，参考坐标兜底
     'pet_status': {
-        'xpath': ['//*[@content-desc="宠物状态"]/android.widget.FrameLayout[1]'],
+        'xpath': ['//*[@content-desc="宠物状态"]'],
         'rel': (520, 120),
     },
     # 左上返回箭头（位置固定，cache 命中一次后直接复用坐标）
     'back': {
         'cache': True,
         'xpath': [
-            '//*[@content-desc="返回"]/android.widget.FrameLayout[1]/android.widget.ImageView[1]',
-            '//*[@content-desc="返回"]/android.widget.ImageView[1]',
-            '//*[@resource-id="com.tencent.mobileqq:id/ckj"]'
-            '/android.widget.FrameLayout[1]/android.widget.FrameLayout[1]'
-            '/android.widget.FrameLayout[1]/android.widget.FrameLayout[1]'
-            '/android.widget.FrameLayout[2]/android.widget.FrameLayout[1]'
-            '/android.widget.FrameLayout[1]/android.widget.ImageView[1]',
-            '//*[@resource-id="com.tencent.mobileqq:id/ckj"]'
-            '/android.widget.FrameLayout[1]/android.widget.FrameLayout[1]'
-            '/android.widget.FrameLayout[1]/android.widget.FrameLayout[1]'
-            '/android.widget.FrameLayout[3]/android.widget.FrameLayout[1]'
-            '/android.widget.FrameLayout[1]/android.widget.ImageView[1]',
+            '//*[@content-desc="返回"]',
+            '//*[@content-desc="职业树"]/preceding-sibling::android.widget.FrameLayout[2]',
+            '//*[@content-desc="history_back"]',
         ],
     },
-    'quit': {'xpath': ['//*[@content-desc="返回"]/android.widget.FrameLayout[1]/android.widget.ImageView[1]','//*[@content-desc="返回"]/android.widget.ImageView[1]']},
+    'quit': {'xpath': ['//*[@content-desc="返回"]']},
 
-    # 宠物状态面板：进行中状态文字（如"正在打工"）所在区域（FL[4]/FL[5] 同位置）。
-    # xpath 命中后取元素顶部 8%×总屏幕高度 的一小块 OCR（见 scenario._busy_ocr_region），
-    # 避免整屏 OCR 慢、小字易漏；不 cache——面板大小可能随状态实时变化，
-    # 每次实时查 xpath 取最新 bounds
-    'status_banner': {
-        # 深路径 ckj/FL[1]/.../FL[5] 对 u2 xpath 引擎不稳定（时有时无），
-        # 实测 ckj//FrameLayout[@index="5"] 稳定唯一命中宠物状态面板
-        'xpath': ['//*[@resource-id="com.tencent.mobileqq:id/ckj"]'
-                  '//android.widget.FrameLayout[@index="5"]'],
-    },
-
-    # ---- 学习/工作选择框（选课、选工作共用的三栏列表） ----
-    # 三条 xpath 共用 SELECT_BOX_XPATH 前缀，仅最后一段序号不同；归位拖动和点选都用它们。
-    # 注意：xpath 只匹配学习页（RecyclerView 结构）；打工页卡片是 H5 匿名 node，
-    # xpath 不命中时 see() 返回 None，reset_select_boxes 会抛"未定位到选择框"。
-    'select_box_1': {
-        'xpath': [SELECT_BOX_XPATH + '/android.widget.FrameLayout[1]'],
-    },
     'select_box_2': {
         'xpath': [SELECT_BOX_XPATH + '/android.widget.FrameLayout[2]'],
     },
@@ -162,13 +127,19 @@ LOCATORS: dict[str, dict] = {
     # 此时点"关闭"再点两次 back 回主页面，重新进学校选下一阶段课程
     'school_graduated': {'xpath': ['//*[@content-desc="去找同学玩"]']},
     'school_graduate_close': {'xpath': ['//*[@content-desc="关闭"]']},
+    # 学习等待期间的"鼓励宠物"按钮（点击提升心情/互动收益，wait_end(encourage=True) 用）。
+    # xpath 优先：复用 wait_end 已有的控件树快照，避免 u2 选择器再实时查一次（重复采集 XML）
+    'encourage_pet': {'xpath': ['//*[@content-desc="鼓励宠物"]'],
+                      'u2': [{'description': '鼓励宠物'}]},
 
     # ---- 打工 ----
     'town': {'xpath': ['//*[@content-desc="map_blank"]/android.widget.FrameLayout[4]/android.widget.FrameLayout[1]']
                ,'ocr': ['职业小镇']},
-    'work_start': {'xpath': ['//*[@content-desc="去打工"]/android.widget.FrameLayout[1]']},
+    'work_start': {'xpath': ['//*[@content-desc="去打工"]']},
+    # work_start 被"去照顾一下"弹窗挡住时：点它进护理，一键护理+back 后回工作面板（work.py _recover_work_start）
+    'go_care': {'xpath': ['//*[@content-desc="去照顾一下"]']},
     'work_in': {'ocr': ['正在打工']},
-    'work_end': {'xpath': ['//*[@content-desc="分享"]/android.widget.FrameLayout[1]']},
+    'work_end': {'xpath': ['//*[@content-desc="分享"]']},
     'work_outworker': {
         'cache': True,
         'xpath': ['//*[@resource-id="com.tencent.mobileqq:id/ckj"]'
@@ -232,6 +203,8 @@ LOCATORS: dict[str, dict] = {
     'employed_in': {'ocr': ['被雇佣中', '雇佣中']},
     # 召回标志不在注册表：分成比例要解析具体数值（雇佣者<=25% 且被雇佣者>=75%
     # 才命中，方向不能反），见 scenario.see_employed_sign / ocr.parse_employed_ratio
+    # 召回按钮：OCR 定位——wait_employed_back 里 see_employed_sign 已对同一 screen 做整屏 OCR
+    # （_ocr_texts_cached 缓存），这里直接复用，无需额外 dump/识别
     'employed_come_back': {'ocr': ['现在召回', '召回']},
     'employed_come_back_confirm': {
         'ocr': ['确认', '确定'], 'u2': [{'text': '确认'}, {'text': '确定'}],
@@ -242,7 +215,7 @@ LOCATORS: dict[str, dict] = {
     'visit_friends': {'xpath': ['//*[@content-desc="好友"]']},
     # 好友面板里每个好友行一个"访问"（自绘页面，无 clickable，按坐标点）；
     # see() 取第一个命中 = 最上方好友
-    'visit': {'xpath': ['//*[@content-desc="访问"]']},
+    'visit': {'xpath': ['//*[@content-desc="访问"]', '//*[@content-desc="回访"]']},
     # 已踩标志：好友宠物页今天已踩过（踩踩按钮变成"已踩"），
     # 踩踩前检测到就跳过该好友直接切换下一个，不重复计数
     'visit_stepped': {'u2': [{'description': '已踩'}]},
@@ -256,7 +229,7 @@ LOCATORS: dict[str, dict] = {
     # ---- PK（好友对战） ----
     'pk': {'xpath': ['//*[@content-desc="PK"]']},
     'pk_start': {'xpath': ['//*[@content-desc="开始"]']},
-    'pk_end': {'xpath': ['//*[@content-desc="分享"]/android.widget.FrameLayout[1]']},
+    'pk_end': {'xpath': ['//*[@content-desc="分享"]']},
     'pk_again': {'xpath': ['//*[@content-desc="再来一局"]']},
 
     # ---- 照顾 ----
@@ -286,7 +259,6 @@ LOCATORS: dict[str, dict] = {
     },
 }
 
-
 def see(
     dev: U2Device, name: str, screen: np.ndarray | None = None, source=None
 ) -> tuple[int, int, float] | None:
@@ -311,7 +283,6 @@ def see(
             _locate_cache[name] = result
         return result
     return _locate(dev, entry, screen, source)
-
 
 def _locate(
     dev: U2Device, entry: dict, screen: np.ndarray | None = None, source=None
@@ -355,7 +326,6 @@ def _locate(
         return x, y, 1.0
     return None
 
-
 def see_bounds(dev: U2Device, name: str, source=None) -> tuple[int, int, int, int] | None:
     """定位 name 的元素范围，返回 (x1, y1, x2, y2)，未命中返回 None。
 
@@ -377,7 +347,6 @@ def see_bounds(dev: U2Device, name: str, source=None) -> tuple[int, int, int, in
                 _bounds_cache[name] = bounds
             return bounds
     return None
-
 
 def see_all(
     dev: U2Device, name: str, screen: np.ndarray | None = None

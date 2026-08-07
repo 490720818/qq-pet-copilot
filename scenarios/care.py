@@ -21,7 +21,6 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import numpy as np
-from PIL import Image
 
 from src.locators import see_bounds
 from src.ocr import ocr_texts
@@ -33,8 +32,6 @@ from src.u2dev import REF_SIZE
 # 洗澡搓洗点位：起点 = shower_10 控件中心（肥皂），其余按当前分辨率百分比换算
 SCRUB_TOP_PCT = (0.5, 0.40)     # 拖动终点 / 搓洗上端点
 SCRUB_BOTTOM_PCT = (0.5, 0.67)  # 搓洗下端点 / 抬手点
-# 状态数值 OCR 放大倍数（上半屏截图放大，提高小字识别率）
-STATUS_OCR_SCALE = 2
 # 状态数值配对的像素容差：按 720 宽参考分辨率的 OCR 结果调的，
 # 运行时按当前屏宽等比缩放（见 read_status）
 STATUS_ROW_TOL = 40  # 名字右侧同行数字的纵向容差
@@ -52,8 +49,6 @@ CARE_METHODS = ('ocr检测', '一键护理')
 # 取 OCR 下半屏里离 feed_10 / shower_10 控件中心最近的数字
 # （feed_10 -> 饼干 biscuit，shower_10 -> 香皂 soap，见 cache_care_items）
 ITEM_ANCHOR_KEYS = {'feed_10': 'biscuit', 'shower_10': 'soap'}
-# 物品库存 OCR 放大倍数（锚点附近小图放大，提高小字识别率）
-ITEM_OCR_SCALE = 2
 # 库存角标在图标附近：以控件 bounds 各边向外扩这么多像素裁剪 OCR 区域
 ITEM_CROP_MARGIN = 80
 
@@ -166,14 +161,10 @@ class CareScenario(DeviceScenario):
         else:
             log('未定位到宠物状态区域，回退上半屏 OCR')
             region = screen[: screen.shape[0] // 2]
-        img = Image.fromarray(region)
-        # 放大提高小字识别率
-        img = img.resize((img.width * STATUS_OCR_SCALE, img.height * STATUS_OCR_SCALE),
-                         Image.LANCZOS)
-        results = ocr_texts(np.asarray(img))
+        results = ocr_texts(region)
         log('状态区域 OCR: '
             + (', '.join(f'{t!r}@({x},{y})' for t, x, y, _ in results) or '无'))
-        # 容差随分辨率等比缩放：OCR 图宽 = 区域宽 * SCALE，区域宽正比于屏宽
+        # 不做放大：容差按当前屏宽相对 720 参考分辨率等比缩放
         scale = screen.shape[1] / REF_SIZE[0]
         return parse_status(results, scale)
 
@@ -212,7 +203,7 @@ class CareScenario(DeviceScenario):
 
         库存数字是图标旁的小角标：不能 OCR 整个下半屏——图太大会被检测模型
         内部再缩小（det_limit_side_len），小角标识别不到；以控件 bounds 向外
-        扩 ITEM_CROP_MARGIN 裁小图再放大 OCR，并在日志里打印识别结果便于校准。
+        扩 ITEM_CROP_MARGIN 裁小图 OCR，并在日志里打印识别结果便于校准。
         """
         bounds = see_bounds(self.dev, anchor)
         if not bounds:
@@ -224,16 +215,12 @@ class CareScenario(DeviceScenario):
         m = ITEM_CROP_MARGIN
         rx1, ry1 = max(0, x1 - m), max(0, y1 - m)
         rx2, ry2 = min(w, x2 + m), min(h, y2 + m)
-        region = screen[ry1:ry2, rx1:rx2]
-        img = Image.fromarray(region)
-        img = img.resize((img.width * ITEM_OCR_SCALE, img.height * ITEM_OCR_SCALE),
-                         Image.LANCZOS)
-        results = ocr_texts(np.asarray(img))
+        results = ocr_texts(screen[ry1:ry2, rx1:rx2])
         log(f'库存区域 OCR: '
             + (', '.join(f'{t!r}@({x},{y})' for t, x, y, _ in results) or '无'))
-        # 控件中心换算到裁剪 + 放大后的 OCR 图坐标
-        cx = ((x1 + x2) / 2 - rx1) * ITEM_OCR_SCALE
-        cy = ((y1 + y2) / 2 - ry1) * ITEM_OCR_SCALE
+        # 控件中心换算到裁剪后的 OCR 图坐标
+        cx = (x1 + x2) / 2 - rx1
+        cy = (y1 + y2) / 2 - ry1
         count = nearest_item_count(results, cx, cy)
         if count is None:
             log('库存区域 OCR 未找到数字')

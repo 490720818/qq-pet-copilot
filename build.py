@@ -7,6 +7,7 @@
 - exe 所在目录：可写数据（config.yaml 首次运行自动复制出来、runs/ 进度与日志）
 - exe 同级的 scrcpy-win64/ 若存在则优先于包内资源（方便替换）
 """
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -19,22 +20,12 @@ ONEDIR = '--onedir' in sys.argv
 # exe 首次运行会把它复制为 config.yaml
 CONFIG_SRC = 'config.example.yaml'
 
+# 走 QQPetCopilot.spec 打包：spec 里对 rapidocr 包的 v4 onnx 做了过滤（只带 v5，
+# 见 runs/models/rapidocr），并支持 onedir/onefile 两种模式（QQ_PET_ONEDIR 环境变量）
 ARGS = [
     sys.executable, '-m', 'PyInstaller',
     '--noconfirm', '--clean',
-    '--windowed',          # 无控制台窗口
-    '--onedir' if ONEDIR else '--onefile',
-    '--name', 'QQPetCopilot',
-    # rapidocr 的 config.yaml 和 onnx 模型是包内数据文件，不会自动收集
-    '--collect-all', 'rapidocr_onnxruntime',
-    # uiautomator2 的 assets/u2.jar 等是包内数据文件（runner 连接设备时要 push）
-    '--collect-data', 'uiautomator2',
-    # Windows 下 --add-data 用分号分隔 源;目标（目标是目录）
-    '--add-data', 'scrcpy-win64;scrcpy-win64',
-    # config 必须落到资源根目录下的文件 config.yaml（首启复制逻辑按
-    # RESOURCE_ROOT/config.yaml 找）；写 ';config.yaml' 会变成同名目录
-    '--add-data', f'{CONFIG_SRC};.',
-    'main.py',
+    'QQPetCopilot.spec',
 ]
 
 
@@ -43,8 +34,15 @@ def main() -> None:
     for stream in (sys.stdout, sys.stderr):
         if hasattr(stream, 'reconfigure'):
             stream.reconfigure(encoding='utf-8', errors='replace')
+    # 打包前尝试下载 v5 OCR 模型（runs/ 下；失败不阻塞，exe 会缺 v5 需运行时下载）
+    fetch = PROJECT_ROOT / 'tools' / 'fetch_ocr_models.py'
+    if fetch.exists():
+        subprocess.run([sys.executable, str(fetch)], check=False)
+    env = dict(os.environ)
+    if ONEDIR:
+        env['QQ_PET_ONEDIR'] = '1'
     print('开始打包（' + ('onedir 目录模式' if ONEDIR else 'onefile 单文件模式') + '）...')
-    subprocess.run(ARGS, check=True, cwd=PROJECT_ROOT)
+    subprocess.run(ARGS, check=True, cwd=PROJECT_ROOT, env=env)
     out = PROJECT_ROOT / 'dist' / ('QQPetCopilot/QQPetCopilot.exe' if ONEDIR else 'QQPetCopilot.exe')
     print(f'完成: {out}')
 

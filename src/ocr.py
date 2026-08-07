@@ -5,37 +5,146 @@
 整屏识别统一走 ocr_fullscreen()：先保持长宽比缩放到接近 720x1280 级别
 再 OCR（高分辨率截图识别慢，缩放后速度与设备分辨率无关），
 返回坐标已还原回原图像素，可直接用于点击。
+
+引擎：rapidocr 3.8.x（onnxruntime，PP-OCRV5 mobile 模型）。
+模型目录 APP_ROOT/runs/models/rapidocr：只使用 PP-OCRV5 mobile（v5），
+不打/不初始化 v4 模型；打包随附的 v5 首次运行时复制出来，
+缺失时用 tools/fetch_ocr_models.py 或首次联网自动下载。
 """
 from __future__ import annotations
 
+import hashlib
 import re
+import shutil
+import urllib.request
+from pathlib import Path
 
 import numpy as np
 from PIL import Image
+
+from .config import APP_ROOT, RESOURCE_ROOT
+from .progress import log
 
 _engine = None
 
 # 整屏 OCR 前把截图等比缩放到这个宽度（保持长宽比，接近 720x1280 级别）
 OCR_FULLSCREEN_WIDTH = 720
 
+# OCR 模型目录（可写、持久，与 runs/ 进度日志同目录）：rapidocr 的 Global.model_root_dir
+MODEL_ROOT = APP_ROOT / 'runs' / 'models' / 'rapidocr'
+
+# PP-OCRV5 mobile（det/rec）与 cls 模型：URL 与 SHA256 取自 rapidocr default_models.yaml
+V5_MODELS = [
+    ('ch_PP-OCRv5_det_mobile.onnx',
+     'https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.8.0/onnx/PP-OCRv5/det/ch_PP-OCRv5_det_mobile.onnx',
+     '4d97c44a20d30a81aad087d6a396b08f786c4635742afc391f6621f5c6ae78ae'),
+    ('ch_PP-OCRv5_rec_mobile.onnx',
+     'https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.8.0/onnx/PP-OCRv5/rec/ch_PP-OCRv5_rec_mobile.onnx',
+     '5825fc7ebf84ae7a412be049820b4d86d77620f204a041697b0494669b1742c5'),
+    ('ch_ppocr_mobile_v2.0_cls_mobile.onnx',
+     'https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.8.0/onnx/PP-OCRv4/cls/ch_ppocr_mobile_v2.0_cls_mobile.onnx',
+     'e47acedf663230f8863ff1ab0e64dd2d82b838fceb5957146dab185a89d6215c'),
+]
+
+
+def _sha256(path: Path) -> str:
+    h = hashlib.sha256()
+    with open(path, 'rb') as f:
+        for chunk in iter(lambda: f.read(1 << 20), b''):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _ensure_models() -> None:
+    """保证模型目录存在，并把打包随附的 v5 模型复制出来（避免首次联网下载）。
+
+    只处理 PP-OCRV5 mobile（RESOURCE_ROOT/models/rapidocr）；不复制 rapidocr 包自带的 v4。
+    """
+    MODEL_ROOT.mkdir(parents=True, exist_ok=True)
+    bundled_res = RESOURCE_ROOT / 'models' / 'rapidocr'
+    if not bundled_res.exists():
+        return
+    for f in bundled_res.glob('*'):
+        if not f.is_file():
+            continue
+        dst = MODEL_ROOT / f.name
+        if not dst.exists():
+            shutil.copy2(f, dst)
+
+
+def _download_model(name: str, url: str, expected: str) -> None:
+    """下载单个模型到 MODEL_ROOT，SHA256 校验后落盘；失败抛异常。"""
+    dst = MODEL_ROOT / name
+    tmp = dst.with_suffix('.part')
+    try:
+        with urllib.request.urlopen(url, timeout=30) as resp, open(tmp, 'wb') as f:
+            shutil.copyfileobj(resp, f)
+        if _sha256(tmp) != expected:
+            raise RuntimeError(f'{name} SHA256 校验失败')
+        tmp.replace(dst)
+    finally:
+        if tmp.exists():
+            tmp.unlink(missing_ok=True)
+
+
+def ensure_v5_models() -> bool:
+    """确保模型目录就绪，并尝试补齐 PP-OCRV5 mobile 模型（缺失时联网下载）。
+
+    返回是否已具备完整 v5 模型；下载失败只记日志并返回 False（调用方抛错，不再回退 v4）。
+    """
+    MODEL_ROOT.mkdir(parents=True, exist_ok=True)
+    _ensure_models()
+    for name, url, expected in V5_MODELS:
+        dst = MODEL_ROOT / name
+        if dst.exists() and _sha256(dst) == expected:
+            continue
+        log(f'下载 OCR 模型 {name} ...')
+        try:
+            _download_model(name, url, expected)
+        except Exception as e:
+            log(f'下载 OCR 模型 {name} 失败: {e}，将无法使用 OCR')
+            return False
+    return True
+
 
 def get_engine():
     """懒加载 RapidOCR 引擎（全局单例）。"""
     global _engine
     if _engine is None:
-        from rapidocr_onnxruntime import RapidOCR
+        from rapidocr import EngineType, LangDet, LangRec, ModelType, OCRVersion, RapidOCR
 
-        _engine = RapidOCR()
+        if not ensure_v5_models():
+            # 没有 v5 且下载失败：明确报错，不再静默回退 v4
+            raise RuntimeError(
+                'PP-OCRV5 mobile 模型缺失且下载失败，OCR 不可用'
+                f'（模型目录: {MODEL_ROOT}，可运行 python tools/fetch_ocr_models.py）')
+        _engine = RapidOCR(params={
+            'Global.model_root_dir': str(MODEL_ROOT),
+            'Global.log_level': 'WARN',  # 抑制引擎 INFO 噪音
+            'Det.engine_type': EngineType.ONNXRUNTIME,
+            'Det.lang_type': LangDet.CH,
+            'Det.model_type': ModelType.MOBILE,
+            'Det.ocr_version': OCRVersion.PPOCRV5,
+            'Rec.engine_type': EngineType.ONNXRUNTIME,
+            'Rec.lang_type': LangRec.CH,
+            'Rec.model_type': ModelType.MOBILE,
+            'Rec.ocr_version': OCRVersion.PPOCRV5,
+        })
     return _engine
 
 
 def ocr_texts(screen: np.ndarray) -> list[tuple[str, int, int, float]]:
     """识别整屏文字，返回 [(文字, 中心x, 中心y, 置信度)]。"""
-    result, _ = get_engine()(screen)
+    res = get_engine()(screen, use_det=True, use_cls=True, use_rec=True)
+    boxes = getattr(res, 'boxes', None)
+    txts = getattr(res, 'txts', None)
+    scores = getattr(res, 'scores', None)
     out = []
-    for box, text, score in result or []:
-        xs = [p[0] for p in box]
-        ys = [p[1] for p in box]
+    if boxes is None or txts is None or scores is None:
+        return out
+    for box, text, score in zip(boxes, txts, scores):
+        xs = [pt[0] for pt in box]
+        ys = [pt[1] for pt in box]
         out.append((text, int(sum(xs) / 4), int(sum(ys) / 4), float(score)))
     return out
 
@@ -46,8 +155,8 @@ def ocr_fullscreen(screen: np.ndarray) -> list[tuple[str, int, int, float]]:
     返回坐标已除以缩放系数、还原回原图（截图）像素，可直接用于点击。
     """
     h, w = screen.shape[:2]
-    if w == OCR_FULLSCREEN_WIDTH:
-        return ocr_texts(screen)
+    if w <= OCR_FULLSCREEN_WIDTH:
+        return ocr_texts(screen)  # 不做放大：宽度小于等于 720 直接原样识别
     scale = OCR_FULLSCREEN_WIDTH / w
     img = Image.fromarray(screen)
     img = img.resize((OCR_FULLSCREEN_WIDTH, round(h * scale)), Image.LANCZOS)
@@ -133,11 +242,17 @@ def parse_employed_ratio(
         return None
 
     def pct_below(label: tuple[int, int, float]) -> int | None:
+        """取标签正下方一行的百分比中离标签 x 最近的那个（x 偏移随比例变化，
+        如 被雇佣者 75% 会偏左较多，固定容差会漏判）。"""
         lx, ly, _ = label
+        best: tuple[int, int] | None = None
         for value, x, y in pcts:
-            if abs(x - lx) <= 60 and 0 < y - ly <= 80:
-                return value
-        return None
+            if not (0 < y - ly <= 120):
+                continue
+            d = abs(x - lx)
+            if best is None or d < best[0]:
+                best = (d, value)
+        return best[1] if best else None
 
     e_pct = pct_below(employer)
     d_pct = pct_below(employed)

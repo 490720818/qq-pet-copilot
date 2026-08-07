@@ -189,7 +189,7 @@ class SchoolScenario(DeviceScenario):
 
     def wait_class_end(self) -> bool:
         """等待下课并点击 quit。返回 True 表示还能继续学。"""
-        self.wait_end('school_in', 'school_end')
+        self.wait_end('school_in', 'school_end', encourage=True)
         again = self.see('school_start')
         if again:
             log('还可以继续学习')

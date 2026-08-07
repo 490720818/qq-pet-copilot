@@ -4,10 +4,10 @@ from __future__ import annotations
 import time
 
 from .config import find_adb, load_config
-from .locators import LOCATORS, OCR_MIN_SCORE, see_bounds
+from .locators import LOCATORS, ocr_screen
 from .locators import see as locate
 from .locators import see_all as locate_all
-from .ocr import find_text, ocr_texts, parse_employed_ratio
+from .ocr import parse_employed_ratio
 from .progress import count_cross, log
 from .u2dev import U2Device
 
@@ -16,8 +16,8 @@ CLICK_INTERVAL = 1.0       # 连续点击/重试间隔（秒）
 NAV_TIMEOUT = 10           # 单个阶段最多重试次数，超过认为卡死抛异常
 MAIN_PAGE_ATTEMPTS = 10    # 回主页面最多尝试次数（识别 main_sign / 点 back）
 BUSY_GATE_ATTEMPTS = 2     # 出门后进行中状态的检测次数（活动面板加载有几秒延迟）
-BUSY_BANNER_TOP_RATIO = 0.08  # 进行中状态 OCR 裁剪：状态面板顶部取 8%×总屏幕高度
 WAIT_LOG_INTERVAL = 300.0  # 长等待期间的心跳日志间隔（秒），避免每轮检测刷屏
+ENCOURAGE_LOG_INTERVAL = 300.0  # "鼓励宠物"点击日志节流间隔（秒）：按钮每 ~12s 出现，避免刷屏
 
 
 class DeviceScenario:
@@ -70,17 +70,31 @@ class DeviceScenario:
         self.click(*self.dev.rel(x, y))
 
     def click_until_gone_or_see(self, click_name: str, wait_name: str, stage: str) -> None:
-        """点击 click_name，直到看见 wait_name；点击后 click_name 消失也视为已跳转。"""
+        """点击 click_name，直到看见 wait_name；点击后 click_name 消失也视为已跳转。
+
+        wait_name 纯 OCR（adventure_in/school_in/work_in）时先点后查：先查会每轮
+        现截图+整屏 OCR（~1 秒）拖慢点击，这类"开始"转换改为点击目标在就只管点、
+        目标消失（页面已跳转）才查 wait。其余 wait（xpath/u2，如 visit）仍先查——
+        便宜，且避免 click_name 过度匹配时漏判"已进入目标状态"而一直重复点击
+        （如 visit_friends 会匹配到好友列表里的"好友"按钮）。
+        """
+        wait_ocr_only = not any(LOCATORS.get(wait_name, {}).get(k)
+                                for k in ('xpath', 'xpath_ocr', 'u2'))
         clicked = False
         for attempt in range(1, NAV_TIMEOUT + 1):
-            # 只抓控件树快照，截图按需懒加载（see 内部 OCR 需要时才截）：
-            # 状态区域不存在时 xpath_ocr 不截图，每轮省 1-2 秒
+            # 只抓控件树快照，截图按需懒加载（see 内部 OCR 需要时才截）
             source = self.dev.hierarchy()
+            target = self.see(click_name, None, source)
+            if target and wait_ocr_only:
+                # OCR wait：点击目标在就只管点，避免每轮截图+OCR
+                self.click(target[0], target[1])
+                clicked = True
+                time.sleep(CLICK_INTERVAL)
+                continue
             hit = self.see(wait_name, None, source)
             if hit:
                 log(f'{stage}: 已出现 {wait_name} (score={hit[2]:.2f})')
                 return
-            target = self.see(click_name, None, source)
             if target:
                 self.click(target[0], target[1])
                 clicked = True
@@ -139,12 +153,18 @@ class DeviceScenario:
             log('未定位到"出门"按钮')
         time.sleep(CLICK_INTERVAL)
 
-    def wait_end(self, in_name: str, end_name: str, check_interval: float | None = None) -> None:
+    def wait_end(self, in_name: str, end_name: str, check_interval: float | None = None,
+                 encourage: bool = False) -> None:
         """等待 end_name 出现并点 quit 退出，期间点 in_name 画面防设备休眠。
-        check_interval=None 时用统一配置 schedule.check_interval。"""
+
+        encourage=True 时每轮顺带检测"鼓励宠物"按钮（d(description="鼓励宠物")），
+        出现就点一下（学习等待期间提升心情/互动收益）。
+        check_interval=None 时用统一配置 schedule.check_interval。
+        """
         if check_interval is None:
             check_interval = self.check_interval
         last_log_at = 0.0
+        last_encourage_log = 0.0
         while True:
             screen, source = self.snapshot()
             hit = self.see(end_name, screen, source)
@@ -154,6 +174,15 @@ class DeviceScenario:
             cur = self.see(in_name, screen, source)
             if cur:
                 self.dev.click(cur[0], cur[1])  # 防休眠点击不记日志
+            if encourage:
+                enc = self.see('encourage_pet', screen, source)
+                if enc:
+                    # 静默点击；日志按 ENCOURAGE_LOG_INTERVAL 节流（按钮每 ~12s 出现一次）
+                    self.dev.click(enc[0], enc[1])
+                    now = time.monotonic()
+                    if now - last_encourage_log >= ENCOURAGE_LOG_INTERVAL:
+                        log(f'检测到"鼓励宠物"，点击 ({enc[0]}, {enc[1]})')
+                        last_encourage_log = now
             now = time.monotonic()
             if now - last_log_at >= WAIT_LOG_INTERVAL:
                 log('仍在进行中...')
@@ -173,65 +202,83 @@ class DeviceScenario:
         return parse_employed_ratio(ocr_screen(screen))
 
     def wait_employed_back(self, check_interval: float | None = None) -> None:
-        """被雇佣中：按检查间隔识别一次，出现召回标志（分成比例终态）就点
-        employed_come_back 提前召回，再点 employed_come_back_confirm 确认；
-        确认后等待 employed_end 出现，点 quit 退出并计入被雇佣次数。
-        check_interval=None 时用统一配置 schedule.check_interval。"""
+        """被雇佣中：按配置 employed.action 决定召回时机。
+
+        等到25/75（默认）：分成比例到"雇佣者<=25% 被雇佣者>=75%"（宠物分成最高终态）
+        才点 employed_come_back 提前召回；立刻召回：进面板直接点"现在召回"。
+        召回后点 employed_come_back_confirm 确认，等 employed_end 出现点 quit 退出并计数。
+        check_interval=None 时用统一配置 schedule.check_interval。
+        """
         if check_interval is None:
             check_interval = self.check_interval
+        immediate = getattr(self.cfg.employed, 'action', '等到25/75') == '立刻召回'
         last_log_at = 0.0
+        last_encourage_log = 0.0
         while True:
             screen, source = self.snapshot()
-            sign = self.see_employed_sign(screen)
-            if sign:
+            if immediate:
+                log('按配置"立刻召回"被雇佣宠物')
+            else:
+                sign = self.see_employed_sign(screen)
+                if not sign:
+                    # 点击一次被雇佣画面防止设备休眠
+                    cur = self.see('employed_in', screen, source)
+                    if cur:
+                        self.dev.click(cur[0], cur[1])  # 防休眠点击不记日志
+                    # 被雇佣等待期间也点"鼓励宠物"（复用快照，日志按 ENCOURAGE_LOG_INTERVAL 节流）
+                    enc = self.see('encourage_pet', screen, source)
+                    if enc:
+                        self.dev.click(enc[0], enc[1])
+                        now = time.monotonic()
+                        if now - last_encourage_log >= ENCOURAGE_LOG_INTERVAL:
+                            log(f'检测到"鼓励宠物"，点击 ({enc[0]}, {enc[1]})')
+                            last_encourage_log = now
+                    now = time.monotonic()
+                    if now - last_log_at >= WAIT_LOG_INTERVAL:
+                        log('仍在被雇佣中...')
+                        last_log_at = now
+                    time.sleep(check_interval)
+                    continue
                 log(f'检测到召回标志（分成比例终态） (score={sign[2]:.2f})')
-                for attempt in range(1, NAV_TIMEOUT + 1):
-                    # 先查确认按钮：召回点击后 confirm 可能延迟弹出，
-                    # 此时 come_back 已消失，只查 come_back 会永远等不到
-                    screen, source = self.snapshot()
-                    confirm = self.see('employed_come_back_confirm', screen, source)
-                    if confirm:
-                        self.click(confirm[0], confirm[1])
-                        time.sleep(CLICK_INTERVAL)
-                        break
-                    back = self.see('employed_come_back', screen, source)
-                    if back:
-                        self.click(back[0], back[1])
-                    else:
-                        if attempt == 1 or attempt == NAV_TIMEOUT:
-                            log(f'未找到召回/确认按钮，重试 ({attempt}/{NAV_TIMEOUT})')
+            # 召回：先点"现在召回"，再处理可能弹出的确认按钮
+            for attempt in range(1, NAV_TIMEOUT + 1):
+                # 先查确认按钮：召回点击后 confirm 可能延迟弹出，
+                # 此时 come_back 已消失，只查 come_back 会永远等不到
+                screen, source = self.snapshot()
+                confirm = self.see('employed_come_back_confirm', screen, source)
+                if confirm:
+                    self.click(confirm[0], confirm[1])
                     time.sleep(CLICK_INTERVAL)
+                    break
+                back = self.see('employed_come_back', screen, source)
+                if back:
+                    self.click(back[0], back[1])
                 else:
-                    raise RuntimeError('出现召回标志但召回/确认按钮未找到')
-                # 确认后等待结束界面，点 quit 退出并计数
-                for attempt in range(1, NAV_TIMEOUT + 1):
-                    screen, source = self.snapshot()
-                    end = self.see('employed_end', screen, source)
-                    if end:
-                        log(f'检测到被雇佣结束标志 employed_end (score={end[2]:.2f})')
-                        break
                     if attempt == 1 or attempt == NAV_TIMEOUT:
-                        log(f'等待 employed_end 出现 ({attempt}/{NAV_TIMEOUT})')
-                    time.sleep(CLICK_INTERVAL)
-                else:
-                    raise RuntimeError('召回确认后未出现 employed_end')
-                quit_hit = self.see('quit')
-                if quit_hit:
-                    self.click(quit_hit[0], quit_hit[1])
-                    time.sleep(CLICK_INTERVAL)
-                else:
-                    log('未找到 quit 按钮，直接返回')
-                count_cross('employed')  # 点完 quit 就计数
-                return
-            # 点击一次被雇佣画面防止设备休眠
-            cur = self.see('employed_in', screen, source)
-            if cur:
-                self.dev.click(cur[0], cur[1])  # 防休眠点击不记日志
-            now = time.monotonic()
-            if now - last_log_at >= WAIT_LOG_INTERVAL:
-                log('仍在被雇佣中...')
-                last_log_at = now
-            time.sleep(check_interval)
+                        log(f'未找到召回/确认按钮，重试 ({attempt}/{NAV_TIMEOUT})')
+                time.sleep(CLICK_INTERVAL)
+            else:
+                raise RuntimeError('出现召回标志但召回/确认按钮未找到')
+            # 确认后等待结束界面，点 quit 退出并计数
+            for attempt in range(1, NAV_TIMEOUT + 1):
+                screen, source = self.snapshot()
+                end = self.see('employed_end', screen, source)
+                if end:
+                    log(f'检测到被雇佣结束标志 employed_end (score={end[2]:.2f})')
+                    break
+                if attempt == 1 or attempt == NAV_TIMEOUT:
+                    log(f'等待 employed_end 出现 ({attempt}/{NAV_TIMEOUT})')
+                time.sleep(CLICK_INTERVAL)
+            else:
+                raise RuntimeError('召回确认后未出现 employed_end')
+            quit_hit = self.see('quit')
+            if quit_hit:
+                self.click(quit_hit[0], quit_hit[1])
+                time.sleep(CLICK_INTERVAL)
+            else:
+                log('未找到 quit 按钮，直接返回')
+            count_cross('employed')  # 点完 quit 就计数
+            return
 
     def wait_busy_end(self, check_interval: float | None = None,
                       attempts: int = BUSY_GATE_ATTEMPTS) -> str | None:
@@ -245,74 +292,29 @@ class DeviceScenario:
         time.sleep(0.5)
         if check_interval is None:
             check_interval = self.check_interval
-        # 只在状态面板裁剪区（status_banner xpath 内、取元素顶部 8%×总屏幕高度）OCR
-        # 匹配关键词判断进行中状态；面板没定位到就跳过检测（不截图不 OCR）。
-        # 出门后活动面板有几秒加载延迟，未定位到或未匹配时重试几次再下结论。
+        # 整屏 OCR 匹配关键词判断进行中状态（能覆盖全部四种状态，含被雇佣；
+        # 之前的 status_banner 区域方案对被雇佣面板不适用）。出门后活动面板
+        # 有几秒加载延迟，未匹配到任何状态时重试几次再下结论。
         for attempt in range(1, attempts + 1):
-            region = self._busy_ocr_region()
-            if region is None:
-                # 没定位到宠物状态面板：直接跳过本次检测
-                if attempt == 1 or attempt == attempts:
-                    log(f'未定位到宠物状态面板，跳过进行中状态检测 ({attempt}/{attempts})')
-                if attempt < attempts:
-                    time.sleep(CLICK_INTERVAL)
-                continue
-            state = self._match_busy_state(region)
-            if state == 'school':
+            screen = self.screen()
+            if self.see('school_in', screen):
                 log('检测到正在上课，等待这节课结束...')
-                self.wait_end('school_in', 'school_end', check_interval)
+                self.wait_end('school_in', 'school_end', check_interval, encourage=True)
                 return 'school'
-            if state == 'work':
+            if self.see('work_in', screen):
                 log('检测到正在打工，等待这次工作结束...')
-                self.wait_end('work_in', 'work_end', check_interval)
+                self.wait_end('work_in', 'work_end', check_interval, encourage=True)
                 return 'work'
-            if state == 'adventure':
+            if self.see('adventure_in', screen):
                 log('检测到正在冒险，等待这次冒险结束...')
                 self.wait_end('adventure_in', 'adventure_end', check_interval)
                 return 'adventure'
-            if state == 'employed':
+            if self.see('employed_in', screen):
                 log('检测到被雇佣中，等待召回...')
                 self.wait_employed_back()
                 return 'employed'
             if attempt < attempts:
                 time.sleep(CLICK_INTERVAL)
-        return None
-
-    def _busy_ocr_region(self) -> tuple[int, int, int, int] | None:
-        """进行中状态 OCR 的裁剪区域：status_banner（宠物状态面板）顶部 8% 屏幕高度。
-
-        top = 8% × 总屏幕高度（如 1080x2160 → 172px），从元素顶部往下取这么高；
-        不缓存 bounds——面板大小可能随状态实时变化，每次实时查 xpath 取最新范围；
-        元素没定位到返回 None（不检测）。
-        """
-        bounds = see_bounds(self.dev, 'status_banner')
-        if not bounds:
-            return None
-        x1, y1, x2, y2 = bounds
-        w, h = self.dev.window_size()
-        top = int(h * BUSY_BANNER_TOP_RATIO)
-        x1 = max(x1, 0)
-        x2 = min(x2, w)
-        y2 = min(y2, y1 + top)
-        if x2 <= x1 or y2 <= y1:
-            return None
-        return (x1, y1, x2, y2)
-
-    def _match_busy_state(self, region: tuple[int, int, int, int]) -> str | None:
-        """对宠物状态面板顶部裁剪区截图并 OCR，匹配进行中状态。
-
-        返回 'school' / 'work' / 'adventure' / 'employed' / None；
-        只在传入的裁剪区 OCR，不做整屏兜底；命中阈值沿用 OCR_MIN_SCORE。
-        """
-        x1, y1, x2, y2 = region
-        screen = self.screen()
-        results = ocr_texts(screen[y1:y2, x1:x2])
-        for state, name in (('school', 'school_in'), ('work', 'work_in'),
-                            ('adventure', 'adventure_in'), ('employed', 'employed_in')):
-            for target in LOCATORS[name]['ocr']:
-                hit = find_text(results, target)
-                if hit and hit[2] >= OCR_MIN_SCORE:
-                    return state
         return None
 
     def _recheck_busy_after_nav(self, stage: str) -> str | None:

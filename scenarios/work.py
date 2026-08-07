@@ -147,9 +147,42 @@ class WorkScenario(DeviceScenario):
         self.click(close[0], close[1])
         time.sleep(CLICK_INTERVAL)
 
+    def _recover_work_start(self) -> None:
+        """work_start 未出现（被"去照顾一下"弹窗挡住）时的恢复流程。
+
+        点"去照顾一下" -> 一键护理（含"支付并护理"确认）-> back 回工作面板，
+        之后 work_start 应重新出现。
+        """
+        care = self.see('go_care')
+        if care:
+            log(f'检测到"去照顾一下"，点击 ({care[0]}, {care[1]})')
+            self.click(care[0], care[1])
+            time.sleep(CLICK_INTERVAL)
+        else:
+            log('未找到"去照顾一下"按钮，跳过护理恢复')
+            return
+        hit = self.see('one_click_care')
+        if hit:
+            self.click(hit[0], hit[1])
+            time.sleep(CLICK_INTERVAL)
+            pay = self.see('one_click_pay')
+            if pay:
+                log('检测到"支付并护理"，点击确认')
+                self.click(pay[0], pay[1])
+                time.sleep(CLICK_INTERVAL)
+        else:
+            log('未找到一键护理按钮')
+        back = self.see('back')
+        if back:
+            log(f'点击 back 回工作面板 ({back[0]}, {back[1]})')
+            self.click(back[0], back[1])
+            time.sleep(CLICK_INTERVAL)
+        else:
+            log('未找到 back 按钮')
+
     def wait_work_end(self) -> None:
-        """等待 work_end 出现并点击 quit 退出。"""
-        self.wait_end('work_in', 'work_end')
+        """等待 work_end 出现并点击 quit 退出；等待期间点"鼓励宠物"。"""
+        self.wait_end('work_in', 'work_end', encourage=True)
 
     def run(self, max_times: int | None = None, max_rounds: int = 0) -> bool:
         """max_times: 当天打工次数上限，0 表示不限；None 表示用配置值。
@@ -192,6 +225,9 @@ class WorkScenario(DeviceScenario):
             self.select_place()
             self.select_job()
             self.hire_friend()
+            # work_start 没出现时，先处理"去照顾一下"弹窗（护理 + back 回工作面板）
+            if not self.see('work_start', source=self.dev.hierarchy()):
+                self._recover_work_start()
             self.click_until_gone_or_see('work_start', 'work_in', '开始工作')
             log('已开始工作，等待结束...')
             self.wait_work_end()
