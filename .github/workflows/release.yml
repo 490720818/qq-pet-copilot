@@ -64,6 +64,8 @@ jobs:
 
       - name: Download OCR v5 models
         shell: pwsh
+        env:
+          PYTHONIOENCODING: utf-8
         run: |
           python tools/fetch_ocr_models.py
 
