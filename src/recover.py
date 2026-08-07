@@ -1,11 +1,12 @@
-"""异常恢复：adb reboot 后重新进入 QQ 宠物页面。
+"""异常恢复：重新进入 QQ 宠物页面。
 
-调度/场景抛异常（设备卡死、u2 连接断开、游戏界面卡死等）时的恢复链路：
-adb reboot -> 等开机完成 -> 亮屏上滑解锁（仅滑动锁屏）-> 启动 QQ ->
-等待并紧凑双击 Q宠-* 入口进宠物页面（间隔 0.05s，真机验证 0.3s 会被
-识别成两次单击）
--> 返回新的 U2Device 连接（旧连接随重启失效），由调用方刷新各场景的
-dev 后继续后续任务。
+调度/场景抛异常（设备卡死、u2 连接断开、游戏界面卡死等）时的恢复链路，
+按配置 recover.method 二选一：
+- 重启设备（默认）：adb reboot -> 等开机完成 -> 亮屏上滑解锁（仅滑动锁屏）-> 启动 QQ；
+- 重启游戏：只强停 QQ 再重开（设备不重启，快），适合游戏界面卡死；
+之后统一：等待并紧凑双击 Q宠-* 入口进宠物页面（间隔 0.05s，真机验证 0.3s
+会被识别成两次单击）-> 返回新的 U2Device 连接（旧连接随重启失效），
+由调用方刷新各场景的 dev 后继续后续任务。
 
 QQ 宠物入口的 content-desc 形如 "Q宠-1000004"，后缀数字随账号/宠物不固定，
 按 descriptionStartsWith 前缀匹配。
@@ -33,19 +34,26 @@ PET_PAGE_TIMEOUT = 5.0     # 每次点击后等宠物主页加载的超时（秒
 PET_PAGE_POLL_INTERVAL = 3.0
 
 
-def reenter_pet(adb: Device) -> U2Device:
-    """重启设备 -> 启动 QQ -> 点 Q宠-* 入口进宠物页面，返回新的 U2Device。
+def reenter_pet(adb: Device, method: str = "重启设备") -> U2Device:
+    """按 recover.method 恢复：重启设备 或 重启游戏，再进宠物页面，返回新 U2Device。
 
     点完入口会等宠物主页（"宠物状态"容器）真的加载出来；没出来重新点，
     最多 PET_ENTRY_CLICK_TRIES 次。失败抛异常，由调用方决定再次恢复或放弃。
     """
-    log('异常恢复：adb reboot 重启设备...')
-    adb.reboot_and_wait(BOOT_TIMEOUT, BOOT_POLL_INTERVAL)
-
-    dev = _connect_u2(adb)
-    _unlock(dev)
-    log('启动 QQ...')
-    adb.launch_app(QQ_PACKAGE)
+    if method == "重启游戏":
+        # 只重开 QQ，不重启设备（快；设备级卡死/u2 挂掉时治不了）
+        log('异常恢复：重启 QQ 游戏（不重启设备）...')
+        adb.force_stop_app(QQ_PACKAGE)
+        dev = _connect_u2(adb)
+        log('启动 QQ...')
+        adb.launch_app(QQ_PACKAGE)
+    else:
+        log('异常恢复：adb reboot 重启设备...')
+        adb.reboot_and_wait(BOOT_TIMEOUT, BOOT_POLL_INTERVAL)
+        dev = _connect_u2(adb)
+        _unlock(dev)
+        log('启动 QQ...')
+        adb.launch_app(QQ_PACKAGE)
     for attempt in range(1, PET_ENTRY_CLICK_TRIES + 1):
         _click_pet_entry(dev)
         if _wait_main_page(dev):

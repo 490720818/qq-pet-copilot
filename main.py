@@ -129,6 +129,7 @@ SETTING_FIELDS = [
     ('care.clean_threshold', '清洁阈值', 'int'),
     ('care.method', '护理方式', ['ocr检测', '一键护理']),
     ('employed.action', '被雇佣后处理', ['等到25/75', '立刻召回']),
+    ('recover.method', '异常处理方式', ['重启设备', '重启游戏']),
     ('notify.win_toast', '失败告警 Windows 通知', 'bool'),
     ('notify.onepush_config', '失败告警 OnePush 配置', 'text'),
 ]

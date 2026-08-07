@@ -97,6 +97,10 @@ class Device:
                 return
         raise AdbError(f"设备重启后 {timeout:.0f}s 内未完成开机")
 
+    def force_stop_app(self, package: str) -> None:
+        """强停应用（重启游戏恢复用，如 QQ）。"""
+        self._run('shell', 'am', 'force-stop', package)
+
     def launch_app(self, package: str) -> None:
         """用 monkey 启动应用主 Activity（无需知道具体 Activity 名）。"""
         self._run("shell", "monkey", "-p", package,

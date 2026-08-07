@@ -125,6 +125,12 @@ class PkConfig:
 
 
 @dataclass
+class RecoverConfig:
+    # 异常恢复方式：重启设备（adb reboot，彻底）/ 重启游戏（只强停并重开 QQ，快）
+    method: str = "重启设备"
+
+
+@dataclass
 class EmployedConfig:
     # 被雇佣后处理：等到25/75（分成比例到 雇佣者<=25% 被雇佣者>=75% 才召回，收益最高）/
     # 立刻召回（进被雇佣面板直接点"现在召回"）
@@ -150,6 +156,7 @@ class Config:
     visit: VisitConfig = field(default_factory=VisitConfig)
     pk: PkConfig = field(default_factory=PkConfig)
     employed: EmployedConfig = field(default_factory=EmployedConfig)
+    recover: RecoverConfig = field(default_factory=RecoverConfig)
     notify: NotifyConfig = field(default_factory=NotifyConfig)
 
 
@@ -195,5 +202,6 @@ def load_config(config_path: str | Path | None = None) -> Config:
         visit=VisitConfig(**raw.get("visit", {})),
         pk=PkConfig(**raw.get("pk", {})),
         employed=EmployedConfig(**raw.get("employed", {})),
+        recover=RecoverConfig(**raw.get("recover", {})),
         notify=NotifyConfig(**raw.get("notify", {})),
     )

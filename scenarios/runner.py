@@ -266,7 +266,7 @@ class Runner:
             return False
         self.recoveries += 1
         try:
-            dev = reenter_pet(self.school.dev.adb)
+            dev = reenter_pet(self.school.dev.adb, self.school.cfg.recover.method)
         except Exception as e:
             log(f'恢复失败: {e}')
             return False
@@ -295,6 +295,7 @@ class Runner:
         for scen in (self.school, self.work, self.adventure, self.care, self.visit, self.pk):
             scen.cfg.schedule.check_interval = sched.check_interval
             scen.cfg.employed.action = cfg.employed.action
+            scen.cfg.recover.method = cfg.recover.method
 
         adv = cfg.adventure
         self.adventure_times = adv.times_per_day
