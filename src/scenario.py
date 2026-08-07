@@ -213,7 +213,6 @@ class DeviceScenario:
             check_interval = self.check_interval
         immediate = getattr(self.cfg.employed, 'action', '等到25/75') == '立刻召回'
         last_log_at = 0.0
-        last_encourage_log = 0.0
         while True:
             screen, source = self.snapshot()
             if immediate:
@@ -225,14 +224,6 @@ class DeviceScenario:
                     cur = self.see('employed_in', screen, source)
                     if cur:
                         self.dev.click(cur[0], cur[1])  # 防休眠点击不记日志
-                    # 被雇佣等待期间也点"鼓励宠物"（复用快照，日志按 ENCOURAGE_LOG_INTERVAL 节流）
-                    enc = self.see('encourage_pet', screen, source)
-                    if enc:
-                        self.dev.click(enc[0], enc[1])
-                        now = time.monotonic()
-                        if now - last_encourage_log >= ENCOURAGE_LOG_INTERVAL:
-                            log(f'检测到"鼓励宠物"，点击 ({enc[0]}, {enc[1]})')
-                            last_encourage_log = now
                     now = time.monotonic()
                     if now - last_log_at >= WAIT_LOG_INTERVAL:
                         log('仍在被雇佣中...')
