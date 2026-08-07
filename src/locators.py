@@ -107,6 +107,9 @@ LOCATORS: dict[str, dict] = {
     },
     'quit': {'xpath': ['//*[@content-desc="返回"]']},
 
+    'select_box_1': {
+        'xpath': [SELECT_BOX_XPATH + '/android.widget.FrameLayout[1]'],
+    },
     'select_box_2': {
         'xpath': [SELECT_BOX_XPATH + '/android.widget.FrameLayout[2]'],
     },
@@ -128,7 +131,7 @@ LOCATORS: dict[str, dict] = {
     'school_graduated': {'xpath': ['//*[@content-desc="去找同学玩"]']},
     'school_graduate_close': {'xpath': ['//*[@content-desc="关闭"]']},
     # 学习等待期间的"鼓励宠物"按钮（点击提升心情/互动收益，wait_end(encourage=True) 用）。
-    # xpath 优先：复用 wait_end 已有的控件树快照，避免 u2 选择器再实时查一次（重复采集 XML）
+    # xpath 优先：复用 wait_end 已有的控件树快照，避免 u2 选择器再实时查一次
     'encourage_pet': {'xpath': ['//*[@content-desc="鼓励宠物"]'],
                       'u2': [{'description': '鼓励宠物'}]},
 
