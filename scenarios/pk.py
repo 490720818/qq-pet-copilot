@@ -4,7 +4,8 @@
 1. 点击 好友（visit_friends）-> 点击 访问（visit）进入第一个好友宠物页
    （好友导航复用 visit.py：累积名单、按顺序切换）
 2. 点击 PK（pk）-> 点击 开始（pk_start）
-3. 等 11 秒 PK 结束，出现 分享（pk_end）即计一次，持久化到 runs/pk_progress.json
+3. 点开始后 1 秒起整屏 OCR 判断"正在PK"：命中按原本 11 秒等 PK 结束，出现 分享（pk_end）
+   即计一次，持久化到 runs/pk_progress.json；匹配不到"正在PK"立即按超时处理点 quit 换好友
 4. 点击 再来一局（pk_again）-> 再点 开始；每个好友最多 PK 3 次
 5. 切换下一个好友继续 PK，直到次数满或没有更多好友
 6. 结束：点 back 回主页面
@@ -38,8 +39,9 @@ from scenarios.care import CareScenario
 from scenarios.visit import FRIEND_ITEM_XPATH, VisitScenario
 
 PK_PER_FRIEND = 3     # 每个好友可 PK 次数
-PK_DURATION = 11.0    # 一局 PK 时长（秒）
-PK_END_TIMEOUT = 13.0  # 等 PK 结果（分享按钮）的超时（秒），超时点 quit 换好友
+PK_DURATION = 11.0    # 一局 PK 时长（秒）：确认"正在PK"后按此总时长等 PK 结束（保持原逻辑）
+PK_START_CHECK_DELAY = 1.0  # 点开始后多久开始整屏 OCR 判断"正在PK"
+PK_END_TIMEOUT = 11.0  # 等 PK 结果（分享按钮）的超时（秒），超时点 quit 换好友
 PK_ENTER_TIMEOUT = 3.0  # 点 PK 后等开始按钮的短超时：上限只弹 toast 不跳页，不用长等
 PK_ROUND_CAP = 16     # 一次 run() 最多 PK 局数（超出由执行器下一轮接着处理）
 PK_STAT_COST = 5      # 每局消耗体力/清洁
@@ -69,6 +71,22 @@ class PKScenario(VisitScenario):
                 return True
             time.sleep(CLICK_INTERVAL)
         return False
+
+    def _handle_pk_timeout(self, reason: str) -> None:
+        """PK 结果超时处理：点 quit 退出该局（不计数）换下一个好友。
+
+        连续达到 PK_TIMEOUT_STREAK_LIMIT 次说明 PK 环境异常（网络/加载卡住），
+        抛 PKDeferred 临时推迟整个 PK 任务（调度器延后重试，不做重启恢复）。
+        """
+        self._pk_timeout_streak += 1
+        log(f'{reason}，点 quit 切换下一个好友'
+            f'（连续第 {self._pk_timeout_streak}/{PK_TIMEOUT_STREAK_LIMIT} 次）')
+        if self._pk_timeout_streak >= PK_TIMEOUT_STREAK_LIMIT:
+            raise PKDeferred('PK 结果连续超时，临时推迟 PK 任务')
+        quit_hit = self.see('quit')
+        if quit_hit:
+            self.click(quit_hit[0], quit_hit[1])
+            time.sleep(CLICK_INTERVAL)
 
     def leave_result_page(self) -> None:
         """PK 结束页/准备页点 back 回好友宠物页。
@@ -132,19 +150,18 @@ class PKScenario(VisitScenario):
                 raise RuntimeError('PK 页未找到开始按钮')
             self.click(hit[0], hit[1])
             log(f'第 {i}/{PK_PER_FRIEND} 局 PK 中...')
-            time.sleep(PK_DURATION)
+            # 点开始后 PK_START_CHECK_DELAY 秒起整屏 OCR 判断"正在PK"：命中才继续正常
+            # 流程（按原本 PK_DURATION 秒等 PK 结束）；匹配不到说明没真正开打
+            # （加载卡住/已提前结算），立即按超时处理点 quit 换好友，不等 11 秒
+            time.sleep(PK_START_CHECK_DELAY)
+            if not self.see('pk_in', self.screen()):
+                self._handle_pk_timeout('未匹配到"正在PK"')
+                return done
+            time.sleep(PK_DURATION - PK_START_CHECK_DELAY)
             if not self.wait_pk_end():
                 # 超时没出结果：连续出现多次说明 PK 环境异常（网络/加载卡住），
                 # 点 quit 退出该局（不计数）换下一个好友；连续达到上限则临时推迟整个 PK 任务
-                self._pk_timeout_streak += 1
-                log(f'{PK_END_TIMEOUT:.0f}s 未出 PK 结果，点 quit 切换下一个好友'
-                    f'（连续第 {self._pk_timeout_streak}/{PK_TIMEOUT_STREAK_LIMIT} 次）')
-                if self._pk_timeout_streak >= PK_TIMEOUT_STREAK_LIMIT:
-                    raise PKDeferred('PK 结果连续超时，临时推迟 PK 任务')
-                quit_hit = self.see('quit')
-                if quit_hit:
-                    self.click(quit_hit[0], quit_hit[1])
-                    time.sleep(CLICK_INTERVAL)
+                self._handle_pk_timeout(f'{PK_END_TIMEOUT:.0f}s 未出 PK 结果')
                 return done
             done += 1
             self._pk_timeout_streak = 0  # PK 成功，清零连续超时计数

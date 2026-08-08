@@ -10,8 +10,9 @@
 5. 把第一框拖到第三框归位（两次），点击第二框选择第二个工作（最高收益）
 6. 点击 work_outworker 进入雇佣好友界面：
    - 识别到 employ 按钮 -> 点击最上方的一个
-   - 没有 -> 从 (365, 1200) 拖到 (365, 700) 边拖边找，找到点最上方一个
-   - 拖动达到配置上限仍没有 -> 点击 work_employ_close 关闭
+   - 没有（当前页好友不可雇佣时不渲染按钮，下滑空找纯浪费时间）
+     -> 点 work_employ_close 关闭并确认弹层已关，
+     回到打工面板由下一步点 work_start 直接开工（不雇佣）
 7. 点击 work_start 开始工作，直到出现 work_in
 8. 工作中按配置的检查间隔（schedule.check_interval）检查，直到出现 work_end，点击 quit 退出
 9. 当天次数 +1 并持久化到 runs/work_progress.json（含 history 历史记录），
@@ -39,9 +40,6 @@ from src.progress import (
 from src.scenario import CLICK_INTERVAL, DeviceScenario, NAV_TIMEOUT
 
 # 以下坐标均为 720x1280 参考坐标，运行时按当前分辨率自动换算
-# 雇佣界面找不到按钮时的下滑拖动：从 (365, 1200) 拖到 (365, 700)
-EMPLOY_SCROLL = (365, 1200, 365, 700)
-
 PROGRESS_FILE = WORK_PROGRESS_FILE
 
 
@@ -52,6 +50,8 @@ class WorkScenario(DeviceScenario):
         if not self.location:
             raise ValueError('config.yaml 中 work.location 未配置打工地点')
         self.times_per_day = self.cfg.work.times_per_day
+        # employ_scroll_limit 保留配置兼容（旧流程下滑找雇佣按钮已移除，
+        # 当前页没有雇佣按钮时直接关闭面板开工），runner 仍会赋值
         self.employ_scroll_limit = self.cfg.work.employ_scroll_limit
         log(f'打工地点: {self.location}，每天打工次数: '
             f'{self.times_per_day if self.times_per_day else "不限"}')
@@ -121,7 +121,12 @@ class WorkScenario(DeviceScenario):
         self.click_until_gone_or_see('work_outworker', 'work_employ_close', '选择雇佣好友')
 
     def hire_friend(self) -> None:
-        """雇佣好友：点 XPath 定位到的雇佣按钮；没有则边下滑边找；到上限就关闭。"""
+        """雇佣好友：有雇佣按钮就点；没有则直接关闭雇佣页面去开工。
+
+        当前页好友不可雇佣时列表不渲染雇佣按钮（纯图片/无按钮），
+        下滑空找每次还要 dump 全树 2-4 秒，纯浪费时间：
+        检测一次没有就直接关闭雇佣面板，由 run() 点 work_start 直接开工。
+        """
         # 每次查找复用一次控件树快照：employ 是深层 XPath，
         # 不传 source 的实时查询每次要 dump 全树（约 2-4 秒）
         btn = self.see('employ', source=self.dev.hierarchy())
@@ -130,22 +135,46 @@ class WorkScenario(DeviceScenario):
             self.click(btn[0], btn[1])
             time.sleep(CLICK_INTERVAL)
             return
-        for i in range(1, self.employ_scroll_limit + 1):
-            self.swipe(*EMPLOY_SCROLL)
-            time.sleep(CLICK_INTERVAL)
-            btn = self.see('employ', source=self.dev.hierarchy())
-            if btn:
-                log(f'下滑 {i} 次后找到雇佣按钮，点击 ({btn[0]}, {btn[1]})')
-                self.click(btn[0], btn[1])
+        log('未找到雇佣按钮，直接关闭雇佣页面')
+        self._close_employ_panel()
+
+    def _employ_panel_open(self) -> bool:
+        """雇佣排行榜面板是否还开着：直接 dump 控件树查标题。
+
+        不能走 see('work_employ_close')——它是 cache=True，命中一次后
+        see() 直接返回缓存点不再识别，判断不了"是否已关闭"。
+        """
+        try:
+            xml = self.dev.d.dump_hierarchy()
+        except Exception as e:
+            log(f'抓控件树失败，按未关闭处理: {e}')
+            return True
+        return '宠友雇佣加成排行榜' in xml
+
+    def _close_employ_panel(self, max_tries: int = 3) -> None:
+        """点 work_employ_close 关闭雇佣页面并确认已关（标题消失）才返回。
+
+        work_employ_close 是 cache=True：进入雇佣面板时已在 click_until_gone_or_see
+        命中缓存，这里直接拿缓存点点击、不用先 dump 全树；点完再确认一次。
+        滚动动画期间点击可能没生效（弹层没关，去打工被盖住），没关就重试点。
+        """
+        for attempt in range(1, max_tries + 1):
+            close = self.see('work_employ_close')
+            if close is None:
+                # 缓存未命中/失效：实时走 xpath 找一次
+                close = self.see('work_employ_close', source=self.dev.hierarchy())
+            if close:
+                log(f'点击关闭雇佣页面 ({close[0]}, {close[1]})，尝试 {attempt}/{max_tries}')
+                self.click(close[0], close[1])
                 time.sleep(CLICK_INTERVAL)
+            else:
+                log(f'未找到关闭按钮，尝试 {attempt}/{max_tries}')
+                time.sleep(CLICK_INTERVAL)
+                continue
+            if not self._employ_panel_open():
+                log('雇佣页面已关闭')
                 return
-            log(f'未找到雇佣按钮，继续下滑 ({i}/{self.employ_scroll_limit})')
-        log(f'拖动 {self.employ_scroll_limit} 次仍未找到雇佣按钮，关闭雇佣界面')
-        close = self.see('work_employ_close', source=self.dev.hierarchy())
-        if not close:
-            raise RuntimeError('雇佣界面未找到 work_employ_close 关闭按钮')
-        self.click(close[0], close[1])
-        time.sleep(CLICK_INTERVAL)
+        raise RuntimeError(f'点击 {max_tries} 次仍未关闭雇佣页面')
 
     def _recover_work_start(self) -> None:
         """work_start 未出现（被"去照顾一下"弹窗挡住）时的恢复流程。

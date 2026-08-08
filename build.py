@@ -20,7 +20,7 @@ ONEDIR = '--onedir' in sys.argv
 # exe 首次运行会把它复制为 config.yaml
 CONFIG_SRC = 'config.example.yaml'
 
-# 走 QQPetCopilot.spec 打包：spec 里对 rapidocr 包的 v4 onnx 做了过滤（只带 v5，
+# 走 QQPetCopilot.spec 打包：spec 里对 rapidocr 包的 v4/v5 onnx 做了过滤（只带 v6 tiny，
 # 见 runs/models/rapidocr），并支持 onedir/onefile 两种模式（QQ_PET_ONEDIR 环境变量）
 ARGS = [
     sys.executable, '-m', 'PyInstaller',
@@ -34,7 +34,7 @@ def main() -> None:
     for stream in (sys.stdout, sys.stderr):
         if hasattr(stream, 'reconfigure'):
             stream.reconfigure(encoding='utf-8', errors='replace')
-    # 打包前尝试下载 v5 OCR 模型（runs/ 下；失败不阻塞，exe 会缺 v5 需运行时下载）
+    # 打包前尝试下载 v6 OCR 模型（runs/ 下；失败不阻塞，exe 会缺 v6 需运行时下载）
     fetch = PROJECT_ROOT / 'tools' / 'fetch_ocr_models.py'
     if fetch.exists():
         subprocess.run([sys.executable, str(fetch)], check=False)

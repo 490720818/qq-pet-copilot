@@ -303,6 +303,9 @@ class Runner:
 
         adv = cfg.adventure
         self.adventure_times = adv.times_per_day
+        # 场景 run(max_times=None) 时用自己的 times_per_day，必须一起热更新
+        # （否则 _run_round 跑 adventure 时日志/内部上限还是旧值）
+        self.adventure.times_per_day = adv.times_per_day
         self.adventure.skip_bad_weather = adv.skip_bad_weather
         start_time = adv.start_time
         if isinstance(start_time, int):

@@ -71,7 +71,8 @@ class WorkConfig:
     location: str = "风铃旅社"
     # 每天打工次数上限，0 为不限
     times_per_day: int = 0
-    # 找雇佣按钮时向下拖动次数上限
+    # 已不再使用：旧流程"下滑找雇佣按钮"已移除（当前页没有雇佣按钮时直接关闭面板开工），
+    # 保留字段仅为兼容已有 config.yaml
     employ_scroll_limit: int = 5
 
 

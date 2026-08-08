@@ -6,9 +6,11 @@
 再 OCR（高分辨率截图识别慢，缩放后速度与设备分辨率无关），
 返回坐标已还原回原图像素，可直接用于点击。
 
-引擎：rapidocr 3.8.x（onnxruntime，PP-OCRV5 mobile 模型）。
-模型目录 APP_ROOT/runs/models/rapidocr：只使用 PP-OCRV5 mobile（v5），
-不打/不初始化 v4 模型；打包随附的 v5 首次运行时复制出来，
+引擎：rapidocr>=3.9（onnxruntime，PP-OCRv6 tiny 模型；实测比 v5 mobile
+快约 2.4 倍且关键场景准确率持平，CJK+数字间可能插入空格，
+见 find_text 的空格归一化）。
+模型目录 APP_ROOT/runs/models/rapidocr：只使用 PP-OCRv6 tiny（det/rec）+ v4 cls，
+不打/不初始化 rapidocr 包自带的 v4/v5 模型；打包随附的模型首次运行时复制出来，
 缺失时用 tools/fetch_ocr_models.py 或首次联网自动下载。
 """
 from __future__ import annotations
@@ -34,18 +36,23 @@ OCR_FULLSCREEN_WIDTH = 720
 # OCR 模型目录（可写、持久，与 runs/ 进度日志同目录）：rapidocr 的 Global.model_root_dir
 MODEL_ROOT = APP_ROOT / 'runs' / 'models' / 'rapidocr'
 
-# PP-OCRV5 mobile（det/rec）与 cls 模型：URL 与 SHA256 取自 rapidocr default_models.yaml
-V5_MODELS = [
-    ('ch_PP-OCRv5_det_mobile.onnx',
-     'https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.8.0/onnx/PP-OCRv5/det/ch_PP-OCRv5_det_mobile.onnx',
-     '4d97c44a20d30a81aad087d6a396b08f786c4635742afc391f6621f5c6ae78ae'),
-    ('ch_PP-OCRv5_rec_mobile.onnx',
-     'https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.8.0/onnx/PP-OCRv5/rec/ch_PP-OCRv5_rec_mobile.onnx',
-     '5825fc7ebf84ae7a412be049820b4d86d77620f204a041697b0494669b1742c5'),
+# PP-OCRv6 tiny（det/rec）与 v4 cls 模型：URL 与 SHA256 取自 rapidocr 3.9.2 default_models.yaml。
+# 文件名必须与 rapidocr 自动下载时的落盘名一致（URL basename），否则引擎会重复下载。
+V6_TINY_MODELS = [
+    ('PP-OCRv6_det_tiny.onnx',
+     'https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/onnx/PP-OCRv6/det/PP-OCRv6_det_tiny.onnx',
+     'f42c0fbd294d95eac1a550e131b277dac97462c8025fa4b6c3cec1b7894bd3d5'),
+    ('PP-OCRv6_rec_tiny.onnx',
+     'https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/onnx/PP-OCRv6/rec/PP-OCRv6_rec_tiny.onnx',
+     'e16e242de5937ad92609223f19bc2aff3727ee40b095f996907c24749bad251b'),
     ('ch_ppocr_mobile_v2.0_cls_mobile.onnx',
-     'https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.8.0/onnx/PP-OCRv4/cls/ch_ppocr_mobile_v2.0_cls_mobile.onnx',
+     'https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/onnx/PP-OCRv4/cls/ch_ppocr_mobile_v2.0_cls_mobile.onnx',
      'e47acedf663230f8863ff1ab0e64dd2d82b838fceb5957146dab185a89d6215c'),
 ]
+
+# 旧 v5 模型文件名：切到 v6 后不再使用，ensure_models() 里顺手清掉（cls 两版共用保留）
+_STALE_V5_FILES = ('ch_PP-OCRv5_det_mobile.onnx', 'ch_PP-OCRv5_rec_mobile.onnx',
+                   'ppocrv5_dict.txt')
 
 
 def _sha256(path: Path) -> str:
@@ -57,9 +64,9 @@ def _sha256(path: Path) -> str:
 
 
 def _ensure_models() -> None:
-    """保证模型目录存在，并把打包随附的 v5 模型复制出来（避免首次联网下载）。
+    """保证模型目录存在，并把打包随附的模型复制出来（避免首次联网下载）。
 
-    只处理 PP-OCRV5 mobile（RESOURCE_ROOT/models/rapidocr）；不复制 rapidocr 包自带的 v4。
+    只处理 PP-OCRv6 tiny（RESOURCE_ROOT/models/rapidocr）；不复制 rapidocr 包自带的 v4/v5。
     """
     MODEL_ROOT.mkdir(parents=True, exist_ok=True)
     bundled_res = RESOURCE_ROOT / 'models' / 'rapidocr'
@@ -100,14 +107,15 @@ def _download_model(name: str, url: str, expected: str, attempts: int = 3) -> No
     raise last_err
 
 
-def ensure_v5_models() -> bool:
-    """确保模型目录就绪，并尝试补齐 PP-OCRV5 mobile 模型（缺失时联网下载）。
+def ensure_models() -> bool:
+    """确保模型目录就绪，并尝试补齐 PP-OCRv6 tiny 模型（缺失时联网下载）。
 
-    返回是否已具备完整 v5 模型；下载失败只记日志并返回 False（调用方抛错，不再回退 v4）。
+    顺带清理已废弃的 v5 模型文件。返回是否已具备完整模型；下载失败只记日志
+    并返回 False（调用方抛错，不再回退 v4/v5）。
     """
     MODEL_ROOT.mkdir(parents=True, exist_ok=True)
     _ensure_models()
-    for name, url, expected in V5_MODELS:
+    for name, url, expected in V6_TINY_MODELS:
         dst = MODEL_ROOT / name
         if dst.exists() and _sha256(dst) == expected:
             continue
@@ -117,6 +125,8 @@ def ensure_v5_models() -> bool:
         except Exception as e:
             log(f'下载 OCR 模型 {name} 失败: {e}，将无法使用 OCR')
             return False
+    for stale in _STALE_V5_FILES:
+        (MODEL_ROOT / stale).unlink(missing_ok=True)
     return True
 
 
@@ -126,22 +136,27 @@ def get_engine():
     if _engine is None:
         from rapidocr import EngineType, LangDet, LangRec, ModelType, OCRVersion, RapidOCR
 
-        if not ensure_v5_models():
-            # 没有 v5 且下载失败：明确报错，不再静默回退 v4
+        if not ensure_models():
+            # 没有 v6 tiny 且下载失败：明确报错，不再静默回退 v4/v5
             raise RuntimeError(
-                'PP-OCRV5 mobile 模型缺失且下载失败，OCR 不可用'
+                'PP-OCRv6 tiny 模型缺失且下载失败，OCR 不可用'
                 f'（模型目录: {MODEL_ROOT}，可运行 python tools/fetch_ocr_models.py）')
         _engine = RapidOCR(params={
             'Global.model_root_dir': str(MODEL_ROOT),
             'Global.log_level': 'WARN',  # 抑制引擎 INFO 噪音
             'Det.engine_type': EngineType.ONNXRUNTIME,
             'Det.lang_type': LangDet.CH,
-            'Det.model_type': ModelType.MOBILE,
-            'Det.ocr_version': OCRVersion.PPOCRV5,
+            'Det.model_type': ModelType.TINY,
+            'Det.ocr_version': OCRVersion.PPOCRV6,
             'Rec.engine_type': EngineType.ONNXRUNTIME,
             'Rec.lang_type': LangRec.CH,
-            'Rec.model_type': ModelType.MOBILE,
-            'Rec.ocr_version': OCRVersion.PPOCRV5,
+            'Rec.model_type': ModelType.TINY,
+            'Rec.ocr_version': OCRVersion.PPOCRV6,
+            # PP-OCRv6 不自带方向分类器，复用 v4 mobile cls
+            'Cls.engine_type': EngineType.ONNXRUNTIME,
+            'Cls.lang_type': 'ch',
+            'Cls.model_type': ModelType.MOBILE,
+            'Cls.ocr_version': OCRVersion.PPOCRV4,
         })
     return _engine
 
@@ -178,16 +193,24 @@ def ocr_fullscreen(screen: np.ndarray) -> list[tuple[str, int, int, float]]:
 
 
 def find_text(
-    results: list[tuple[str, int, int, float]], target: str
+    results: list[tuple[str, int, int, float]], target: str, strip_space: bool = True
 ) -> tuple[int, int, float] | None:
     """在 OCR 结果中找包含 target 的文字，返回 (中心x, 中心y, 置信度) 或 None。
 
     单行碎片兜底：大字号标题常被 OCR 拆成单字/错字碎片
     （如"被雇佣中"识别成 被/皮雇/佣/中），逐条匹配必然落空，
     把同一行的碎片按 x 拼接后再找 target。
+
+    空格归一化（strip_space=True，默认开）：PP-OCRv6 模型常在中文与数字之间
+    插入空格（如"体力 80"/"心情 100"），去空格后匹配避免子串落空；
+    "体力 80" 这类在同一文本块内的空格也能命中。
     """
+    def norm(t: str) -> str:
+        return t.replace(' ', '') if strip_space else t
+
+    tgt = norm(target)
     for text, x, y, score in results:
-        if target in text:
+        if tgt in norm(text):
             return x, y, score
 
     lines: list[list[tuple[str, int, int, float]]] = []
@@ -200,18 +223,19 @@ def find_text(
             lines.append([item])
     for line in lines:
         line.sort(key=lambda r: r[1])
-        merged = ''.join(text for text, *_ in line)
-        idx = merged.find(target)
+        merged = ''.join(norm(text) for text, *_ in line)
+        idx = merged.find(tgt)
         if idx < 0:
             continue
         # 命中片段覆盖的碎片：x 取首尾碎片中心的中点，置信度取最低
         pos, first, last = 0, 0, len(line) - 1
         for i, (text, *_rest) in enumerate(line):
-            if pos <= idx < pos + len(text):
+            t = norm(text)
+            if pos <= idx < pos + len(t):
                 first = i
-            if pos < idx + len(target) <= pos + len(text):
+            if pos < idx + len(tgt) <= pos + len(t):
                 last = i
-            pos += len(text)
+            pos += len(t)
         x = (line[first][1] + line[last][1]) // 2
         score = min(r[3] for r in line[first:last + 1])
         return x, line[0][2], score
@@ -219,13 +243,18 @@ def find_text(
 
 
 def find_all_text(
-    results: list[tuple[str, int, int, float]], target: str
+    results: list[tuple[str, int, int, float]], target: str, strip_space: bool = True
 ) -> list[tuple[int, int, float]]:
     """在 OCR 结果中找所有包含 target 的文字（同一屏幕可能有多个相同按钮）。
 
     返回 [(中心x, 中心y, 置信度)]，按从上到下、从左到右排序。
+    与 find_text 一样默认做空格归一化。
     """
-    matches = [(x, y, score) for text, x, y, score in results if target in text]
+    def norm(t: str) -> str:
+        return t.replace(' ', '') if strip_space else t
+
+    tgt = norm(target)
+    matches = [(x, y, score) for text, x, y, score in results if tgt in norm(text)]
     matches.sort(key=lambda m: (m[1], m[0]))
     return matches
 
