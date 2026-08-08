@@ -12,3 +12,6 @@ runs/
 xml/
 # 个人配置（模板为 config.example.yaml）
 config.yaml
+
+# 第三方二进制（scrcpy），用 tools/fetch_scrcpy.py 拉取
+scrcpy-win64/

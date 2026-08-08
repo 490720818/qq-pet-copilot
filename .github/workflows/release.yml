@@ -69,6 +69,13 @@ jobs:
         run: |
           python tools/fetch_ocr_models.py
 
+      - name: Download scrcpy win64
+        shell: pwsh
+        env:
+          PYTHONIOENCODING: utf-8
+        run: |
+          python tools/fetch_scrcpy.py
+
       - name: Build with PyInstaller
         shell: pwsh
         env:

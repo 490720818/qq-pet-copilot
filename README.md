@@ -25,8 +25,16 @@ python -m venv .venv
 .venv/Scripts/pip install -r requirements.txt
 ```
 
-1. 手机开 USB 调试并连接电脑（可用 `scrcpy-win64/adb.exe devices` 确认）。
+1. 下载 scrcpy 二进制（不入库，从官方 Release 拉取到 `scrcpy-win64/`）：
+
+   ```bash
+   python tools/fetch_scrcpy.py        # 默认版本；--version 3.3 指定版本
+   ```
+
+2. 手机开 USB 调试并连接电脑（可用 `scrcpy-win64/adb.exe devices` 确认）。
    首次运行时 uiautomator2 会自动往手机安装 atx-agent，需在手机弹窗上允许安装。
+3. 编辑 `config.yaml`（或在 GUI 设置页里改）。
+4. 启动：
 2. 编辑 `config.yaml`（或在 GUI 设置页里改）。
 3. 启动：
 
@@ -77,7 +85,9 @@ GUI 打开后自动嵌入手机画面，点**开始**启动调度器（子进程
 .venv/Scripts/python build.py --onedir   # 目录模式
 ```
 
-打包后 `config.yaml` 首次运行自动复制到 exe 旁，`runs/` 也生成在 exe 旁。冷启动需解压资源，会慢几秒。
+`build.py` 打包前会自动下载 scrcpy（`tools/fetch_scrcpy.py`）和 OCR 模型
+（`tools/fetch_ocr_models.py`）。打包后 `config.yaml` 首次运行自动复制到 exe 旁，
+`runs/` 也生成在 exe 旁；exe 旁放同名 `scrcpy-win64/` 可覆盖包内资源，无需重新打包。冷启动需解压资源，会慢几秒。
 
 ## 目录结构
 

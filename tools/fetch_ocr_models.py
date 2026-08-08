@@ -1,6 +1,7 @@
 """拉取 OCR 模型（PP-OCRV5 mobile）到 runs/models/rapidocr。
 
-实现见 src/ocr.ensure_v5_models()；本脚本供本地手动 / CI 打包前调用。
+实现见 src/ocr.ensure_v5_models()（下载失败自动重试 3 次）；
+本脚本供本地手动 / CI 打包前调用。
 """
 import sys
 from pathlib import Path

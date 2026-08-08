@@ -5,7 +5,10 @@ from pathlib import Path
 from PyInstaller.utils.hooks import collect_data_files
 from PyInstaller.utils.hooks import collect_all
 
-datas = [('scrcpy-win64', 'scrcpy-win64'), ('config.example.yaml', '.')]
+datas = [('config.example.yaml', '.')]
+# scrcpy-win64/ 不入库（tools/fetch_scrcpy.py 拉取），存在才随包带上
+if Path('scrcpy-win64/scrcpy.exe').is_file():
+    datas.append(('scrcpy-win64', 'scrcpy-win64'))
 binaries = []
 hiddenimports = []
 datas += collect_data_files('uiautomator2')

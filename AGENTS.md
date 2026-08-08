@@ -49,6 +49,7 @@ $PY build.py                     # PyInstaller 打包（onefile），--onedir �
 | `src/settings.py` | ruamel 往返读写 config.yaml（保留注释），GUI 设置页用 |
 | `src/notify.py` | 失败告警通知：Windows Toast（winotify）+ OnePush 多渠道推送（Bark/PushPlus/Server酱/SMTP/自定义 webhook 等），发送失败只记日志 |
 | `tools/dump_hierarchy.py` | 抓当前屏幕控件树 XML 存到 `xml/page.xml`（校准 locators 的 xpath/content-desc 用；`xml/` 已 git 排除） |
+| `tools/fetch_scrcpy.py` | 从官方 GitHub Release 下载解压 scrcpy（win64）到 `scrcpy-win64/`（该目录不入库）；`--version` 指定版本、`--force` 强制覆盖，build.py / CI 打包前自动调用 |
 | `tools/test_locator.py` | 测试 locator 的 xpath 在当前页面的命中稳定性（连设备连续多轮 dump，统计 live/snapshot 两种调用方式的命中率与 bounds 漂移，定位深层 xpath 时有时无/位置漂移问题） |
 
 ## 关键约定（改动时必须遵守）
@@ -102,6 +103,7 @@ $PY build.py                     # PyInstaller 打包（onefile），--onedir �
 
 ## 打包
 
-`python build.py`（onefile）。路径约定：打包后 `APP_ROOT` = exe 所在目录
-（config.yaml 首启复制、runs/ 生成于此），`RESOURCE_ROOT` = `sys._MEIPASS`。
-exe 旁放同名 `scrcpy-win64/` 可覆盖包内资源。
+`python build.py`（onefile）。`scrcpy-win64/` 不入库（二进制），打包前
+`build.py` 自动调 `tools/fetch_scrcpy.py` 从官方 Release 拉取。路径约定：打包后
+`APP_ROOT` = exe 所在目录（config.yaml 首启复制、runs/ 生成于此），
+`RESOURCE_ROOT` = `sys._MEIPASS`。exe 旁放同名 `scrcpy-win64/` 可覆盖包内资源。

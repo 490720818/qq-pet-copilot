@@ -16,6 +16,7 @@ from __future__ import annotations
 import hashlib
 import re
 import shutil
+import time
 import urllib.request
 from pathlib import Path
 
@@ -72,19 +73,31 @@ def _ensure_models() -> None:
             shutil.copy2(f, dst)
 
 
-def _download_model(name: str, url: str, expected: str) -> None:
-    """下载单个模型到 MODEL_ROOT，SHA256 校验后落盘；失败抛异常。"""
+def _download_model(name: str, url: str, expected: str, attempts: int = 3) -> None:
+    """下载单个模型到 MODEL_ROOT，SHA256 校验后落盘。
+
+    网络抖动/限流自动重试（同 tools/fetch_scrcpy.py）；重试耗尽后抛异常。
+    """
     dst = MODEL_ROOT / name
     tmp = dst.with_suffix('.part')
-    try:
-        with urllib.request.urlopen(url, timeout=30) as resp, open(tmp, 'wb') as f:
-            shutil.copyfileobj(resp, f)
-        if _sha256(tmp) != expected:
-            raise RuntimeError(f'{name} SHA256 校验失败')
-        tmp.replace(dst)
-    finally:
-        if tmp.exists():
-            tmp.unlink(missing_ok=True)
+    last_err: Exception | None = None
+    for i in range(attempts):
+        try:
+            with urllib.request.urlopen(url, timeout=30) as resp, open(tmp, 'wb') as f:
+                shutil.copyfileobj(resp, f)
+            if _sha256(tmp) != expected:
+                raise RuntimeError(f'{name} SHA256 校验失败')
+            tmp.replace(dst)
+            return
+        except Exception as e:  # noqa: BLE001
+            last_err = e
+            tmp.unlink(missing_ok=True)  # 清掉半截文件，避免下次校验坏包
+            if i < attempts - 1:
+                wait = 2 * (i + 1)
+                log(f'下载 OCR 模型 {name} 失败（{e}），{wait}s 后重试（{i + 1}/{attempts}）')
+                time.sleep(wait)
+    assert last_err is not None
+    raise last_err
 
 
 def ensure_v5_models() -> bool:

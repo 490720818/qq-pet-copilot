@@ -38,6 +38,10 @@ def main() -> None:
     fetch = PROJECT_ROOT / 'tools' / 'fetch_ocr_models.py'
     if fetch.exists():
         subprocess.run([sys.executable, str(fetch)], check=False)
+    # 打包前尝试下载 scrcpy（scrcpy-win64/ 不入库；失败不阻塞，exe 会缺画面嵌入）
+    fetch_scrcpy = PROJECT_ROOT / 'tools' / 'fetch_scrcpy.py'
+    if fetch_scrcpy.exists():
+        subprocess.run([sys.executable, str(fetch_scrcpy)], check=False)
     env = dict(os.environ)
     if ONEDIR:
         env['QQ_PET_ONEDIR'] = '1'
