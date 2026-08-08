@@ -104,6 +104,17 @@ class _FocusOutPlainTextEdit(QPlainTextEdit):
         super().focusOutEvent(event)
 
 
+class _NoWheelSpinBox(QSpinBox):
+    """数字输入框：禁用鼠标滚轮改值（滚轮悬停数字框容易误触加减，防手滑）。
+
+    仅屏蔽滚轮事件，键盘上下键、直接输入等行为不受影响；
+    保存由设置页的 valueChanged 触发（数值真的变化才保存，滚轮不再误触发）。
+    """
+
+    def wheelEvent(self, event):
+        event.ignore()
+
+
 # 设置页面字段：(点路径, 显示名, 类型)
 # 类型: 'int' / 'str' / 'bool' / 'text'(多行文本) / 'devices'(adb 设备下拉) / 选项列表
 SETTING_FIELDS = [
@@ -129,7 +140,7 @@ SETTING_FIELDS = [
     ('care.energy_threshold', '体力阈值', 'int'),
     ('care.clean_threshold', '清洁阈值', 'int'),
     ('care.method', '护理方式', ['ocr检测', '一键护理']),
-    ('employed.action', '被雇佣后处理', ['等到25/75', '立刻召回']),
+    ('employed.action', '被雇佣后处理', ['等到25/75（小于45min）', '等到25/75', '立刻召回']),
     ('recover.method', '异常处理方式', ['重启设备', '重启游戏']),
     ('notify.win_toast', '失败告警 Windows 通知', 'bool'),
     ('notify.onepush_config', '失败告警 OnePush 配置', 'text'),
@@ -438,10 +449,12 @@ class MainWindow(QMainWindow):
         self._setting_widgets: dict = {}
         for key, label, kind in SETTING_FIELDS:
             if kind == 'int':
-                w = QSpinBox()
+                w = _NoWheelSpinBox()
                 # 体力/清洁是 0-100，其余次数/阈值放宽
                 w.setRange(0, 100 if key.startswith('care.') else 99999)
-                w.editingFinished.connect(lambda k=key: self.save_field(k))
+                # 用 valueChanged 而非 editingFinished：滚轮/滚动导致的失焦不再误触发保存，
+                # 只有数值真的变化（箭头/键盘/输入提交）才保存；_load_settings 用 blockSignals 防误存
+                w.valueChanged.connect(lambda _v, k=key: self.save_field(k))
             elif kind == 'bool':
                 w = QCheckBox()
                 w.stateChanged.connect(lambda _s, k=key: self.save_field(k))

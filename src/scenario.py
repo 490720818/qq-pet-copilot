@@ -7,7 +7,7 @@ from .config import find_adb, load_config
 from .locators import LOCATORS, ocr_screen
 from .locators import see as locate
 from .locators import see_all as locate_all
-from .ocr import parse_employed_ratio
+from .ocr import parse_employed_ratio, parse_employed_remaining
 from .progress import count_cross, log
 from .u2dev import U2Device
 
@@ -18,6 +18,7 @@ MAIN_PAGE_ATTEMPTS = 10    # 回主页面最多尝试次数（识别 main_sign /
 BUSY_GATE_ATTEMPTS = 2     # 出门后进行中状态的检测次数（活动面板加载有几秒延迟）
 WAIT_LOG_INTERVAL = 300.0  # 长等待期间的心跳日志间隔（秒），避免每轮检测刷屏
 ENCOURAGE_LOG_INTERVAL = 300.0  # "鼓励宠物"点击日志节流间隔（秒）：按钮每 ~12s 出现，避免刷屏
+EMPLOYED_MAX_WAIT_MINUTES = 45  # 被雇佣"等到25/75（小于45min）"：面板剩余时间超过该值立即召回
 
 
 class DeviceScenario:
@@ -201,36 +202,57 @@ class DeviceScenario:
         返回 (x, y, score) 或 None。"""
         return parse_employed_ratio(ocr_screen(screen))
 
+    def see_employed_remaining(self, screen):
+        """被雇佣面板剩余时间"剩余 00:44:00"：OCR 解析返回
+        (剩余秒数, x, y, score) 或 None（解析不到由调用方回退到只等分成比例）。"""
+        return parse_employed_remaining(ocr_screen(screen))
+
     def wait_employed_back(self, check_interval: float | None = None) -> None:
         """被雇佣中：按配置 employed.action 决定召回时机。
 
-        等到25/75（默认）：分成比例到"雇佣者<=25% 被雇佣者>=75%"（宠物分成最高终态）
-        才点 employed_come_back 提前召回；立刻召回：进面板直接点"现在召回"。
+        等到25/75：分成比例到"雇佣者<=25% 被雇佣者>=75%"（宠物分成最高终态）
+        才点 employed_come_back 提前召回；
+        等到25/75（小于45min）：同左，但面板剩余时间 > EMPLOYED_MAX_WAIT_MINUTES
+        分钟时不等比例直接召回（剩余 <=45 分钟才继续等到25/75）；
+        立刻召回：进面板直接点"现在召回"。
         召回后点 employed_come_back_confirm 确认，等 employed_end 出现点 quit 退出并计数。
         check_interval=None 时用统一配置 schedule.check_interval。
         """
         if check_interval is None:
             check_interval = self.check_interval
-        immediate = getattr(self.cfg.employed, 'action', '等到25/75') == '立刻召回'
+        action = getattr(self.cfg.employed, 'action', '等到25/75')
+        immediate = action == '立刻召回'
+        time_capped = action == '等到25/75（小于45min）'
         last_log_at = 0.0
         while True:
             screen, source = self.snapshot()
             if immediate:
                 log('按配置"立刻召回"被雇佣宠物')
             else:
-                sign = self.see_employed_sign(screen)
-                if not sign:
-                    # 点击一次被雇佣画面防止设备休眠
-                    cur = self.see('employed_in', screen, source)
-                    if cur:
-                        self.dev.click(cur[0], cur[1])  # 防休眠点击不记日志
-                    now = time.monotonic()
-                    if now - last_log_at >= WAIT_LOG_INTERVAL:
-                        log('仍在被雇佣中...')
-                        last_log_at = now
-                    time.sleep(check_interval)
-                    continue
-                log(f'检测到召回标志（分成比例终态） (score={sign[2]:.2f})')
+                recall_ready = False
+                if time_capped:
+                    rem = self.see_employed_remaining(screen)
+                    if rem is not None:
+                        secs, _x, _y, _score = rem
+                        if secs > EMPLOYED_MAX_WAIT_MINUTES * 60:
+                            h, m, ss = secs // 3600, (secs % 3600) // 60, secs % 60
+                            log(f'剩余时间 {h:02d}:{m:02d}:{ss:02d}'
+                                f'（>{EMPLOYED_MAX_WAIT_MINUTES} 分钟），立即召回')
+                            recall_ready = True
+                if not recall_ready:
+                    sign = self.see_employed_sign(screen)
+                    if not sign:
+                        # 点击一次被雇佣画面防止设备休眠
+                        cur = self.see('employed_in', screen, source)
+                        if cur:
+                            self.dev.click(cur[0], cur[1])  # 防休眠点击不记日志
+                        now = time.monotonic()
+                        if now - last_log_at >= WAIT_LOG_INTERVAL:
+                            log('仍在被雇佣中...')
+                            last_log_at = now
+                        time.sleep(check_interval)
+                        continue
+                    log(f'检测到召回标志（分成比例终态） (score={sign[2]:.2f})')
             # 召回：先点"现在召回"，再处理可能弹出的确认按钮
             for attempt in range(1, NAV_TIMEOUT + 1):
                 # 先查确认按钮：召回点击后 confirm 可能延迟弹出，

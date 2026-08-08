@@ -134,8 +134,9 @@ class RecoverConfig:
 @dataclass
 class EmployedConfig:
     # 被雇佣后处理：等到25/75（分成比例到 雇佣者<=25% 被雇佣者>=75% 才召回，收益最高）/
+    # 等到25/75（小于45min）（同左，但面板剩余时间 >45 分钟立即召回，<=45 分钟继续等到25/75）/
     # 立刻召回（进被雇佣面板直接点"现在召回"）
-    action: str = "等到25/75"
+    action: str = "等到25/75（小于45min）"
 
 
 @dataclass

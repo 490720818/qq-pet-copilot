@@ -35,6 +35,7 @@ DEFAULTS = {
     'care.energy_threshold': 60,
     'care.clean_threshold': 60,
     'care.method': 'ocr检测',
+    'employed.action': '等到25/75（小于45min）',
     'notify.win_toast': True,
     'notify.onepush_config': '',
 }

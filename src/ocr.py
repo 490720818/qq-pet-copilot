@@ -304,3 +304,64 @@ def parse_employed_ratio(
         x = (employer[0] + employed[0]) // 2
         return x, employer[1], min(employer[2], employed[2])
     return None
+
+
+def parse_employed_remaining(
+    results: list[tuple[str, int, int, float]],
+) -> tuple[int, int, int, float] | None:
+    """在 OCR 结果中解析被雇佣面板的剩余时间行"剩余 00:44:00"。
+
+    返回 (剩余秒数, 中心x, 中心y, 置信度)；解析不到（面板未加载/格式变化）
+    返回 None，由调用方回退到只按分成比例等（不误召回）。
+    时间与"剩余"标签可能在同一个文本块，也可能是同行相邻的两个块，
+    均做空格归一化后匹配 HH:MM:SS；"剩余"标签本身没识别到时，若整屏恰好只有
+    一个 HH:MM:SS 时间块（被雇佣面板只有一个倒计时）也回退命中，多个则返回 None 防误配。
+    """
+    time_re = re.compile(r'(\d{1,2}):(\d{2}):(\d{2})')
+
+    def norm(t: str) -> str:
+        return t.replace(' ', '')
+
+    # 收集所有时间块
+    times: list[tuple[int, int, int, float, int]] = []
+    for text, x, y, score in results:
+        m = time_re.search(norm(text))
+        if m:
+            h, mm, s = (int(g) for g in m.groups())
+            times.append((h * 3600 + mm * 60 + s, x, y, score, m.start()))
+    if not times:
+        return None
+
+    # "剩余"标签：同一块带时间就直接命中
+    label = None
+    for text, x, y, score in results:
+        t = norm(text)
+        if '剩余' not in t:
+            continue
+        m = time_re.search(t)
+        if m:
+            h, mm, s = (int(g) for g in m.groups())
+            return h * 3600 + mm * 60 + s, x, y, score
+        label = (x, y, score)
+        break
+    if label is None:
+        # "剩余"标签没识别到：整屏恰好只有一个 HH:MM:SS 时间块时回退用它
+        # （被雇佣面板只有一个倒计时；多个说明还有其他时间文本，避免误配返回 None）
+        if len(times) == 1:
+            secs, x, y, score, _pos = times[0]
+            return secs, x, y, score
+        return None
+
+    # 标签与时间分块：取同一行、标签右侧最近的时间块
+    lx, ly, _ = label
+    best: tuple[int, int, int, int, float] | None = None
+    for secs, x, y, score, _pos in times:
+        if not (-30 <= y - ly <= 30) or x < lx - 10:
+            continue
+        d = x - lx
+        if best is None or d < best[0]:
+            best = (d, secs, x, y, score)
+    if best is None:
+        return None
+    _, secs, x, y, score = best
+    return secs, x, y, score
