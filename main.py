@@ -150,6 +150,15 @@ def kill_existing_scrcpy() -> None:
 
 def start_scrcpy() -> subprocess.Popen | None:
     """以无边框、关屏、固定标题启动 scrcpy，返回进程。"""
+    server_file = SCRCPY.parent / 'scrcpy-server'
+    if not SCRCPY.is_file() or not server_file.is_file():
+        log('检测到 scrcpy 组件缺失，正在自动拉取补全...')
+        try:
+            fetch_script = PROJECT_ROOT / 'tools' / 'fetch_scrcpy.py'
+            if fetch_script.is_file():
+                subprocess.run([sys.executable, str(fetch_script)], check=True, creationflags=_NO_WINDOW)
+        except Exception as e:
+            log(f'自动拉取 scrcpy 失败: {e}')
     if not SCRCPY.is_file():
         log(f'未找到 {SCRCPY}，跳过 scrcpy 启动')
         return None
