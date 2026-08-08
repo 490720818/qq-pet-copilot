@@ -55,6 +55,8 @@ _COMMON_ADB_PATHS = [
 class AdbConfig:
     path: str = ""
     device_serial: str = ""
+    auto_wifi_failover: bool = True
+    wifi_port: int = 5555
 
 
 @dataclass

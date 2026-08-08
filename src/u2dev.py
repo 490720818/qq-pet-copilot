@@ -30,8 +30,14 @@ SCREENSHOT_RETRY_INTERVAL = 3
 class U2Device:
     """各场景共享的 u2 连接，同时保留 adb Device 做连接管理/属性读取。"""
 
-    def __init__(self, adb_path: str, serial: str = ""):
-        self.adb = Device(adb_path, serial)
+    def __init__(
+        self,
+        adb_path: str,
+        serial: str = "",
+        auto_wifi_failover: bool | None = None,
+        wifi_port: int | None = None,
+    ):
+        self.adb = Device(adb_path, serial, auto_wifi_failover=auto_wifi_failover, wifi_port=wifi_port)
         resolved = self.adb.ensure_connected()
         log(f'设备在线: {resolved}，正在连接 uiautomator2（首次需安装 atx-agent）...')
         import uiautomator2 as u2  # 重依赖，用到才加载

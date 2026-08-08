@@ -6,6 +6,10 @@ adb:
   path: "scrcpy-win64/adb.exe"
   # 设备序列号；留空则使用第一台在线设备
   device_serial: ""
+  # USB 断开时自动切换到无线连接 (Wi-Fi ADB)
+  auto_wifi_failover: true
+  # Wi-Fi ADB 端口（默认 5555）
+  wifi_port: 5555
 
 school:
   # 属性点课程选择：力量 / 智力 / 魅力

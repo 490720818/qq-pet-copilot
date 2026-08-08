@@ -109,6 +109,8 @@ class _FocusOutPlainTextEdit(QPlainTextEdit):
 SETTING_FIELDS = [
     ('adb.path', 'adb 路径', 'str'),
     ('adb.device_serial', '设备序列号', 'devices'),
+    ('adb.auto_wifi_failover', 'USB断开自动切换无线连接', 'bool'),
+    ('adb.wifi_port', 'Wi-Fi ADB 端口', 'int'),
     ('school.attribute', '属性点课程', ['力量', '智力', '魅力']),
     ('school.times_per_day', '每天学习次数（0 不限）', 'int'),
     ('work.location', '打工地点', 'str'),
@@ -152,10 +154,17 @@ def start_scrcpy() -> subprocess.Popen | None:
         log(f'未找到 {SCRCPY}，跳过 scrcpy 启动')
         return None
     cmd = [str(SCRCPY)]
-    serial = load_config().adb.device_serial
+    cfg = load_config()
+    serial = cfg.adb.device_serial
+    try:
+        dev = Device(find_adb(cfg.adb.path), serial)
+        serial = dev.ensure_connected()
+    except Exception:
+        pass
     if serial:  # 指定设备序列号
         cmd += ['-s', serial]
-    cmd += ['--turn-screen-off', '--window-borderless', '--stay-awake',
+    cmd += ['--no-audio', '--force-adb-forward',
+            '--turn-screen-off', '--window-borderless', '--stay-awake',
             f'--window-title={SCRCPY_TITLE}',
             # 先放到屏幕外，嵌入容器时再移回来，避免窗口先弹出再嵌入的闪烁
             '--window-x=-2000', '--window-y=-2000']
