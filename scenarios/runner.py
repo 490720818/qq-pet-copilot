@@ -187,7 +187,8 @@ class Runner:
         """跑一个场景一轮（一节课/一次打工）。
 
         抛异常分级重试：先回主页面重进场景试一次（页面状态错乱多半能自愈，
-        不必重启设备），仍失败才走 adb reboot 恢复（重进宠物页面）后试最后一次。
+        不必重启设备），仍失败才走 adb reboot 恢复（重进宠物页面）后试最后一次；
+        每次中间异常都会截图存 runs/error_*.png 供排查（不发告警）。
         都失败时按任务类型分流：
         - fatal=True（学习/打工主任务）：发告警通知并退出调度器
           （设备/游戏状态异常，需要人工介入，不静默挂起空跑）；
@@ -201,10 +202,12 @@ class Runner:
             raise  # 场景主动要求临时推迟（如 PK 连续超时），不做重试/恢复
         except Exception as e:
             log(f'{name} 执行异常: {e}，回主页面重试一次')
+            self._capture_failure_image('retry1')  # 截图记录现场，不发告警
         try:
             return self._run_round(scen)
         except Exception as e:
             log(f'{name} 回主页面重试仍失败: {e}，尝试重启设备恢复')
+            self._capture_failure_image('retry2')  # 截图记录现场，不发告警
         if self.recover():
             try:
                 return self._run_round(scen)
@@ -245,6 +248,22 @@ class Runner:
         log(f'{reason}，发送告警通知并退出调度器')
         send_alert(reason, self._capture_alert_image())
         raise SystemExit(1)
+
+    def _capture_failure_image(self, stage: str) -> str | None:
+        """分级重试的中间异常截图存到 runs/ 供排查（不发告警通知）。
+
+        stage 用于文件名区分阶段（如 retry1=首次执行异常、retry2=回主页面重试仍失败）；
+        失败只记日志，不阻塞重试/恢复流程。
+        """
+        try:
+            path = PROJECT_ROOT / 'runs' / f'error_{stage}_{datetime.now():%Y%m%d_%H%M%S}.png'
+            path.parent.mkdir(parents=True, exist_ok=True)
+            Image.fromarray(self.school.dev.screenshot()).save(path)
+            log(f'异常截图已保存: {path}')
+            return str(path)
+        except Exception as e:
+            log(f'异常截图失败: {e}')
+            return None
 
     def _capture_alert_image(self) -> str | None:
         """告警时截取当前手机屏幕存到 runs/，随通知附上；失败不阻塞告警。"""

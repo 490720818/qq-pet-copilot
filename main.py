@@ -139,7 +139,7 @@ SETTING_FIELDS = [
     ('pk.start_time', 'PK 调度时间（HH:MM）', 'str'),
     ('care.energy_threshold', '体力阈值', 'int'),
     ('care.clean_threshold', '清洁阈值', 'int'),
-    ('care.method', '护理方式', ['ocr检测', '一键护理']),
+    ('care.method', '护理方式', ['一键护理', 'ocr检测']),
     ('employed.action', '被雇佣后处理', ['等到25/75（小于45min）', '等到25/75', '立刻召回']),
     ('recover.method', '异常处理方式', ['重启设备', '重启游戏']),
     ('notify.win_toast', '失败告警 Windows 通知', 'bool'),
@@ -447,6 +447,8 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(page)
         form = QFormLayout()
         self._setting_widgets: dict = {}
+        # 护理方式选"一键护理"时体力/清洁阈值用不上，隐藏对应表单行（label + 控件）
+        self._care_threshold_rows: dict = {}
         for key, label, kind in SETTING_FIELDS:
             if kind == 'int':
                 w = _NoWheelSpinBox()
@@ -480,11 +482,16 @@ class MainWindow(QMainWindow):
                 if isinstance(kind, list):
                     w.addItems(kind)
                 w.currentTextChanged.connect(lambda _t, k=key: self.save_field(k))
+                if key == 'care.method':
+                    # 护理方式变化时联动显隐体力/清洁阈值（一键护理不读状态，阈值无意义）
+                    w.currentTextChanged.connect(self._on_care_method_changed)
             else:
                 w = QLineEdit()
                 w.editingFinished.connect(lambda k=key: self.save_field(k))
             self._setting_widgets[key] = (w, kind)
             form.addRow(label, w)
+            if key in ('care.energy_threshold', 'care.clean_threshold'):
+                self._care_threshold_rows[key] = (form.labelForField(w), w)
         # 通知测试：按当前 config.yaml 的 notify 配置发一条测试告警。
         # 点击按钮会先让输入框失焦（失焦自动保存），未落盘的修改也会先生效；
         # 各渠道发送结果见日志页
@@ -503,6 +510,13 @@ class MainWindow(QMainWindow):
         """切到设置页（第 3 个选项卡）时加载当前配置。"""
         if index == 2:
             self.load_settings()
+
+    def _on_care_method_changed(self, method: str) -> None:
+        """护理方式选"一键护理"时隐藏体力/清洁阈值行（不读状态，阈值用不上）。"""
+        hidden = method == '一键护理'
+        for label, w in self._care_threshold_rows.values():
+            label.setVisible(not hidden)
+            w.setVisible(not hidden)
 
     def _test_notify(self) -> None:
         """设置页"通知测试"按钮：发一条测试告警，各渠道结果打到日志页。"""
@@ -538,6 +552,10 @@ class MainWindow(QMainWindow):
             else:
                 w.setText(str(value))
             w.blockSignals(False)
+        # blockSignals 抑制了 care.method 的联动信号，加载后手动同步阈值行显隐
+        method_w, _ = self._setting_widgets.get('care.method', (None, None))
+        if method_w is not None:
+            self._on_care_method_changed(method_w.currentText())
 
     def _fill_devices(self, combo: QComboBox, current: str) -> None:
         """枚举在线 adb 设备填充序列号下拉，首项为 自动（第一台）。"""
