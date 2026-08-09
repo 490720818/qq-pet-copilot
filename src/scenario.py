@@ -70,8 +70,12 @@ class DeviceScenario:
         """点击 720x1280 参考坐标（内部换算到当前分辨率）。"""
         self.click(*self.dev.rel(x, y))
 
-    def click_until_gone_or_see(self, click_name: str, wait_name: str, stage: str) -> None:
+    def click_until_gone_or_see(self, click_name: str, wait_name: str, stage: str,
+                                max_attempts: int = NAV_TIMEOUT) -> None:
         """点击 click_name，直到看见 wait_name；点击后 click_name 消失也视为已跳转。
+
+        max_attempts: 最多重试次数，默认 NAV_TIMEOUT；某些"开始"转换失败率高、
+        拖时间，调用方可以传小一点（如打工 work_start 传 3）。
 
         wait_name 纯 OCR（adventure_in/school_in/work_in）时先点后查：先查会每轮
         现截图+整屏 OCR（~1 秒）拖慢点击，这类"开始"转换改为点击目标在就只管点、
@@ -82,7 +86,7 @@ class DeviceScenario:
         wait_ocr_only = not any(LOCATORS.get(wait_name, {}).get(k)
                                 for k in ('xpath', 'xpath_ocr', 'u2'))
         clicked = False
-        for attempt in range(1, NAV_TIMEOUT + 1):
+        for attempt in range(1, max_attempts + 1):
             # 只抓控件树快照，截图按需懒加载（see 内部 OCR 需要时才截）
             source = self.dev.hierarchy()
             target = self.see(click_name, None, source)
@@ -105,10 +109,10 @@ class DeviceScenario:
                 log(f'{stage}: {click_name} 已消失，进入下一阶段')
                 return
             else:
-                if attempt == 1 or attempt == NAV_TIMEOUT:
-                    log(f'{stage}: 未找到 {click_name}，等待重试 ({attempt}/{NAV_TIMEOUT})')
+                if attempt == 1 or attempt == max_attempts:
+                    log(f'{stage}: 未找到 {click_name}，等待重试 ({attempt}/{max_attempts})')
             time.sleep(CLICK_INTERVAL)
-        raise RuntimeError(f'{stage}: 重试 {NAV_TIMEOUT} 次仍未出现 {wait_name}')
+        raise RuntimeError(f'{stage}: 重试 {max_attempts} 次仍未出现 {wait_name}')
 
     def ensure_main_page(self):
         """确认在主页面；不在则点 back 直到回来，返回主页面控件树快照。
@@ -133,17 +137,35 @@ class DeviceScenario:
             time.sleep(CLICK_INTERVAL)
         raise RuntimeError('无法回到主页面')
 
-    def reset_select_boxes(self) -> None:
-        """学习/工作三栏选择框归位：一次定位后，从第一框中心拖到第三框中心两次。"""
-        source = self.dev.hierarchy()
-        first = self.see('select_box_1', source=source)
-        third = self.see('select_box_3', source=source)
+    def reset_select_boxes(self, drags: int = 2, source=None) -> None:
+        """学习/工作三栏选择框归位：从第一框中心拖到第三框中心 drags 次。
+
+        轮播有多个选择框（打工 4 个、学园 7 个），xpath 只认可见 3 个；
+        drags 是回到第一页所需的拖动次数（打工 2 次、学园 3 次）。
+        刚进面板时选择框可能还在加载，先重试等第一/三框都出现再归位，
+        避免只查一次没查到就抛异常（页面加载慢/点进去还在转场）。
+        """
+        first = third = None
+        source = None
+        for attempt in range(1, 4):
+            # select_box_N 由容器 bounds 推导：容器 cache 后秒回，
+            # 未缓存时第一个 see 会 dump 一次并把容器 bounds 缓存，后续秒回
+            first = self.see('select_box_1', source=source)
+            third = self.see('select_box_3', source=source)
+            if first and third:
+                break
+            if source is None:
+                source = self.dev.hierarchy()  # 容器未命中：抓一次快照供推导
+            if attempt == 1 or attempt == 3:
+                log(f'未定位到选择框，等待加载 ({attempt}/3)')
+            time.sleep(CLICK_INTERVAL)
         if not (first and third):
             raise RuntimeError('未定位到选择框，无法归位')
-        for _ in range(2):
+        for i in range(drags):
             log(f'选择框归位拖动 ({first[0]}, {first[1]}) -> ({third[0]}, {third[1]})')
             self.dev.drag(first[0], first[1], third[0], third[1])
-            time.sleep(0.3)
+            if i < drags - 1:  # sleep 只在两次拖动之间，最后一次拖完不再多等
+                time.sleep(0.3)
 
     def leave_home(self) -> None:
         """主页面点击出门（OCR 定位"出门"，识别不到由注册表用参考坐标兜底）。"""
@@ -327,7 +349,7 @@ class DeviceScenario:
                 self.wait_employed_back()
                 return 'employed'
             if attempt < attempts:
-                time.sleep(CLICK_INTERVAL)
+                time.sleep(0.5)  # 两轮检测间的等待（原 CLICK_INTERVAL=1s，缩短省时）
         return None
 
     def _recheck_busy_after_nav(self, stage: str) -> str | None:

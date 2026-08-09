@@ -137,12 +137,10 @@ class U2Device:
         self.d.swipe(x1, y1, x2, y2, duration)
 
     def drag(self, x1: int, y1: int, x2: int, y2: int,
-             duration: float = 0.6) -> None:
+             duration: float = 0.1) -> None:
         """慢速拖动（选择框归位用）。
 
-        游戏 canvas 不识别快速拖动：minitouch 分段 move 和 u2 内置 d.drag
-        实测都无效，只有带 duration 的慢速 swipe 能触发轮播滚动（真机验证
-        0.6-1.2 秒均可，取 1.0 秒留余量）。
+        0.1-1.2 秒均可翻页，0.1 秒墙钟约 0.8s 最快；取 0.1 秒，若偶发不翻页再调大）。
         """
         self.d.swipe(x1, y1, x2, y2, duration)
 

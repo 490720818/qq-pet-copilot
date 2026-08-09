@@ -6,13 +6,13 @@
    -> 等待结束并退出，等完的课程/工作计入对应场景的当天次数，
       回主页面结束本轮，由执行器重新判断限制条件后再决定下一步
 3. 点击 town 进入小镇
-4. 点击 back 重置默认选择地点，OCR 整屏文字找到配置的打工地点并点击进入
+4. 点 back 重置默认地点，OCR 整屏文字找到配置的打工地点并点击进入；
+   没进面板就回主页面重新进小镇再试
 5. 把第一框拖到第三框归位（两次），点击第二框选择第二个工作（最高收益）
-6. 点击 work_outworker 进入雇佣好友界面：
-   - 识别到 employ 按钮 -> 点击最上方的一个
-   - 没有（当前页好友不可雇佣时不渲染按钮，下滑空找纯浪费时间）
-     -> 点 work_employ_close 关闭并确认弹层已关，
-     回到打工面板由下一步点 work_start 直接开工（不雇佣）
+6. 点击 work_outworker 进入雇佣好友界面（OCR 标题确认弹出）：
+   - 识别到雇佣按钮（OCR 右侧第一个）-> 点击最上方的一个
+   - 没有（当前页好友不可雇佣时不渲染按钮）-> 点工作面板顶部"智力"坐标
+     关闭雇佣面板并确认弹层已关，回到打工面板由下一步点 work_start 直接开工（不雇佣）
 7. 点击 work_start 开始工作，直到出现 work_in
 8. 工作中按配置的检查间隔（schedule.check_interval）检查，直到出现 work_end，点击 quit 退出
 9. 当天次数 +1 并持久化到 runs/work_progress.json（含 history 历史记录），
@@ -28,7 +28,8 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.ocr import find_text, ocr_fullscreen
+from src.locators import locate_cached
+from src.ocr import find_text, ocr_fullscreen, parse_panel_location
 from src.progress import (
     WORK_PROGRESS_FILE,
     count_cross,
@@ -41,6 +42,9 @@ from src.scenario import CLICK_INTERVAL, DeviceScenario, NAV_TIMEOUT
 
 # 以下坐标均为 720x1280 参考坐标，运行时按当前分辨率自动换算
 PROGRESS_FILE = WORK_PROGRESS_FILE
+
+# 进入打工地点面板的最多重试次数（点空/页面加载慢时快速重试，不再长时间确认）
+WORK_PLACE_ATTEMPTS = 3
 
 
 class WorkScenario(DeviceScenario):
@@ -89,10 +93,26 @@ class WorkScenario(DeviceScenario):
             raise
 
     def select_place(self) -> None:
-        """点 back 重置默认地点后 OCR 整屏，找到配置的打工地点并点击进入。"""
-        for attempt in range(1, NAV_TIMEOUT + 1):
-            # 复用一次控件树快照：back 有多个 XPath 候选，
-            # 不传 source 每个候选都会单独 dump 全树（每次约 2-3 秒）
+        """确认当前面板是不是配置的打工地点：是就直接用，不是才 back 重置再选。
+
+        进小镇后游戏默认停在上次工作的打工面板，但面板有 1~2 秒加载过渡
+        （刚进时力量/智力/魅力还没渲染出来，OCR 判不出地点名）：先等面板
+        稳定再 OCR 确认，是配置的地点就直接返回，省掉 back 重置 -> OCR 找地点
+        -> 点击的流程；不是才走 back 重置重选（重试时回主页面重新进小镇）。
+        点击后要等打工面板（选择框）出现才算进入。
+        """
+        for _wait in range(1, 4):
+            time.sleep(CLICK_INTERVAL)
+            if self.is_correct_place_panel():
+                log(f'当前面板已是打工地点 {self.location}，直接使用')
+                return
+        for attempt in range(1, WORK_PLACE_ATTEMPTS + 1):
+            if attempt > 1:
+                # 回主页面重新进小镇（干净状态），再走 back 重置
+                self.ensure_main_page()
+                finished = self.goto_town()
+                if finished:
+                    raise RuntimeError(f'重新进入小镇时检测到进行中状态: {finished}')
             back = self.see('back', source=self.dev.hierarchy())
             if not back:
                 raise RuntimeError('未找到 back 按钮，无法重置打工地点')
@@ -100,36 +120,95 @@ class WorkScenario(DeviceScenario):
             time.sleep(CLICK_INTERVAL)
             results = ocr_fullscreen(self.screen())
             hit = find_text(results, self.location)
-            if hit:
-                log(f'OCR 找到打工地点 {self.location} '
-                    f'({hit[0]}, {hit[1]}, score={hit[2]:.2f})')
-                self.click(hit[0], hit[1])
+            if not hit:
+                log(f'未识别到打工地点 {self.location}，回主页面重试 ({attempt}/{WORK_PLACE_ATTEMPTS})')
+                continue
+            log(f'OCR 找到打工地点 {self.location} '
+                f'({hit[0]}, {hit[1]}, score={hit[2]:.2f})')
+            self.click(hit[0], hit[1])
+            # 等打工面板出现：选择框在 + OCR 确认地点名是配置的打工地点（确认 3 次即可）
+            entered = False
+            for _wait in range(1, 4):
                 time.sleep(CLICK_INTERVAL)
+                # select_box_1 由容器推导：容器 cache 后秒回，不重复 dump
+                if self.see('select_box_1') and self.is_correct_place_panel():
+                    entered = True
+                    break
+            if entered:
                 return
-            log(f'未识别到打工地点 {self.location}，重试 ({attempt}/{NAV_TIMEOUT})')
-        raise RuntimeError(f'OCR 多次未识别到打工地点: {self.location}')
+            log(f'点击 {self.location} 后未出现打工面板，回主页面重试 ({attempt}/{WORK_PLACE_ATTEMPTS})')
+        raise RuntimeError(f'多次未能进入打工地点面板: {self.location}')
+
+    def panel_location(self, screen=None) -> str | None:
+        """当前面板的地点名：力量/智力/魅力属性面板正下方第一串字符（整屏 OCR）。"""
+        if screen is None:
+            screen = self.screen()
+        return parse_panel_location(ocr_fullscreen(screen))
+
+    def is_correct_place_panel(self, screen=None) -> bool:
+        """判断当前工作面板是不是配置的打工地点（OCR 地点名 == self.location）。"""
+        loc = self.panel_location(screen)
+        if loc is None:
+            return False
+        return loc == self.location.replace(' ', '')
 
     def select_job(self) -> None:
         """先把第一框拖到第三框归位（两次），点第二个工作（最高收益），
-        再点 work_outworker 进雇佣界面。"""
-        self.reset_select_boxes()
-        hit = self.see('select_box_2')
+        再点 work_outworker 进雇佣界面。
+
+        轮播有 4 个（打工）/7 个（学园）选择框、xpath 只认可见 3 个，
+        必须归位到第一页再选，否则可能选到绝对第几个不是第 2 个；
+        拖动已提速（duration 0.3，约 2.3s/次），选择框槽位固定（cache 命中秒回）。
+        """
+        # select_box_N 由容器推导（容器 cache 后秒回）；work_outworker 首次未缓存时
+        # 抓一次控件树快照，与容器推导共用，总共只 dump 一次
+        source = None if locate_cached('work_outworker') else self.dev.hierarchy()
+        self.reset_select_boxes(source=source)
+        hit = self.see('select_box_2', source=source)
         if not hit:
             raise RuntimeError('未定位到工作选择框: select_box_2')
         self.click(hit[0], hit[1])
-        time.sleep(CLICK_INTERVAL)
-        self.click_until_gone_or_see('work_outworker', 'work_employ_close', '选择雇佣好友')
+        # work_outworker 是独立按钮，不依赖选框结果，点完直接进雇佣面板
+        self._open_employ_panel(source)
+
+    def _open_employ_panel(self, source=None) -> None:
+        """点 work_outworker 进雇佣面板；点击后用 OCR 标题确认面板弹出。
+
+        work_outworker 位置固定且有 cache：首次命中后直接复用缓存点；
+        source 传 select_job 共享的控件树快照时，首次也只用这一次 dump。
+        """
+        target = self.see('work_outworker', source=source)
+        if not target:
+            raise RuntimeError('未找到雇佣好友按钮')
+        self.click(target[0], target[1])
+        for _wait in range(1, 4):
+            time.sleep(CLICK_INTERVAL)
+            if self._employ_panel_open():
+                log('选择雇佣好友: 雇佣面板已弹出')
+                return
+        raise RuntimeError('点击雇佣好友后雇佣面板未弹出')
+
+    def _find_employ_button(self) -> tuple[int, int, float] | None:
+        """雇佣面板好友列表的"雇佣"按钮：整屏 OCR 取右侧从上到下第一个。
+
+        面板标题"宠友雇佣加成排行榜（实时刷新）"也含"雇佣"，但它在左侧；
+        雇佣按钮在每行右侧（x >= 屏宽一半），按 x 排除标题后取最上面一个。
+        整屏 OCR 约 0.5s，比 dump 控件树（4s+）快得多。
+        """
+        screen = self.screen()
+        w = screen.shape[1]
+        for x, y, score in self.see_all('employ', screen):
+            if x >= w / 2:
+                return x, y, score
+        return None
 
     def hire_friend(self) -> None:
         """雇佣好友：有雇佣按钮就点；没有则直接关闭雇佣页面去开工。
 
-        当前页好友不可雇佣时列表不渲染雇佣按钮（纯图片/无按钮），
-        下滑空找每次还要 dump 全树 2-4 秒，纯浪费时间：
-        检测一次没有就直接关闭雇佣面板，由 run() 点 work_start 直接开工。
+        当前页好友不可雇佣时列表不渲染雇佣按钮（纯图片/无按钮）：
+        OCR 检测一次没有就直接关闭雇佣面板，由 run() 点 work_start 直接开工。
         """
-        # 每次查找复用一次控件树快照：employ 是深层 XPath，
-        # 不传 source 的实时查询每次要 dump 全树（约 2-4 秒）
-        btn = self.see('employ', source=self.dev.hierarchy())
+        btn = self._find_employ_button()
         if btn:
             log(f'找到雇佣按钮，点击 ({btn[0]}, {btn[1]})')
             self.click(btn[0], btn[1])
@@ -139,38 +218,34 @@ class WorkScenario(DeviceScenario):
         self._close_employ_panel()
 
     def _employ_panel_open(self) -> bool:
-        """雇佣排行榜面板是否还开着：直接 dump 控件树查标题。
+        """雇佣排行榜面板是否还开着：整屏 OCR 检测标题"宠友雇佣加成排行榜"。
 
-        不能走 see('work_employ_close')——它是 cache=True，命中一次后
-        see() 直接返回缓存点不再识别，判断不了"是否已关闭"。
+        OCR 约 0.5s，比 dump 控件树（4s+）快得多；关闭后标题消失即判已关。
         """
         try:
-            xml = self.dev.d.dump_hierarchy()
+            results = ocr_fullscreen(self.screen())
+            return find_text(results, '宠友雇佣加成排行榜') is not None
         except Exception as e:
-            log(f'抓控件树失败，按未关闭处理: {e}')
+            log(f'雇佣面板标题 OCR 失败，按未关闭处理: {e}')
             return True
-        return '宠友雇佣加成排行榜' in xml
 
     def _close_employ_panel(self, max_tries: int = 3) -> None:
-        """点 work_employ_close 关闭雇佣页面并确认已关（标题消失）才返回。
+        """点工作面板顶部"智力"坐标关闭雇佣面板（面板是弹层，点面板外即关闭）。
 
-        work_employ_close 是 cache=True：进入雇佣面板时已在 click_until_gone_or_see
-        命中缓存，这里直接拿缓存点点击、不用先 dump 全树；点完再确认一次。
-        滚动动画期间点击可能没生效（弹层没关，去打工被盖住），没关就重试点。
+        雇佣面板打开时工作面板顶部的"力量/智力/魅力"仍在屏幕上方（面板外），
+        整屏 OCR 出"智力"坐标点击即关闭弹层（实测有效，比 × 按钮更稳）；
+        关闭后用 OCR 标题确认已关，没关就重试。
         """
         for attempt in range(1, max_tries + 1):
-            close = self.see('work_employ_close')
-            if close is None:
-                # 缓存未命中/失效：实时走 xpath 找一次
-                close = self.see('work_employ_close', source=self.dev.hierarchy())
-            if close:
-                log(f'点击关闭雇佣页面 ({close[0]}, {close[1]})，尝试 {attempt}/{max_tries}')
-                self.click(close[0], close[1])
-                time.sleep(CLICK_INTERVAL)
-            else:
-                log(f'未找到关闭按钮，尝试 {attempt}/{max_tries}')
+            results = ocr_fullscreen(self.screen())
+            hit = find_text(results, '智力')
+            if not hit:
+                log(f'未找到"智力"坐标，尝试 {attempt}/{max_tries}')
                 time.sleep(CLICK_INTERVAL)
                 continue
+            log(f'点击"智力"关闭雇佣页面 ({hit[0]}, {hit[1]})，尝试 {attempt}/{max_tries}')
+            self.click(hit[0], hit[1])
+            time.sleep(CLICK_INTERVAL)
             if not self._employ_panel_open():
                 log('雇佣页面已关闭')
                 return
@@ -208,6 +283,36 @@ class WorkScenario(DeviceScenario):
             time.sleep(CLICK_INTERVAL)
         else:
             log('未找到 back 按钮')
+
+    def _has_work_start(self) -> bool:
+        """工作面板是否有"去打工"按钮：整屏 OCR（约 0.5s），比 dump 控件树快。"""
+        return find_text(ocr_fullscreen(self.screen()), '去打工') is not None
+
+    def _start_work(self) -> None:
+        """点"去打工"开始工作，OCR 确认已开始（正在打工）或按钮消失。
+
+        OCR 约 0.5s/次，替代原 click_until_gone_or_see 每轮 3 次控件树 dump（十几秒）。
+        """
+        clicked = False
+        for attempt in range(1, 4):
+            results = ocr_fullscreen(self.screen())
+            if find_text(results, '正在打工'):
+                log('开始工作: 已出现 work_in')
+                return
+            target = find_text(results, '去打工')
+            if target:
+                log(f'开始工作: 点击"去打工" ({target[0]}, {target[1]})')
+                self.click(target[0], target[1])
+                clicked = True
+                time.sleep(CLICK_INTERVAL)
+                continue
+            if clicked:
+                log('开始工作: work_start 已消失，进入下一阶段')
+                return
+            if attempt == 1 or attempt == 3:
+                log(f'开始工作: 未找到 work_start，等待重试 ({attempt}/3)')
+            time.sleep(CLICK_INTERVAL)
+        raise RuntimeError('开始工作: 重试 3 次仍未出现 work_in')
 
     def wait_work_end(self) -> None:
         """等待 work_end 出现并点击 quit 退出；等待期间点"鼓励宠物"。"""
@@ -255,9 +360,16 @@ class WorkScenario(DeviceScenario):
             self.select_job()
             self.hire_friend()
             # work_start 没出现时，先处理"去照顾一下"弹窗（护理 + back 回工作面板）
-            if not self.see('work_start', source=self.dev.hierarchy()):
+            if not self._has_work_start():
                 self._recover_work_start()
-            self.click_until_gone_or_see('work_start', 'work_in', '开始工作')
+            # work_start 仍未出现（面板没加载出来/被关闭等）：重进打工地点再选一次，
+            # 避免白等 3 次后直接重启设备；仍失败才交给上层重启恢复
+            if not self._has_work_start():
+                log('未回到工作面板，重新进入打工地点再选一次')
+                self.select_place()
+                self.select_job()
+                self.hire_friend()
+            self._start_work()
             log('已开始工作，等待结束...')
             self.wait_work_end()
             done += 1

@@ -107,15 +107,21 @@ LOCATORS: dict[str, dict] = {
     },
     'quit': {'xpath': ['//*[@content-desc="返回"]']},
 
-    'select_box_1': {
-        'xpath': [SELECT_BOX_XPATH + '/android.widget.FrameLayout[1]'],
+    # 轮播选择框：大容器 bounds 按 2:2:1 分割成左/中/右三个可见槽位中心。
+    # 容器 xpath 命中一次后 cache bounds，select_box_N 由它推导（免各自 dump）
+    'select_box_container': {
+        'cache': True,
+        # 打工/学园两套层级（差一个 FL[2]/FL[1]），哪个命中用哪个；
+        # 两者都指向同一容器 [65,924][1015,1307]，2:2:1 分割出三槽中心
+        'xpath': [
+            '//*[@resource-id="com.tencent.mobileqq:id/ckj"]/android.widget.FrameLayout[1]/android.widget.FrameLayout[1]/android.widget.FrameLayout[1]/android.widget.FrameLayout[1]/android.widget.FrameLayout[2]/android.widget.FrameLayout[1]/android.widget.FrameLayout[1]/android.widget.FrameLayout[1]/android.widget.FrameLayout[1]/android.widget.FrameLayout[4]/androidx.recyclerview.widget.RecyclerView[1]/android.widget.FrameLayout[1]/android.widget.FrameLayout[1]',
+            '//*[@resource-id="com.tencent.mobileqq:id/ckj"]/android.widget.FrameLayout[1]/android.widget.FrameLayout[1]/android.widget.FrameLayout[1]/android.widget.FrameLayout[1]/android.widget.FrameLayout[1]/android.widget.FrameLayout[1]/android.widget.FrameLayout[1]/android.widget.FrameLayout[1]/android.widget.FrameLayout[1]/android.widget.FrameLayout[4]/androidx.recyclerview.widget.RecyclerView[1]/android.widget.FrameLayout[1]/android.widget.FrameLayout[1]',
+        ],
     },
-    'select_box_2': {
-        'xpath': [SELECT_BOX_XPATH + '/android.widget.FrameLayout[2]'],
-    },
-    'select_box_3': {
-        'xpath': [SELECT_BOX_XPATH + '/android.widget.FrameLayout[3]'],
-    },
+    # 2:2:1 分割：左 2/5 中心=1/5 宽，中 2/5 中心=3/5 宽，右 1/5 中心=9/10 宽
+    'select_box_1': {'from_bounds': 'select_box_container', 'split': (1, 5)},
+    'select_box_2': {'from_bounds': 'select_box_container', 'split': (3, 5)},
+    'select_box_3': {'from_bounds': 'select_box_container', 'split': (9, 10)},
 
     # ---- 学习 ----
     'school': {
@@ -155,33 +161,10 @@ LOCATORS: dict[str, dict] = {
                   '/android.widget.FrameLayout[1]/android.widget.FrameLayout[3]'
                   '/android.widget.FrameLayout[4]'],
     },
-    'work_employ_close': {
-        'cache': True,
-        'xpath': ['//*[@resource-id="com.tencent.mobileqq:id/ckj"]'
-                  '/android.widget.FrameLayout[1]/android.widget.FrameLayout[1]'
-                  '/android.widget.FrameLayout[1]/android.widget.FrameLayout[1]'
-                  '/android.widget.FrameLayout[2]/android.widget.FrameLayout[1]'
-                  '/android.widget.FrameLayout[1]/android.widget.FrameLayout[1]'
-                  '/android.widget.FrameLayout[1]/android.widget.FrameLayout[1]'
-                  '/android.widget.FrameLayout[1]/android.widget.FrameLayout[2]'
-                  '/androidx.recyclerview.widget.RecyclerView[1]'
-                  '/android.widget.FrameLayout[1]/android.widget.FrameLayout[1]'
-                  '/android.widget.FrameLayout[2]'],
-    },
-    'employ': {
-        'xpath': ['//*[@resource-id="com.tencent.mobileqq:id/ckj"]'
-                  '/android.widget.FrameLayout[1]/android.widget.FrameLayout[1]'
-                  '/android.widget.FrameLayout[1]/android.widget.FrameLayout[1]'
-                  '/android.widget.FrameLayout[2]/android.widget.FrameLayout[1]'
-                  '/android.widget.FrameLayout[1]/android.widget.FrameLayout[1]'
-                  '/android.widget.FrameLayout[1]/android.widget.FrameLayout[1]'
-                  '/android.widget.FrameLayout[1]/android.widget.FrameLayout[2]'
-                  '/androidx.recyclerview.widget.RecyclerView[1]'
-                  '/android.widget.FrameLayout[1]/android.widget.FrameLayout[1]'
-                  '/androidx.recyclerview.widget.RecyclerView[1]'
-                  '/android.widget.FrameLayout[1]/android.widget.FrameLayout[1]'
-                  '/android.widget.Button[1]'],
-    },
+    # 雇佣按钮：OCR 文字"雇佣"。面板标题"宠友雇佣加成排行榜（实时刷新）"也含"雇佣"
+    # 但在左侧；work._find_employ_button 按 x>=屏宽一半排除标题后取右侧最上面一个。
+    # 整屏 OCR 约 0.5s，比原深路径 xpath + dump 控件树（4s+）快得多。
+    'employ': {'ocr': ['雇佣']},
 
     # ---- 冒险 ----
     'adventure': {'xpath': ['//*[@content-desc="map_blank"]/android.widget.FrameLayout[3]/android.widget.FrameLayout[1]']
@@ -294,6 +277,16 @@ def _locate(
     dev: U2Device, entry: dict, screen: np.ndarray | None = None, source=None
 ) -> tuple[int, int, float] | None:
     """按注册表 entry 的定位方式依次尝试（不含缓存逻辑）。"""
+    base = entry.get('from_bounds')
+    if base:
+        # 由另一个定位的 bounds 推导中心（如 select_box_N 从容器 2:2:1 分割）
+        bounds = see_bounds(dev, base, source)
+        if not bounds:
+            return None
+        x1, y1, x2, y2 = bounds
+        num, den = entry['split']
+        w = x2 - x1
+        return x1 + round(w * num / den), (y1 + y2) // 2, 1.0
     for path in entry.get('xpath', []):
         hit = dev.find_xpath(path, source)
         if hit:
@@ -331,6 +324,14 @@ def _locate(
         x, y = dev.rel(*entry['rel'])
         return x, y, 1.0
     return None
+
+def locate_cached(name: str) -> tuple[int, int, float] | None:
+    """只查命中缓存坐标，不触发任何识别/dump；未缓存返回 None。
+
+    给需要"多个定位共享一次控件树 dump"的调用方判断缓存是否齐了用。
+    """
+    return _locate_cache.get(name)
+
 
 def see_bounds(dev: U2Device, name: str, source=None) -> tuple[int, int, int, int] | None:
     """定位 name 的元素范围，返回 (x1, y1, x2, y2)，未命中返回 None。

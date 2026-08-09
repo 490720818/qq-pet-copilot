@@ -306,6 +306,37 @@ def parse_employed_ratio(
     return None
 
 
+def parse_panel_location(
+    results: list[tuple[str, int, int, float]],
+) -> str | None:
+    """在 OCR 结果中解析当前面板的地点名。
+
+    取"力量/智力/魅力"属性面板所在行正下方第一串字符——那是当前打工地点的名字，
+    用于确认当前工作面板是不是配置的打工地点。小镇地图页下方第一串是第一个
+    地点卡片名（通常与配置不符），据此也能区分"在小镇地图 vs 在打工面板"。
+    返回去空格后的文字；属性面板没识别到返回 None。
+    """
+    def norm(t: str) -> str:
+        return t.replace(' ', '')
+
+    stats_y = None
+    for text, x, y, score in results:
+        t = norm(text)
+        if '力量' in t or '智力' in t or '魅力' in t:
+            stats_y = y if stats_y is None else max(stats_y, y)
+    if stats_y is None:
+        return None
+
+    best: tuple[str, int, int] | None = None
+    for text, x, y, score in results:
+        t = norm(text)
+        if not t or y <= stats_y:
+            continue
+        if best is None or y < best[1] or (y == best[1] and x < best[2]):
+            best = (t, y, x)
+    return best[0] if best else None
+
+
 def parse_employed_remaining(
     results: list[tuple[str, int, int, float]],
 ) -> tuple[int, int, int, float] | None:

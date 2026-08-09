@@ -147,7 +147,7 @@ class SchoolScenario(DeviceScenario):
         """选课：先 OCR 上半屏识别学园阶段决定点哪个框，
         再把第一框拖到第三框归位（两次）后点选。"""
         box = self.resolve_course_box()
-        self.reset_select_boxes()
+        self.reset_select_boxes(drags=3)
         log(f'选择课程: {self.attribute} ({box})')
         hit = self.see(box)
         if not hit:
