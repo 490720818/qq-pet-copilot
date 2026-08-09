@@ -332,6 +332,24 @@ class DeviceScenario:
         # 有几秒加载延迟，未匹配到任何状态时重试几次再下结论。
         for attempt in range(1, attempts + 1):
             screen = self.screen()
+            # 职业升级弹窗（"你将进阶成为..." + "查看"按钮，出门页新弹窗）：
+            # 点查看进职业树（职业树无原生返回键），连续按系统返回键逐层退出，
+            # 再回主页面重新开始本轮，避免挡住进行中状态检测
+            if self.see('career_upgrade', screen):
+                view = self.see('career_upgrade_view', screen)
+                if view:
+                    log(f'检测到职业升级弹窗，点击"查看" ({view[0]}, {view[1]})')
+                    self.click(view[0], view[1])
+                    time.sleep(CLICK_INTERVAL)
+                for _back in range(4):
+                    self.dev.d.press('back')
+                    time.sleep(CLICK_INTERVAL)
+                    if not self.see('career_tree'):
+                        break
+                # 回主页面重新开始本轮（重新出门，走正常流程）
+                self.ensure_main_page()
+                self.leave_home()
+                continue
             if self.see('school_in', screen):
                 log('检测到正在上课，等待这节课结束...')
                 self.wait_end('school_in', 'school_end', check_interval, encourage=True)

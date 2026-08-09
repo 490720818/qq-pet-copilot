@@ -107,6 +107,12 @@ LOCATORS: dict[str, dict] = {
     },
     'quit': {'xpath': ['//*[@content-desc="返回"]']},
 
+    # 职业升级弹窗（出门页新弹窗）：点"查看"进职业树，再用系统返回键关闭
+    'career_upgrade': {'ocr': ['你将进阶成为', '恭喜！']},
+    'career_upgrade_view': {'ocr': ['查看']},
+    # 职业树页面（查看后进入）：无原生返回键，靠系统返回键逐层退出
+    'career_tree': {'ocr': ['职业树']},
+
     # 轮播选择框：大容器 bounds 按 2:2:1 分割成左/中/右三个可见槽位中心。
     # 容器 xpath 命中一次后 cache bounds，select_box_N 由它推导（免各自 dump）
     'select_box_container': {
