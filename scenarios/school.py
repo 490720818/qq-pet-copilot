@@ -152,8 +152,9 @@ class SchoolScenario(DeviceScenario):
         hit = self.see(box)
         if not hit:
             raise RuntimeError(f'未定位到课程选择框: {box}')
-        self.click(hit[0], hit[1])
         time.sleep(CLICK_INTERVAL)
+        self.click(hit[0], hit[1])
+
 
     def resolve_course_box(self) -> str:
         """OCR 上半屏识别学园阶段，返回该点哪个课程选择框。

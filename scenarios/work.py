@@ -167,6 +167,7 @@ class WorkScenario(DeviceScenario):
         hit = self.see('select_box_2', source=source)
         if not hit:
             raise RuntimeError('未定位到工作选择框: select_box_2')
+        time.sleep(CLICK_INTERVAL)
         self.click(hit[0], hit[1])
         # work_outworker 是独立按钮，不依赖选框结果，点完直接进雇佣面板
         self._open_employ_panel(source)
