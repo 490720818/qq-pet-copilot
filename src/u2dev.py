@@ -26,6 +26,59 @@ REF_SIZE = (720, 1280)
 SCREENSHOT_RETRIES = 3
 SCREENSHOT_RETRY_INTERVAL = 3
 
+# uiautomator2 随包资源（u2.jar 等）的 frozen 回退补丁是否已打
+_u2_resource_patched = False
+
+
+def _patch_u2_resource_lookup(u2) -> None:
+    """修复 PyInstaller frozen 下 uiautomator2 读不到 assets/*（u2.jar 等）的问题。
+
+    frozen 时 importlib.resources.files("uiautomator2") 拿不到 _MEI 解压目录里的
+    数据文件，导致 uiautomator server 需要重部署时必然报
+    "Resource assets/u2.jar not found in uiautomator2 package."。
+    这里把 with_package_resource 换成优先从 sys._MEIPASS/uiautomator2/ 与
+    包目录查找的版本，并同步到按值引入该函数的子模块
+    （uiautomator2.core / uiautomator2._input 等）。
+    """
+    global _u2_resource_patched
+    if _u2_resource_patched:
+        return
+    _u2_resource_patched = True
+
+    import contextlib
+    import sys as _sys
+    from pathlib import Path
+
+    import uiautomator2.utils as u2_utils
+
+    original = u2_utils.with_package_resource
+
+    @contextlib.contextmanager
+    def patched(filename: str):
+        # 1) frozen 解压目录里的随包资源
+        meipass = getattr(_sys, '_MEIPASS', None)
+        if meipass:
+            candidate = Path(meipass) / 'uiautomator2' / filename
+            if candidate.is_file():
+                yield candidate
+                return
+        # 2) 包内真实目录（开发环境；frozen 下与 _MEIPASS 同目录）
+        pkg_dir = Path(u2.__file__).resolve().parent
+        candidate = pkg_dir / filename
+        if candidate.is_file():
+            yield candidate
+            return
+        # 3) 兜底：原逻辑（importlib.resources / sys.argv[0] 旁 / cwd）
+        with original(filename) as f:
+            yield f
+
+    u2_utils.with_package_resource = patched
+    # 同步到按值引入该函数的子模块（uiautomator2.core、uiautomator2._input 等）
+    for mod_name, mod in list(_sys.modules.items()):
+        if (mod_name.startswith('uiautomator2')
+                and getattr(mod, 'with_package_resource', None) is original):
+            mod.with_package_resource = patched
+
 
 class U2Device:
     """各场景共享的 u2 连接，同时保留 adb Device 做连接管理/属性读取。"""
@@ -35,6 +88,7 @@ class U2Device:
         resolved = self.adb.ensure_connected()
         log(f'设备在线: {resolved}，正在连接 uiautomator2（首次需安装 atx-agent）...')
         import uiautomator2 as u2  # 重依赖，用到才加载
+        _patch_u2_resource_lookup(u2)  # frozen 下随包资源（u2.jar）读取回退
 
         self.d = u2.connect(resolved)
         w, h = self.d.window_size()

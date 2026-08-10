@@ -21,7 +21,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from PyQt6.QtCore import QTimer
+from PyQt6.QtCore import QObject, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -87,10 +87,28 @@ START_BTN_STYLE = 'QPushButton { background-color: #4CAF50; }' + _BTN_BASE.forma
     hover='#45a049', pressed='#3d8b40', disabled='#c8e6c9')
 STOP_BTN_STYLE = 'QPushButton { background-color: #f44336; }' + _BTN_BASE.format(
     hover='#e53935', pressed='#d32f2f', disabled='#ffcdd2')
+# scrcpy 开关：未勾选=关闭（灰），勾选=开启（蓝）
+SCRCPY_BTN_STYLE = """
+QPushButton {{
+    color: white; border: none; border-radius: 5px;
+    padding: 3px 16px; font-size: 14px; font-weight: bold;
+    background-color: #9e9e9e;
+}}
+QPushButton:hover {{ background-color: #bdbdbd; }}
+QPushButton:checked {{ background-color: #2196F3; }}
+QPushButton:checked:hover {{ background-color: #1e88e5; }}
+QPushButton:disabled {{ background-color: #e0e0e0; color: #f5f5f5; }}
+"""
 
 # OnePush 各提供方参数配置教程（ALAS wiki 中文文档）
 ONEPUSH_HELP_URL = ('https://github.com/LmeSzinc/AzurLaneAutoScript'
                     '/wiki/Onepush-configuration-%5BCN%5D')
+
+class _TestSignals(QObject):
+    """连接测试按钮：后台线程 -> GUI 主线程 的信号（跨线程安全）。"""
+
+    finished = pyqtSignal(bool)  # True=测试结束，恢复按钮可用
+
 
 class _FocusOutPlainTextEdit(QPlainTextEdit):
     """失焦时触发保存回调的多行文本框（QPlainTextEdit 没有 editingFinished）。"""
@@ -280,7 +298,23 @@ class MainWindow(QMainWindow):
         btn_row = QHBoxLayout()
         btn_row.addWidget(self.btn_start)
         btn_row.addWidget(self.btn_stop)
-        btn_row.addStretch()  # 按钮收缩到文字宽度，不铺满整行
+        btn_row.addStretch()  # 左侧：开始/停止；右侧：画面镜像开关 + 连接测试按钮
+        # 右侧按钮放进独立子布局，间距紧凑；不影响左侧开始/停止的间距
+        right_btns = QHBoxLayout()
+        right_btns.setSpacing(0)  # 右侧按钮间距：紧凑排列（需要留缝可改回 2~4）
+        # 画面镜像开关：开=启动 scrcpy 并看门狗自动重连，关=结束进程且不再自动拉起
+        self.btn_scrcpy = QPushButton()
+        self.btn_scrcpy.setCheckable(True)
+        self.btn_scrcpy.setChecked(True)  # 默认开启（沿用原来启动即拉 scrcpy 的行为）
+        self.btn_scrcpy.setStyleSheet(SCRCPY_BTN_STYLE)
+        self.btn_scrcpy.clicked.connect(self._toggle_scrcpy)
+        self._update_scrcpy_btn()
+        right_btns.addWidget(self.btn_scrcpy)
+        # 连接测试：u2 截图 + OCR 识别 + 控件树拉取 耗时（后台线程执行，结果在日志页）
+        self._btn_connect_test = QPushButton('连接测试')
+        self._btn_connect_test.clicked.connect(self._test_connect)
+        right_btns.addWidget(self._btn_connect_test)
+        btn_row.addLayout(right_btns)
 
         # 日志页：顶部账号状态条 + 当日统计条 + 日志区
         self.status_label = QLabel()
@@ -336,9 +370,20 @@ class MainWindow(QMainWindow):
         self._scrcpy_retry_at = 0.0
         self._scrcpy_watchdog = QTimer(self, timeout=self._check_scrcpy)
         self._scrcpy_watchdog.start(SCRCPY_WATCHDOG_MS)
+        # 画面镜像关闭时关屏一次：GUI 侧 adb Device（懒加载复用）
+        self._adb_dev = None
+        self._adb_dev_key = None
         # 配置保存后重启调度器的防抖定时器
         self._restart_timer = QTimer(self, singleShot=True, interval=1500,
                                      timeout=self._restart_runner)
+        # 连接测试：GUI 侧独立 u2 连接（懒加载复用，adb 配置变化自动重建）
+        self._test_dev = None
+        self._test_dev_key = None
+        self._test_lock = threading.Lock()
+        # 后台测试线程完成 -> 主线程恢复按钮（QTimer.singleShot 在非 Qt 线程不可靠，
+        # 用信号跨线程投递）
+        self._test_signals = _TestSignals()
+        self._test_signals.finished.connect(self._set_test_btn_enabled)
 
         QTimer.singleShot(0, self._start_all)
 
@@ -349,7 +394,11 @@ class MainWindow(QMainWindow):
         # 启动失败记日志并继续，调度器仍可手动开始
         try:
             kill_existing_scrcpy()
-            self._scrcpy_proc = start_scrcpy()
+            if self.btn_scrcpy.isChecked():
+                self._scrcpy_proc = start_scrcpy()
+            else:
+                log('画面镜像开关关闭，跳过启动')
+                self._turn_device_screen_off()
         except Exception:
             import traceback
 
@@ -376,6 +425,8 @@ class MainWindow(QMainWindow):
         重拉失败（设备还没开机完成）退避 SCRCPY_RETRY_INTERVAL 秒再试，
         避免设备重启期间每 5 秒刷一次失败日志。
         """
+        if not self.btn_scrcpy.isChecked():
+            return  # 画面镜像已关闭，不自动拉起
         if not SCRCPY.is_file() or self._embed_timer.isActive():
             return  # 没有 scrcpy 可拉，或启动/重嵌流程正在进行
         if self._scrcpy_proc is not None and self._scrcpy_proc.poll() is None:
@@ -526,6 +577,106 @@ class MainWindow(QMainWindow):
         sent = send_alert('通知测试：收到这条说明告警渠道配置正常')
         log('通知测试已送达' if sent else '通知测试未送达（检查配置，各渠道详情见上方日志）')
 
+    def _get_test_dev(self) -> 'U2Device':
+        """测试用 u2 连接：懒加载并复用；adb 路径/序列号变化时自动重建。
+
+        供 OCR/控件树测试的后台线程调用（须已持有 self._test_lock）。
+        """
+        from src.config import find_adb
+
+        cfg = load_config()
+        key = (find_adb(cfg.adb.path), cfg.adb.device_serial)
+        if self._test_dev is None or self._test_dev_key != key:
+            from src.u2dev import U2Device
+
+            self._test_dev = U2Device(key[0], key[1])
+            self._test_dev_key = key
+        return self._test_dev
+
+    def _get_adb_dev(self) -> Device:
+        """GUI 侧 adb Device（维持屏幕关闭用），懒加载并按 adb 配置变化重建。"""
+        from src.config import find_adb
+
+        cfg = load_config()
+        key = (find_adb(cfg.adb.path), cfg.adb.device_serial)
+        if self._adb_dev is None or self._adb_dev_key != key:
+            self._adb_dev = Device(key[0], key[1])
+            self._adb_dev_key = key
+        return self._adb_dev
+
+    def _turn_device_screen_off(self) -> None:
+        """画面镜像关闭时关一次设备屏幕（与 scrcpy --turn-screen-off 一致，只执行一次）。
+
+        镜像关闭后不再定时轮询；屏幕之后若被手动唤醒就保持亮着，交由用户控制。
+        adb 不可用时记日志后跳过。
+        """
+        try:
+            dev = self._get_adb_dev()
+            if dev.screen_off():
+                log('已关闭设备屏幕（画面镜像关闭中）')
+        except Exception as e:
+            log(f'关闭设备屏幕失败: {e}')
+
+    def _set_test_btn_enabled(self, enabled: bool) -> None:
+        """启用/禁用"连接测试"按钮（避免测试期间重复触发）。"""
+        try:
+            self._btn_connect_test.setEnabled(enabled)
+        except RuntimeError:  # 窗口已关闭，控件已销毁
+            pass
+
+    def _test_connect(self) -> None:
+        """顶部"连接测试"按钮：u2 截图 + OCR 识别 + 控件树拉取 的实测耗时。
+
+        不计入 u2 连接与 OCR 引擎首次加载/预热时间（预热一轮后计时），
+        后台线程执行，结果打到日志页。
+        """
+        self._set_test_btn_enabled(False)
+
+        def work() -> None:
+            try:
+                from src.ocr import get_engine, ocr_fullscreen
+
+                with self._test_lock:
+                    dev = self._get_test_dev()
+                    w, h = dev.window_size()
+                    log(f'[连接测试] 设备 {w}x{h}，u2 连接就绪（不计时）')
+                    get_engine()  # OCR 引擎首次加载（懒加载，不计时）
+                    log('[连接测试] OCR 引擎已加载（首次加载不计时）')
+                    # 预热一轮：截图+OCR、控件树各一次（首次调用初始化，不计时）
+                    ocr_fullscreen(dev.screenshot())
+                    dev.d.dump_hierarchy()
+                    log('[连接测试] 预热完成（不计时），开始计时...')
+                    # OCR 部分：截图 + 识别
+                    for i in (1, 2):
+                        t0 = time.perf_counter()
+                        screen = dev.screenshot()
+                        t1 = time.perf_counter()
+                        results = ocr_fullscreen(screen)
+                        t2 = time.perf_counter()
+                        shot_ms = (t1 - t0) * 1000
+                        ocr_ms = (t2 - t1) * 1000
+                        log(f'[连接测试] OCR 第{i}轮: 截图 {shot_ms:.1f}ms + 识别 {ocr_ms:.1f}ms'
+                            f' = {shot_ms + ocr_ms:.1f}ms，识别 {len(results)} 处文本')
+                    # 控件树部分：整树拉取
+                    for i in (1, 2):
+                        t0 = time.perf_counter()
+                        xml = dev.d.dump_hierarchy()
+                        t1 = time.perf_counter()
+                        ms = (t1 - t0) * 1000
+                        size_kb = len(xml.encode('utf-8')) / 1024
+                        nodes = xml.count('<node')
+                        log(f'[连接测试] 控件树 第{i}轮: 拉取 {ms:.1f}ms，'
+                            f'节点 {nodes} 个，XML {size_kb:.1f}KB')
+            except Exception as e:
+                log(f'[连接测试] 失败: {e}')
+            finally:
+                try:  # 窗口可能已关闭（信号对象已销毁）
+                    self._test_signals.finished.emit(True)
+                except RuntimeError:
+                    pass
+
+        threading.Thread(target=work, daemon=True).start()
+
     def load_settings(self) -> None:
         try:
             data = settings_io.load_raw()
@@ -624,6 +775,8 @@ class MainWindow(QMainWindow):
 
     def _restart_scrcpy(self) -> None:
         """杀掉并重拉 scrcpy（换设备/换 adb 后画面也需要切换）。"""
+        if not self.btn_scrcpy.isChecked():
+            return  # 开关关闭时不启动 scrcpy
         log('重新初始化 scrcpy...')
         kill_existing_scrcpy()
         self.scrcpy_view.set_hwnd(None)
@@ -631,6 +784,39 @@ class MainWindow(QMainWindow):
         if self._scrcpy_proc:
             self._embed_tries = 0
             self._embed_timer.start(500)
+
+    def _update_scrcpy_btn(self) -> None:
+        """按开关状态刷新按钮文字（开/关样式由 checked 状态驱动）。"""
+        self.btn_scrcpy.setText('画面镜像: 开' if self.btn_scrcpy.isChecked() else '画面镜像: 关')
+
+    def _toggle_scrcpy(self) -> None:
+        """scrcpy 开关点击：开=启动并嵌入，关=结束进程且不再自动拉起。"""
+        if self.btn_scrcpy.isChecked():
+            log('开启 scrcpy...')
+            self._enable_scrcpy()
+        else:
+            self._disable_scrcpy()
+        self._update_scrcpy_btn()
+
+    def _enable_scrcpy(self) -> None:
+        """启动 scrcpy 并开始查找嵌入（看门狗随后自动维护重连）。"""
+        if self._scrcpy_proc is not None and self._scrcpy_proc.poll() is None:
+            return  # 已在运行
+        self.scrcpy_view.set_hwnd(None)
+        self._scrcpy_proc = start_scrcpy()
+        if self._scrcpy_proc:
+            self._embed_tries = 0
+            self._embed_timer.start(500)
+
+    def _disable_scrcpy(self) -> None:
+        """结束 scrcpy 并停止嵌入/看门狗维护（开关关闭状态）。"""
+        self._embed_timer.stop()
+        if self._scrcpy_proc is not None and self._scrcpy_proc.poll() is None:
+            self._scrcpy_proc.terminate()
+        kill_existing_scrcpy()  # 兜底：连没被本程序记录到的 scrcpy 一起清
+        self._scrcpy_proc = None
+        self.scrcpy_view.set_hwnd(None)
+        self._turn_device_screen_off()  # 与 scrcpy 一致：镜像关闭时只关屏一次
 
     def _restart_runner(self) -> None:
         if self._runner_proc and self._runner_proc.poll() is None:
@@ -645,6 +831,10 @@ class MainWindow(QMainWindow):
             return
         log('启动调度器...')
         env = dict(os.environ, PYTHONIOENCODING='utf-8')
+        # onefile 子进程默认复用父进程的 _MEI 解压目录（_MEIPASS2 环境变量），
+        # 调度器快速杀拉/并发时可能把共享目录搞坏（表现为惰性导入的模块/资源
+        # 突然"找不到"）；去掉后 runner 用自己的独立解压目录，互不影响
+        env.pop('_MEIPASS2', None)
         if getattr(sys, 'frozen', False):
             cmd = [sys.executable, '--runner']  # 打包后：以 --runner 参数重启自身
         else:

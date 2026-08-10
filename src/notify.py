@@ -32,14 +32,19 @@ def send_alert(reason: str, image_path: str | None = None) -> bool:
         # 配置坏了也要尽量报出来：按默认配置（Windows Toast）发
         log(f'告警通知: 读取配置失败（{e}），按默认配置发送')
         cfg = NotifyConfig()
-    sent = False
-    if cfg.win_toast:
-        sent = _send_windows_toast(reason, image_path) or sent
-    if str(cfg.onepush_config).strip():
-        sent = _send_onepush(str(cfg.onepush_config), reason, image_path) or sent
-    if not sent:
-        log('告警通知: 未发送成功（未配置渠道或发送失败，详见上方日志）')
-    return sent
+    try:
+        sent = False
+        if cfg.win_toast:
+            sent = _send_windows_toast(reason, image_path) or sent
+        if str(cfg.onepush_config).strip():
+            sent = _send_onepush(str(cfg.onepush_config), reason, image_path) or sent
+        if not sent:
+            log('告警通知: 未发送成功（未配置渠道或发送失败，详见上方日志）')
+        return sent
+    except Exception as e:
+        # 告警本身绝不能再把调度器弄崩：任何异常都记日志后返回失败
+        log(f'告警通知: 发送过程异常: {e}')
+        return False
 
 
 def _send_windows_toast(reason: str, image_path: str | None = None) -> bool:
@@ -51,6 +56,9 @@ def _send_windows_toast(reason: str, image_path: str | None = None) -> bool:
         from winotify import Notification
     except ImportError:
         log('告警通知: 未安装 winotify，跳过 Windows Toast')
+        return False
+    except Exception as e:
+        log(f'告警通知: winotify 导入失败: {e}，跳过 Windows Toast')
         return False
     icon = str(image_path or '')
     if not icon or not os.path.exists(icon):
@@ -90,6 +98,9 @@ def _send_onepush(config_text: str, reason: str, image_path: str | None = None) 
         from onepush.providers.custom import Custom
     except ImportError:
         log('告警通知: 未安装 onepush，跳过 OnePush 推送')
+        return False
+    except Exception as e:
+        log(f'告警通知: onepush 导入失败: {e}，跳过 OnePush 推送')
         return False
     try:
         notifier = get_notifier(provider)
