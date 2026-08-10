@@ -86,7 +86,7 @@ class ScheduleConfig:
     work_factor: int = 45
     daily_point_limit: int = 480
     # 进行中状态（上课/打工/冒险/被雇佣）的统一检查间隔（秒）
-    check_interval: int = 15
+    check_interval: int = 8
 
 
 @dataclass

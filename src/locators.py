@@ -134,18 +134,17 @@ LOCATORS: dict[str, dict] = {
         'xpath': ['//*[@content-desc="map_blank"]/android.widget.FrameLayout[2]/android.widget.FrameLayout[1]']
                ,'ocr': ['宠物学园']},
     'school_start': {
-        'xpath': ['//*[@content-desc="去上课"]/android.widget.FrameLayout[1]']
+        'xpath': ['//*[@content-desc="去上课"]']
                ,'ocr': ['去上课']},
     'school_in': {'ocr': ['正在学习']},
-    'school_end': {'xpath': ['//*[@content-desc="分享"]/android.widget.FrameLayout[1]']},
+    'school_end': {'xpath': ['//*[@content-desc="分享"]']},
     # 毕业标志：当前学园毕业后学校面板没有"去上课"，而是"去找同学玩"；
     # 此时点"关闭"再点两次 back 回主页面，重新进学校选下一阶段课程
     'school_graduated': {'xpath': ['//*[@content-desc="去找同学玩"]']},
     'school_graduate_close': {'xpath': ['//*[@content-desc="关闭"]']},
     # 学习等待期间的"鼓励宠物"按钮（点击提升心情/互动收益，wait_end(encourage=True) 用）。
     # xpath 优先：复用 wait_end 已有的控件树快照，避免 u2 选择器再实时查一次
-    'encourage_pet': {'xpath': ['//*[@content-desc="鼓励宠物"]'],
-                      'u2': [{'description': '鼓励宠物'}]},
+    'encourage_pet': {'xpath': ['//*[@content-desc="鼓励宠物"]']},
 
     # ---- 打工 ----
     'town': {'xpath': ['//*[@content-desc="map_blank"]/android.widget.FrameLayout[4]/android.widget.FrameLayout[1]']

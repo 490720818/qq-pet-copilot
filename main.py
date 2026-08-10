@@ -184,11 +184,12 @@ def start_scrcpy() -> subprocess.Popen | None:
     serial = load_config().adb.device_serial
     if serial:  # 指定设备序列号
         cmd += ['-s', serial]
-    cmd += ['--turn-screen-off', '--window-borderless', '--stay-awake',
+    cmd += ['--no-audio',  # 只要画面，不要音频（镜像/自动化用不到声音）
+            '--turn-screen-off', '--window-borderless', '--stay-awake',
             f'--window-title={SCRCPY_TITLE}',
             # 先放到屏幕外，嵌入容器时再移回来，避免窗口先弹出再嵌入的闪烁
             '--window-x=-2000', '--window-y=-2000']
-    log(f'启动 scrcpy（--turn-screen-off --window-borderless'
+    log(f'启动 scrcpy（--no-audio --turn-screen-off --window-borderless'
         + (f'，设备 {serial}）...' if serial else '）...'))
     proc = subprocess.Popen(
         cmd,
@@ -200,6 +201,37 @@ def start_scrcpy() -> subprocess.Popen | None:
     time.sleep(1)
     if proc.poll() is not None:
         log('警告: scrcpy 启动后立刻退出了，请检查设备连接')
+        return None
+    return proc
+
+
+def start_scrcpy_screen_off() -> subprocess.Popen | None:
+    """无头 scrcpy 关闭设备屏幕：--turn-screen-off + 保持唤醒，不传画面/音频/不开窗口。
+
+    画面镜像关闭后用它把设备屏幕真正关掉（比亮度 0 更彻底）；
+    --stay-awake 让设备保持唤醒（渲染管线不断，OCR/自动化照常），
+    --no-window 不显示任何窗口。返回进程；失败返回 None（屏幕保持原状）。
+    """
+    if not SCRCPY.is_file():
+        log(f'未找到 {SCRCPY}，跳过屏幕关闭')
+        return None
+    cmd = [str(SCRCPY), '--turn-screen-off', '--no-video', '--no-audio',
+           '--stay-awake', '--no-window']
+    serial = load_config().adb.device_serial
+    if serial:
+        cmd += ['-s', serial]
+    log('启动 scrcpy 关闭屏幕（--turn-screen-off --no-video --no-audio '
+        '--stay-awake --no-window）...')
+    proc = subprocess.Popen(
+        cmd,
+        cwd=str(SCRCPY.parent),
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        creationflags=_NO_WINDOW,
+    )
+    time.sleep(1)
+    if proc.poll() is not None:
+        log('警告: 屏幕关闭 scrcpy 启动后立刻退出了')
         return None
     return proc
 
@@ -373,6 +405,7 @@ class MainWindow(QMainWindow):
         # 画面镜像关闭时关屏一次：GUI 侧 adb Device（懒加载复用）
         self._adb_dev = None
         self._adb_dev_key = None
+        self._screen_off_proc: subprocess.Popen | None = None  # 无头关屏 scrcpy
         # 配置保存后重启调度器的防抖定时器
         self._restart_timer = QTimer(self, singleShot=True, interval=1500,
                                      timeout=self._restart_runner)
@@ -398,7 +431,7 @@ class MainWindow(QMainWindow):
                 self._scrcpy_proc = start_scrcpy()
             else:
                 log('画面镜像开关关闭，跳过启动')
-                self._turn_device_screen_off()
+                self._screen_off_proc = start_scrcpy_screen_off()
         except Exception:
             import traceback
 
@@ -604,19 +637,6 @@ class MainWindow(QMainWindow):
             self._adb_dev_key = key
         return self._adb_dev
 
-    def _turn_device_screen_off(self) -> None:
-        """画面镜像关闭时关一次设备屏幕（与 scrcpy --turn-screen-off 一致，只执行一次）。
-
-        镜像关闭后不再定时轮询；屏幕之后若被手动唤醒就保持亮着，交由用户控制。
-        adb 不可用时记日志后跳过。
-        """
-        try:
-            dev = self._get_adb_dev()
-            if dev.screen_off():
-                log('已关闭设备屏幕（画面镜像关闭中）')
-        except Exception as e:
-            log(f'关闭设备屏幕失败: {e}')
-
     def _set_test_btn_enabled(self, enabled: bool) -> None:
         """启用/禁用"连接测试"按钮（避免测试期间重复触发）。"""
         try:
@@ -800,6 +820,10 @@ class MainWindow(QMainWindow):
 
     def _enable_scrcpy(self) -> None:
         """启动 scrcpy 并开始查找嵌入（看门狗随后自动维护重连）。"""
+        if self._screen_off_proc is not None and self._screen_off_proc.poll() is None:
+            log('结束屏幕关闭 scrcpy')
+            self._screen_off_proc.terminate()
+        self._screen_off_proc = None
         if self._scrcpy_proc is not None and self._scrcpy_proc.poll() is None:
             return  # 已在运行
         self.scrcpy_view.set_hwnd(None)
@@ -816,7 +840,8 @@ class MainWindow(QMainWindow):
         kill_existing_scrcpy()  # 兜底：连没被本程序记录到的 scrcpy 一起清
         self._scrcpy_proc = None
         self.scrcpy_view.set_hwnd(None)
-        self._turn_device_screen_off()  # 与 scrcpy 一致：镜像关闭时只关屏一次
+        # 镜像关闭：用无头 scrcpy 真正关掉设备屏幕（保持自动化可用）
+        self._screen_off_proc = start_scrcpy_screen_off()
 
     def _restart_runner(self) -> None:
         if self._runner_proc and self._runner_proc.poll() is None:
@@ -895,6 +920,9 @@ class MainWindow(QMainWindow):
         if self._scrcpy_proc and self._scrcpy_proc.poll() is None:
             log('关闭 scrcpy')
             self._scrcpy_proc.terminate()
+        if self._screen_off_proc and self._screen_off_proc.poll() is None:
+            log('结束屏幕关闭 scrcpy')
+            self._screen_off_proc.terminate()
         event.accept()
 
 

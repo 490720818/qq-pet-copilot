@@ -82,23 +82,6 @@ class Device:
         size = out.strip().split(":")[-1].strip().split("x")
         return int(size[0]), int(size[1])
 
-    def is_screen_on(self) -> bool:
-        """查询设备屏幕是否点亮（dumpsys power 的 mWakefulness=Awake）。"""
-        proc = self._run("shell", "dumpsys", "power", check=False)
-        out = proc.stdout.decode("utf-8", "replace")
-        return "mWakefulness=Awake" in out
-
-    def screen_off(self) -> bool:
-        """关闭设备屏幕（KEYCODE_POWER）；屏幕已关则不动，避免误唤醒。
-
-        与 scrcpy --turn-screen-off 的关屏方式一致，不影响 u2 截图/自动化。
-        返回是否实际执行了关屏。
-        """
-        if not self.is_screen_on():
-            return False
-        self._run("shell", "input", "keyevent", "26")
-        return True
-
     def reboot_and_wait(self, timeout: float = 180.0, interval: float = 5.0) -> None:
         """重启设备并等待开机完成（sys.boot_completed=1），超时抛 AdbError。
 
