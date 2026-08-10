@@ -326,6 +326,7 @@ class Runner:
         # （否则 _run_round 跑 adventure 时日志/内部上限还是旧值）
         self.adventure.times_per_day = adv.times_per_day
         self.adventure.skip_bad_weather = adv.skip_bad_weather
+        self.adventure.batch = adv.batch
         start_time = adv.start_time
         if isinstance(start_time, int):
             # YAML 1.1 会把不带引号的 9:00 解析成分钟数 540，转回 HH:MM

@@ -151,6 +151,7 @@ SETTING_FIELDS = [
     ('adventure.times_per_day', '每天冒险次数（0 不冒险）', 'int'),
     ('adventure.start_time', '冒险调度时间（HH:MM）', 'str'),
     ('adventure.skip_bad_weather', '冒险跳过"天色不对"', 'bool'),
+    ('adventure.batch', '单轮冒险次数', 'int'),
     ('visit.times_per_day', '每天踩踩次数（0 不踩）', 'int'),
     ('visit.start_time', '踩踩调度时间（HH:MM）', 'str'),
     ('pk.times_per_day', '每天 PK 次数（0 不 PK）', 'int'),

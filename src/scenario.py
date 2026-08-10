@@ -91,7 +91,16 @@ class DeviceScenario:
             source = self.dev.hierarchy()
             target = self.see(click_name, None, source)
             if target and wait_ocr_only:
-                # OCR wait：点击目标在就只管点，避免每轮截图+OCR
+                # OCR wait：点击目标在就只管点，避免每轮截图+OCR 拖慢点击。
+                # 但点击目标可能一直残留/被误匹配（如"开始"按钮在下一页仍在
+                # 控件树里）：从第二次起先查 OCR wait，已进入状态就直接返回，
+                # 否则会一直重复点击直到超时（见冒险"开始冒险"反复点开始、
+                # adventure_in 却早已出现）
+                if attempt >= 2:
+                    hit = self.see(wait_name, None, source)
+                    if hit:
+                        log(f'{stage}: 已出现 {wait_name} (score={hit[2]:.2f})')
+                        return
                 self.click(target[0], target[1])
                 clicked = True
                 time.sleep(CLICK_INTERVAL)

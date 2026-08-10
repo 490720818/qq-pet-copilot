@@ -147,7 +147,8 @@ LOCATORS: dict[str, dict] = {
     'encourage_pet': {'xpath': ['//*[@content-desc="鼓励宠物"]']},
 
     # ---- 打工 ----
-    'town': {'xpath': ['//*[@content-desc="map_blank"]/android.widget.FrameLayout[4]/android.widget.FrameLayout[1]']
+    'town': {
+        'xpath': ['//*[@content-desc="map_blank"]/android.widget.FrameLayout[4]/android.widget.FrameLayout[1]']
                ,'ocr': ['职业小镇']},
     'work_start': {'xpath': ['//*[@content-desc="去打工"]']},
     # work_start 被"去照顾一下"弹窗挡住时：点它进护理，一键护理+back 后回工作面板（work.py _recover_work_start）
@@ -172,11 +173,17 @@ LOCATORS: dict[str, dict] = {
     'employ': {'ocr': ['雇佣']},
 
     # ---- 冒险 ----
-    'adventure': {'xpath': ['//*[@content-desc="map_blank"]/android.widget.FrameLayout[3]/android.widget.FrameLayout[1]']
+    'adventure': {
+        'cache': True,
+        'xpath': ['//*[@content-desc="map_blank"]/android.widget.FrameLayout[3]/android.widget.FrameLayout[1]']
                ,'ocr': ['冒险']},
-    'adventure_start': {'xpath': ['//*[@content-desc="开始"]/android.widget.FrameLayout[1]']},
+    'adventure_start': {
+        # 不能加 cache：连跑衔接里要靠它判断是否真的进了冒险准备页，
+        # 缓存会让 see() 在还没进准备页时也返回旧坐标（误报"已出现 adventure_start"，
+        # 随后在出门页面傻点"开始"、adventure_in 永远不出现）
+        'xpath': ['//*[@content-desc="开始"]']},
     'adventure_in': {'ocr': ['正在冒险', '冒险中']},
-    'adventure_end': {'xpath': ['//*[@content-desc="分享"]/android.widget.FrameLayout[1]']},
+    'adventure_end': {'xpath': ['//*[@content-desc="分享"]']},
     # 冒险详情框区域：开始冒险后检测"天色不对"用（see_bounds 取范围裁剪 OCR）；
     # 命中后按区域内"召回"文字的坐标点击，再点"确认召回"，计入一次冒险
     'adventure_detail': {
@@ -185,7 +192,10 @@ LOCATORS: dict[str, dict] = {
                   '/android.widget.FrameLayout[1]/android.widget.FrameLayout[1]'
                   '/android.widget.FrameLayout[1]/android.widget.FrameLayout[4]'],
     },
-    'adventure_recall_confirm': {'xpath': ['//*[@content-desc="确认召回"]']},
+    'adventure_recall_confirm': {
+        # 不能加 cache：每次天气不好召回都要真实确认"确认召回"弹窗出现了，
+        # 缓存会让 see() 在弹窗没出现时也返回旧坐标去点（点错页面元素、误计数）
+        'xpath': ['//*[@content-desc="确认召回"]']},
 
     # ---- 被雇佣 ----
     # 整屏 OCR 关键词检测；不能加"雇佣规则"——它是按钮，
@@ -201,7 +211,7 @@ LOCATORS: dict[str, dict] = {
         # 控件树太复杂了，走u2速度太慢
         'ocr': ['确认召回', '确定召回', '确认', '确定'],
     },
-    'employed_end': {'xpath': ['//*[@content-desc="分享"]/android.widget.FrameLayout[1]']},
+    'employed_end': {'xpath': ['//*[@content-desc="分享"]']},
 
     # ---- 踩踩（访问好友） ----
     'visit_friends': {'xpath': ['//*[@content-desc="好友"]']},
@@ -235,7 +245,7 @@ LOCATORS: dict[str, dict] = {
                   '/android.widget.FrameLayout[1]/android.widget.FrameLayout[1]'
                   '/android.widget.FrameLayout[1]/android.widget.FrameLayout[5]'],
     },
-    'feed': {'xpath': ['//*[@content-desc="feed"]/android.widget.FrameLayout[1]']},
+    'feed': {'xpath': ['//*[@content-desc="feed"]']},
     # 一键护理按钮（content-desc 以 one_click_care 开头，后缀不固定，前缀匹配）；
     # 护理方式配置为"一键护理"时，照顾流程只点它——不读状态、不手动喂食/洗澡
     'one_click_care': {'xpath': ['//*[starts-with(@content-desc, "one_click_care")]']},
