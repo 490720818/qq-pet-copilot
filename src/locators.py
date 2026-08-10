@@ -199,7 +199,8 @@ LOCATORS: dict[str, dict] = {
     # （_ocr_texts_cached 缓存），这里直接复用，无需额外 dump/识别
     'employed_come_back': {'ocr': ['现在召回', '召回']},
     'employed_come_back_confirm': {
-        'ocr': ['确认', '确定'], 'u2': [{'text': '确认'}, {'text': '确定'}],
+        # 控件树太复杂了，走u2速度太慢
+        'ocr': ['确认召回', '确定召回', '确认', '确定'],
     },
     'employed_end': {'xpath': ['//*[@content-desc="分享"]/android.widget.FrameLayout[1]']},
 

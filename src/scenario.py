@@ -247,7 +247,9 @@ class DeviceScenario:
         time_capped = action == '等到25/75（小于45min）'
         last_log_at = 0.0
         while True:
-            screen, source = self.snapshot()
+            # 本循环全是 OCR 定位（剩余时间/分成比例/被雇佣中），
+            # 不需要控件树快照（dump 一次 1~4s），只截图即可
+            screen = self.screen()
             if immediate:
                 log('按配置"立刻召回"被雇佣宠物')
             else:
@@ -265,7 +267,7 @@ class DeviceScenario:
                     sign = self.see_employed_sign(screen)
                     if not sign:
                         # 点击一次被雇佣画面防止设备休眠
-                        cur = self.see('employed_in', screen, source)
+                        cur = self.see('employed_in', screen)
                         if cur:
                             self.dev.click(cur[0], cur[1])  # 防休眠点击不记日志
                         now = time.monotonic()
@@ -279,13 +281,14 @@ class DeviceScenario:
             for attempt in range(1, NAV_TIMEOUT + 1):
                 # 先查确认按钮：召回点击后 confirm 可能延迟弹出，
                 # 此时 come_back 已消失，只查 come_back 会永远等不到
-                screen, source = self.snapshot()
-                confirm = self.see('employed_come_back_confirm', screen, source)
+                # 两个按钮都是自绘 OCR 定位，不需要控件树快照，只截图
+                screen = self.screen()
+                confirm = self.see('employed_come_back_confirm', screen)
                 if confirm:
                     self.click(confirm[0], confirm[1])
                     time.sleep(CLICK_INTERVAL)
                     break
-                back = self.see('employed_come_back', screen, source)
+                back = self.see('employed_come_back', screen)
                 if back:
                     self.click(back[0], back[1])
                 else:
