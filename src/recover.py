@@ -115,7 +115,9 @@ def _connect_u2(adb: Device) -> U2Device:
     deadline = time.monotonic() + U2_CONNECT_TIMEOUT
     while True:
         try:
-            return U2Device(adb.adb, adb.serial)
+            dev = U2Device(adb.adb, adb.serial, auto_wifi_failover=adb.auto_wifi_failover, wifi_port=adb.wifi_port)
+            adb.serial = dev.adb.serial
+            return dev
         except Exception as e:
             if time.monotonic() >= deadline:
                 raise RuntimeError(
