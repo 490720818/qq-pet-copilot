@@ -13,7 +13,7 @@ _yaml = YAML()  # 默认 round-trip，保留注释
 
 # 各配置项默认值：设置页校验不通过时恢复
 DEFAULTS = {
-    'adb.path': 'scrcpy-win64/adb.exe',
+    'adb.path': 'resources/scrcpy-win64/adb.exe',
     'adb.device_serial': '',
     'school.attribute': '力量',
     'school.times_per_day': 0,

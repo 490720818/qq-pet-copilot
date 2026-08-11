@@ -17,6 +17,7 @@ import time
 
 from .adb.device import Device
 from .progress import log
+from .opener import OpenPetPageError, open_pet_page
 from .u2dev import U2Device
 
 QQ_PACKAGE = 'com.tencent.mobileqq'
@@ -34,10 +35,13 @@ PET_PAGE_TIMEOUT = 5.0     # 每次点击后等宠物主页加载的超时（秒
 PET_PAGE_POLL_INTERVAL = 3.0
 
 
-def reenter_pet(adb: Device, method: str = "重启设备") -> U2Device:
+def reenter_pet(adb: Device, method: str = "重启设备",
+                use_opener: bool = False, opener_serial: str | None = None) -> U2Device:
     """按 recover.method 恢复：重启设备 或 重启游戏，再进宠物页面，返回新 U2Device。
 
-    点完入口会等宠物主页（"宠物状态"容器）真的加载出来；没出来重新点，
+    模拟器模式（use_opener=True）：QQ 搜索卡片的宠物入口是空的（点不到 Q宠-*），
+    改用 qqpet-module-opener（frida 注入）打开宠物主页，由 opener 负责启动 QQ。
+    其余场景点完入口会等宠物主页（"宠物状态"容器）真的加载出来；没出来重新点，
     最多 PET_ENTRY_CLICK_TRIES 次。失败抛异常，由调用方决定再次恢复或放弃。
     """
     if method == "重启游戏":
@@ -45,15 +49,23 @@ def reenter_pet(adb: Device, method: str = "重启设备") -> U2Device:
         log('异常恢复：重启 QQ 游戏（不重启设备）...')
         adb.force_stop_app(QQ_PACKAGE)
         dev = _connect_u2(adb)
-        log('启动 QQ...')
-        adb.launch_app(QQ_PACKAGE)
     else:
         log('异常恢复：adb reboot 重启设备...')
         adb.reboot_and_wait(BOOT_TIMEOUT, BOOT_POLL_INTERVAL)
         dev = _connect_u2(adb)
         _unlock(dev)
-        log('启动 QQ...')
-        adb.launch_app(QQ_PACKAGE)
+    if use_opener:
+        # 模拟器：不点 Q宠-* 入口（搜索卡片空入口），frida 注入直接打开宠物主页
+        log('异常恢复：模拟器模式，用 qqpet-module-opener 打开 QQ 宠物主页...')
+        try:
+            open_pet_page(serial=opener_serial or adb.serial, adb_path=adb.adb)
+        except OpenPetPageError as e:
+            raise RuntimeError(f'opener 打开宠物主页失败: {e}') from e
+        if _wait_main_page(dev):
+            return dev
+        raise RuntimeError('opener 打开宠物主页后未检测到主页标志（"宠物状态"容器）')
+    log('启动 QQ...')
+    adb.launch_app(QQ_PACKAGE)
     for attempt in range(1, PET_ENTRY_CLICK_TRIES + 1):
         _click_pet_entry(dev)
         if _wait_main_page(dev):

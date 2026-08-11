@@ -13,5 +13,5 @@ xml/
 # 个人配置（模板为 config.example.yaml）
 config.yaml
 
-# 第三方二进制（scrcpy），用 tools/fetch_scrcpy.py 拉取
-scrcpy-win64/
+# 第三方二进制/离线包（scrcpy、frida-server 等），build 时下载或本地放入，不入库
+resources/

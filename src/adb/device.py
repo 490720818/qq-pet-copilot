@@ -76,6 +76,19 @@ class Device:
         self.serial = devices[0]
         return self.serial
 
+    def connect_remote(self, serial: str | None = None) -> None:
+        """尝试 adb connect 远程设备（模拟器 127.0.0.1:xxxx）。
+
+        模拟器（MuMu/雷电等）自带 adb 端口，但设备可能尚未出现在 adb devices；
+        这里先 connect 一下。adb connect 不区分设备，不能带 -s；失败不抛错
+        （可能本来就已连接，交给后续 ensure_connected 判断）。
+        """
+        target = serial or self.serial
+        if not target or ":" not in target:
+            return
+        subprocess.run([self.adb, "connect", target], capture_output=True, timeout=10,
+                       creationflags=_NO_WINDOW, check=False)
+
     def screen_size(self) -> tuple[int, int]:
         out = self._run("shell", "wm", "size").stdout.decode("utf-8", "replace")
         # 形如 "Physical size: 1080x2400"

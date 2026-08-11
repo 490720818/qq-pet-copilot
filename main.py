@@ -46,7 +46,7 @@ import win32gui
 
 from src import settings as settings_io
 from src.adb.device import Device
-from src.config import PROJECT_ROOT, find_adb, load_config, resource_path
+from src.config import APP_ROOT, PROJECT_ROOT, find_adb, is_emulator_build, load_config, resource_path
 from src.progress import (
     ADVENTURE_PROGRESS_FILE,
     PK_PROGRESS_FILE,
@@ -63,7 +63,7 @@ from src.stats_chart import StatsPanel
 from src.status_cache import FIELDS as STATUS_FIELDS
 from src.status_cache import load_accounts
 
-SCRCPY = resource_path('scrcpy-win64') / 'scrcpy.exe'
+SCRCPY = resource_path('resources/scrcpy-win64') / 'scrcpy.exe'
 SCRCPY_TITLE = 'QQPetCopilotScrcpy'
 RUNNER_SCRIPT = PROJECT_ROOT / 'scenarios' / 'runner.py'
 EMBED_TRIES = 40  # 查找 scrcpy 窗口的次数（每次 500ms）
@@ -311,9 +311,13 @@ def device_aspect() -> tuple[int, int] | None:
 
 
 class MainWindow(QMainWindow):
-    def __init__(self):
+    def __init__(self, emulator_mode: bool = False, emulator_device: str | None = None):
         super().__init__()
-        self.setWindowTitle('QQ 宠物自动化助手')
+        self.emulator_mode = emulator_mode
+        self.emulator_device = emulator_device
+        if emulator_mode:
+            log('模拟器模式：调度器将用 qqpet-module-opener 打开 QQ 宠物主页')
+        self.setWindowTitle('QQ 宠物自动化助手' + ('（模拟器版）' if emulator_mode else ''))
         self.resize(1200, 750)
 
         self.scrcpy_view = ScrcpyContainer()
@@ -564,12 +568,24 @@ class MainWindow(QMainWindow):
                 continue
             elif kind == 'devices' or isinstance(kind, list):
                 w = QComboBox()
-                if isinstance(kind, list):
-                    w.addItems(kind)
-                w.currentTextChanged.connect(lambda _t, k=key: self.save_field(k))
-                if key == 'care.method':
-                    # 护理方式变化时联动显隐体力/清洁阈值（一键护理不读状态，阈值无意义）
-                    w.currentTextChanged.connect(self._on_care_method_changed)
+                if kind == 'devices':
+                    # 设备序列号：可编辑下拉——既可从在线设备里选，也可手动输入
+                    # （模拟器 127.0.0.1:7555 这类地址可能还没连进 adb，下拉里没有）
+                    w.setEditable(True)
+                    w.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)  # 手动输入不追加进下拉
+                    w.lineEdit().setPlaceholderText('自动（第一台）或输入序列号，如 127.0.0.1:7555')
+                    w.setToolTip('从下拉选择在线设备，或直接输入设备序列号/模拟器 adb 地址')
+                    # 手动输入每敲一个字符就保存会反复重启 scrcpy/调度器，
+                    # 只在 选了下拉项（activated）或 输入结束（Enter/失焦）时保存
+                    w.activated.connect(lambda _i, k=key: self.save_field(k))
+                    w.lineEdit().editingFinished.connect(lambda k=key: self.save_field(k))
+                else:
+                    if isinstance(kind, list):
+                        w.addItems(kind)
+                    w.currentTextChanged.connect(lambda _t, k=key: self.save_field(k))
+                    if key == 'care.method':
+                        # 护理方式变化时联动显隐体力/清洁阈值（一键护理不读状态，阈值无意义）
+                        w.currentTextChanged.connect(self._on_care_method_changed)
             else:
                 w = QLineEdit()
                 w.editingFinished.connect(lambda k=key: self.save_field(k))
@@ -730,7 +746,8 @@ class MainWindow(QMainWindow):
             self._on_care_method_changed(method_w.currentText())
 
     def _fill_devices(self, combo: QComboBox, current: str) -> None:
-        """枚举在线 adb 设备填充序列号下拉，首项为 自动（第一台）。"""
+        """枚举在线 adb 设备填充序列号下拉（可编辑，支持手动输入），
+        首项为 自动（第一台）。手动输入的序列号（不在线/模拟器地址）下拉里没有时写回编辑框。"""
         combo.clear()
         combo.addItem('自动（第一台）', '')
         try:
@@ -743,13 +760,20 @@ class MainWindow(QMainWindow):
         except Exception as e:
             log(f'枚举设备失败: {e}')
         idx = combo.findData(current)
-        combo.setCurrentIndex(idx if idx >= 0 else 0)
+        if idx >= 0:
+            combo.setCurrentIndex(idx)
+        else:
+            combo.setEditText(current)  # 下拉里没有的自定义序列号，填回编辑框
 
     def save_field(self, key: str) -> None:
         """字段失焦自动保存：校验 -> 写回 config.yaml -> 调度器在跑则延时重启生效。"""
         w, kind = self._setting_widgets[key]
         if kind == 'devices':
-            value = w.currentData() or ''
+            # 可编辑下拉：用户手动输入不匹配任何下拉项时，Qt 仍保留上次选中项的
+            # currentData（会误判成已选中的值），所以统一按显示文本保存：
+            # 下拉的“自动（第一台）”项 → ''，其余（在线设备/手动输入）直接用文本本身
+            text = w.currentText().strip()
+            value = '' if text == '自动（第一台）' else text
         elif kind == 'int':
             value = w.value()
         elif kind == 'bool':
@@ -766,7 +790,10 @@ class MainWindow(QMainWindow):
             w.blockSignals(True)  # 恢复默认值不再触发一次保存
             if kind == 'devices':
                 idx = w.findData(fixed)
-                w.setCurrentIndex(idx if idx >= 0 else 0)
+                if idx >= 0:
+                    w.setCurrentIndex(idx)
+                else:
+                    w.setEditText(str(fixed))
             elif kind == 'int':
                 w.setValue(fixed)
             elif kind == 'bool':
@@ -794,6 +821,21 @@ class MainWindow(QMainWindow):
         elif self._runner_proc and self._runner_proc.poll() is None:
             log('调度器每轮自动重读配置，最迟下一轮生效（无需重启）')
 
+    def _connect_emulator_adb(self) -> None:
+        """模拟器模式下，先确保 adb 已连接远程模拟器（127.0.0.1:port）。
+
+        模拟器（MuMu/雷电等）可能还没进 adb devices，不先 connect 的话
+        scrcpy/u2 都连不上；失败只记日志（可能本来就已连接）。
+        """
+        if not self.emulator_mode:
+            return
+        try:
+            serial = self.emulator_device or load_config().adb.device_serial
+            if serial and ':' in serial:
+                Device(find_adb(load_config().adb.path), serial).connect_remote(serial)
+        except Exception as e:
+            log(f'adb connect 模拟器失败: {e}')
+
     def _restart_scrcpy(self) -> None:
         """杀掉并重拉 scrcpy（换设备/换 adb 后画面也需要切换）。"""
         if not self.btn_scrcpy.isChecked():
@@ -801,6 +843,7 @@ class MainWindow(QMainWindow):
         log('重新初始化 scrcpy...')
         kill_existing_scrcpy()
         self.scrcpy_view.set_hwnd(None)
+        self._connect_emulator_adb()
         self._scrcpy_proc = start_scrcpy()
         if self._scrcpy_proc:
             self._embed_tries = 0
@@ -828,6 +871,7 @@ class MainWindow(QMainWindow):
         if self._scrcpy_proc is not None and self._scrcpy_proc.poll() is None:
             return  # 已在运行
         self.scrcpy_view.set_hwnd(None)
+        self._connect_emulator_adb()
         self._scrcpy_proc = start_scrcpy()
         if self._scrcpy_proc:
             self._embed_tries = 0
@@ -865,6 +909,12 @@ class MainWindow(QMainWindow):
             cmd = [sys.executable, '--runner']  # 打包后：以 --runner 参数重启自身
         else:
             cmd = [sys.executable, '-u', str(RUNNER_SCRIPT)]
+        if self.emulator_mode:
+            cmd.append('--emulator')
+        else:
+            cmd.append('--no-emulator')
+        if self.emulator_device:
+            cmd += ['--emulator-device', self.emulator_device]
         self._runner_proc = subprocess.Popen(
             cmd,
             cwd=str(PROJECT_ROOT),
@@ -927,7 +977,106 @@ class MainWindow(QMainWindow):
         event.accept()
 
 
+def _ensure_runtime_resources(emulator: bool) -> None:
+    """确保 scrcpy / 模拟器版 frida-server 已就位（缺失不阻塞，后台线程）。
+
+    源码运行：缺失时自动调用对应 fetch 工具下载（幂等），失败给出手动下载地址与放置位置。
+    打包运行（frozen）：资源随包或放在 exe 旁 runs/（可写数据目录，覆盖随包资源）；缺失时提示
+    可手动放到 exe 旁 runs/ 的对应目录（或重新打包），不联网下载。
+    """
+    frozen = getattr(sys, 'frozen', False)
+
+    def work() -> None:
+        # scrcpy：画面镜像必需（不区分普通/模拟器模式）
+        if not SCRCPY.is_file():
+            if frozen:
+                log(f'未找到 scrcpy。需要画面镜像请手动放置（或重新打包），exe 旁 runs 目录：'
+                    f'{APP_ROOT / "runs" / "resources" / "scrcpy-win64"}/（内含 scrcpy.exe）')
+            else:
+                log('未找到 scrcpy，正在自动下载（tools/fetch_scrcpy.py）...')
+                fetch = PROJECT_ROOT / 'tools' / 'fetch_scrcpy.py'
+                if fetch.is_file():
+                    subprocess.run([sys.executable, str(fetch)], check=False)
+                if SCRCPY.is_file():
+                    log('scrcpy 已就绪')
+                else:
+                    # 下载失败不阻塞：给出下载地址与放置位置，用户手动处理
+                    log(f'scrcpy 自动下载失败。请手动下载 scrcpy win64 并解压到 {SCRCPY.parent}：\n'
+                        f'  地址: https://github.com/Genymobile/scrcpy/releases （scrcpy-win64-vX.zip，需含 scrcpy.exe）')
+        # frida-server：模拟器模式需要
+        if emulator:
+            from src.opener import FRIDA_SERVER_REL
+            frida_dir = resource_path(FRIDA_SERVER_REL)
+            if not any(frida_dir.glob('frida-server-*.xz')):
+                if frozen:
+                    log(f'未找到 frida-server 离线包。需要模拟器功能请手动下载并放到 exe 旁 runs 目录：'
+                        f'{APP_ROOT / "runs" / FRIDA_SERVER_REL}/（frida-server-<版本>-android-x86_64.xz，'
+                        f'版本须与 requirements.txt 的 frida 一致），或重新打包模拟器版')
+                else:
+                    log('未找到 frida-server 离线包，正在自动下载（tools/fetch_frida_server.py）...')
+                    fetch = PROJECT_ROOT / 'tools' / 'fetch_frida_server.py'
+                    if fetch.is_file():
+                        subprocess.run([sys.executable, str(fetch)], check=False)
+                    if any(frida_dir.glob('frida-server-*.xz')):
+                        log('frida-server 离线包已就绪')
+                    else:
+                        # 下载失败不阻塞：给出下载地址与放置位置，用户手动处理
+                        try:
+                            import frida
+                            ver = frida.__version__
+                        except Exception:
+                            ver = '<版本>'
+                        log(f'frida-server 自动下载失败。请手动下载并放到 {frida_dir}：\n'
+                            f'  地址: https://github.com/frida/frida/releases/download/{ver}/'
+                            f'frida-server-{ver}-android-x86_64.xz\n'
+                            f'  （文件名中的版本须与 requirements.txt 的 frida 一致）')
+
+    threading.Thread(target=work, daemon=True).start()
+
+
+def _parse_emulator_args() -> tuple[bool, str | None]:
+    """解析 --emulator / --no-emulator / --emulator-device。
+
+    未显式指定时：打包的模拟器版（内置 emulator_mode.txt 标记）默认开启，
+    普通版/源码默认关闭。返回 (是否模拟器模式, 模拟器设备地址或 None)。
+    """
+    emulator = is_emulator_build()
+    device = None
+    args = sys.argv[1:]
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        if arg == '--emulator':
+            emulator = True
+        elif arg == '--no-emulator':
+            emulator = False
+        elif arg == '--emulator-device' and i + 1 < len(args):
+            device = args[i + 1]
+            i += 1
+        i += 1
+    return emulator, device
+
+
+def _strip_emulator_args(argv: list[str]) -> list[str]:
+    """从 argv 里去掉 emulator 专用参数（QApplication 不认识的参数不报错，
+    但清理干净更稳妥）。"""
+    out = [argv[0]]
+    i = 1
+    while i < len(argv):
+        arg = argv[i]
+        if arg in ('--emulator', '--no-emulator'):
+            i += 1
+            continue
+        if arg == '--emulator-device':
+            i += 2  # 连后面的值一起去掉
+            continue
+        out.append(arg)
+        i += 1
+    return out
+
+
 def main() -> None:
+    emulator, emulator_device = _parse_emulator_args()
     if '--runner' in sys.argv:
         # 调度器子进程模式（打包后由 GUI 以 --runner 参数拉起）
         # windowed 打包的程序 stdout 用本地编码(GBK)，强制改 UTF-8，否则 GUI 日志乱码
@@ -939,10 +1088,11 @@ def main() -> None:
                     pass  # windowed 下 stdout/stderr 可能是无效流
         from scenarios.runner import Runner
 
-        Runner().run()
+        Runner(use_opener=emulator, opener_serial=emulator_device).run()
         return
-    app = QApplication(sys.argv)
-    window = MainWindow()
+    _ensure_runtime_resources(emulator)
+    app = QApplication(_strip_emulator_args(sys.argv))
+    window = MainWindow(emulator_mode=emulator, emulator_device=emulator_device)
     window.show()
     sys.exit(app.exec())
 

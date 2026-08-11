@@ -32,10 +32,18 @@ CONFIG_FILE = APP_ROOT / "config.yaml"
 
 
 def resource_path(rel: str | Path) -> Path:
-    """定位只读资源：APP_ROOT 下存在则用（用户自定义优先），否则用随包资源。"""
+    """定位资源。
+
+    源码运行：项目根下（resources/ 等）存在则用，否则随包资源；
+    打包运行：exe 旁的 runs/（可写数据目录）下放同名资源即可覆盖随包资源
+    （如 runs/resources/scrcpy-win64/、runs/resources/frida-server/），无需重新打包。
+    """
     rel = Path(rel)
     if rel.is_absolute():
         return rel
+    if getattr(sys, "frozen", False):
+        local = APP_ROOT / "runs" / rel
+        return local if local.exists() else RESOURCE_ROOT / rel
     local = APP_ROOT / rel
     return local if local.exists() else RESOURCE_ROOT / rel
 
@@ -209,3 +217,14 @@ def load_config(config_path: str | Path | None = None) -> Config:
         recover=RecoverConfig(**raw.get("recover", {})),
         notify=NotifyConfig(**raw.get("notify", {})),
     )
+
+
+def is_emulator_build() -> bool:
+    """是否为打包的模拟器版（build.py --emulator 内置 emulator_mode.txt 标记）。
+
+    模拟器版 exe 启动后默认开启模拟器模式（用 qqpet-module-opener 打开宠物主页）；
+    普通版/源码运行时为 False，可用 --emulator / --no-emulator 命令行参数覆盖。
+    """
+    if not getattr(sys, "frozen", False):
+        return False
+    return (RESOURCE_ROOT / "emulator_mode.txt").is_file()

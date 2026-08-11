@@ -5,12 +5,53 @@ from pathlib import Path
 from PyInstaller.utils.hooks import collect_data_files
 from PyInstaller.utils.hooks import collect_all
 
+# 模拟器版（build.py --emulator 会设置 QQ_PET_EMULATOR=1）：内置 hook JS + frida-server
+# 离线包 + frida，exe 名带 Emulator 后缀，与普通版共存于 dist/
+EMULATOR = bool(os.environ.get('QQ_PET_EMULATOR'))
+EXE_NAME = 'QQPetCopilotEmulator' if EMULATOR else 'QQPetCopilot'
+
 datas = [('config.example.yaml', '.')]
-# scrcpy-win64/ 不入库（tools/fetch_scrcpy.py 拉取），存在才随包带上
-if Path('scrcpy-win64/scrcpy.exe').is_file():
-    datas.append(('scrcpy-win64', 'scrcpy-win64'))
+# resources/scrcpy-win64/ 不入库（tools/fetch_scrcpy.py 拉取），存在才随包带上
+if Path('resources/scrcpy-win64/scrcpy.exe').is_file():
+    datas.append(('resources/scrcpy-win64', 'resources/scrcpy-win64'))
 binaries = []
 hiddenimports = []
+
+if EMULATOR:
+    # 模拟器版：内置 hook JS（assets/qqpet-module-opener/，入库）+ frida-server 离线包
+    # （resources/frida-server/，不入库）。hook JS 来自上游 qqpet-module-opener，
+    # 本项目只保留这一个文件（手动更新）；frida-server xz 由 build.py --emulator
+    # 确保就位（默认 x86_64，其他架构自行放入）
+    for _src in (Path('assets') / 'qqpet-module-opener', Path('resources') / 'frida-server'):
+        if not _src.is_dir():
+            raise SystemExit(f'缺少 {_src}/（hook JS 或 frida-server xz），模拟器版无法构建')
+        for _f in sorted(_src.rglob('*')):
+            if _f.is_file():
+                datas.append((str(_f), str(_f.parent)))
+    # frida：opener 的 Python 注入依赖（frida 包自带 _frida.pyd / frida-core，体积较大）
+    frida_all = collect_all('frida')
+    datas += frida_all[0]
+    binaries += frida_all[1]
+    hiddenimports += frida_all[2]
+    # collect_dynamic_libs 的默认模式不含 *.pyd，显式把 _frida.pyd（含 frida-core）带进包
+    import frida as _frida_mod
+    _frida_pkg = Path(_frida_mod.__file__).resolve().parent
+    for _pyd in _frida_pkg.glob('*.pyd'):
+        binaries.append((str(_pyd), 'frida'))
+    # 标记文件：exe 启动时据此默认开启模拟器模式（src/config.is_emulator_build）。
+    # 注意 datas 第二项是目标目录（'.' = 包根目录），写错会把文件放进
+    # emulator_mode.txt/ 子目录导致 is_emulator_build() 找不到
+    marker = Path('build') / 'emulator_mode.txt'
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text('1', encoding='utf-8')
+    datas.append((str(marker), '.'))
+    # frida-java-bridge：Frida 17 不再内置 Java 桥，注入前由 src/opener.py 补桥；
+    # 把 frida-tools 自带的 bridges/java.js 作为数据带上（frozen 下没有真实包路径）
+    import frida_tools as _frida_tools
+    _java_bridge = Path(_frida_tools.__file__).resolve().parent / 'bridges' / 'java.js'
+    if _java_bridge.is_file():
+        datas.append((str(_java_bridge), 'frida_tools/bridges'))
+
 # conda Python 3.12 的 C 扩展依赖 base 环境 Library/bin 下的 DLL，PyInstaller 在
 # conda venv 下搜不到它们，导致冻结环境里相关模块加载失败：
 # - _ctypes.pyd 依赖 ffi.dll → import ctypes 失败（onepush→Crypto 报“未安装 onepush”）
@@ -33,6 +74,13 @@ if Path('runs/models/rapidocr').exists():
     datas += [('runs/models/rapidocr', 'models/rapidocr')]
 
 
+# 普通版排除 frida（模拟器模式专属，由 EMULATOR 分支显式引入）：src/opener.py
+# 里有 import frida，PyInstaller 静态分析会把它带进来（+约 42MB）。普通版不需要，
+# 模拟器版在 EMULATOR 分支 collect_all 引入，这里不能排除。
+_EXCLUDES = ([] if EMULATOR else
+             ['frida', 'frida._frida', 'frida.aio',
+              'frida_tools', 'prompt_toolkit', 'pygments', 'websockets', 'wcwidth'])
+
 a = Analysis(
     ['main.py'],
     pathex=[],
@@ -42,7 +90,7 @@ a = Analysis(
     runtime_hooks=['tools/pyi_rth_preload_onnxruntime.py'],
     hookspath=[],
     hooksconfig={},
-    excludes=[],
+    excludes=_EXCLUDES,
     noarchive=False,
     optimize=0,
 )
@@ -54,7 +102,7 @@ a.binaries = [t for t in a.binaries if 'opencv_videoio_ffmpeg' not in t[0].lower
 # exe/DLL 实际由 BINARY 条目提供（目标仍是 scrcpy-win64\xxx）；二进制依赖分析额外把其中
 # 6 个 DLL（avcodec/SDL3/avutil/avformat/swresample/libusb）以根目录为目标又收集了一份，
 # 约 15MB 未压缩 / 5.8MB 压缩后。这里只去掉目标在根目录的重复项，保留 scrcpy-win64\ 下的。
-_scrcpy_root = Path('scrcpy-win64').resolve()
+_scrcpy_root = Path('resources/scrcpy-win64').resolve()
 a.binaries = [t for t in a.binaries
               if not (Path(t[1]).resolve().is_relative_to(_scrcpy_root)
                       and '\\' not in t[0] and '/' not in t[0])]
@@ -63,17 +111,17 @@ pyz = PYZ(a.pure)
 
 if os.environ.get('QQ_PET_ONEDIR'):
     # 目录模式
-    exe = EXE(pyz, a.scripts, [], exclude_binaries=True, name='QQPetCopilot',
+    exe = EXE(pyz, a.scripts, [], exclude_binaries=True, name=EXE_NAME,
               debug=False, bootloader_ignore_signals=False, strip=False, upx=True,
               upx_exclude=[], console=False, disable_windowed_traceback=False,
               argv_emulation=False, target_arch=None, codesign_identity=None,
               entitlements_file=None)
     coll = COLLECT(exe, a.binaries, a.datas, strip=False, upx=True,
-                   upx_exclude=[], name='QQPetCopilot')
+                   upx_exclude=[], name=EXE_NAME)
 else:
     # 单文件模式
     exe = EXE(pyz, a.scripts, a.binaries, a.datas, [],
-              name='QQPetCopilot', debug=False, bootloader_ignore_signals=False,
+              name=EXE_NAME, debug=False, bootloader_ignore_signals=False,
               strip=False, upx=True, upx_exclude=[], runtime_tmpdir=None,
               console=False, disable_windowed_traceback=False,
               argv_emulation=False, target_arch=None, codesign_identity=None,

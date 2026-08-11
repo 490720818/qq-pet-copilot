@@ -17,7 +17,11 @@ PyQt6 图形界面内嵌 scrcpy 实时画面，按金币和每日点数规则自
   PK 每个好友可打 3 次、打完自动切换下一个好友。
 - **状态照顾**：任务前读取体力/清洁/心情，按阈值自动喂食、洗澡（持续按压搓洗）；支持一键护理。
 - **异常自动恢复**：页面错乱先回主页面重进场景自愈，仍失败走 adb reboot → 重启 QQ → 点 `Q宠-*` 入口回宠物页，
-  恢复后自动重连继续调度。
+  恢复后自动重连继续调度；模拟器模式恢复时改用 qqpet-module-opener 注入打开宠物主页。
+- **模拟器模式**（`--emulator`）：Root 模拟器里手机 QQ 的"QQ宠物"搜索卡片可能不下发跳转地址
+  （提示"请在手机端使用"），通过 Frida 注入已登录的 QQ 进程、直接打开宠物主页，页面打开后立即解除注入。
+  hook 脚本取自 [qqpet-module-opener](https://github.com/yikehuang/qqpet-module-opener)（只保留这一个 JS，手动更新），
+  frida-server 默认离线打包 x86_64，无需联网。
 - **失败告警通知**：主任务多次重试仍失败时发 Windows Toast + OnePush 多渠道推送
   （Bark / PushPlus / Server酱 / SMTP / 自定义 webhook），并附当前手机截图。
 - **多账号支持**：识别账号后进度与状态自动分流到 `runs/accounts/<账号>/`（旧单账号进度自动迁移），
@@ -34,19 +38,15 @@ PyQt6 图形界面内嵌 scrcpy 实时画面，按金币和每日点数规则自
 
 ```bash
 python -m venv .venv
-.venv/Scripts/pip install -r requirements.txt
+.venv/Scripts/pip install -r requirements.txt   # 含 frida（模拟器模式注入用）
 ```
 
-1. 下载 scrcpy 二进制（不入库，从官方 Release 拉取到 `scrcpy-win64/`）：
+> 需要 **Python 3.12**。
 
-   ```bash
-   python tools/fetch_scrcpy.py        # 默认版本；--version 3.3 指定版本
-   ```
-
-2. 手机开 USB 调试并连接电脑（可用 `scrcpy-win64/adb.exe devices` 确认）。
+1. 手机开 USB 调试并连接电脑（可用 `resources/scrcpy-win64/adb.exe devices` 确认）。
    首次运行时 uiautomator2 会自动往手机安装 atx-agent，需在手机弹窗上允许安装。
-3. 编辑 `config.yaml`（或在 GUI 设置页里改）。
-4. 启动：
+2. 编辑 `config.yaml`（或在运行后在 GUI 设置页里改）。
+3. 启动：
 
 ```bash
 .venv/Scripts/python main.py            # GUI：画面 + 日志 + 控制按钮
@@ -54,6 +54,23 @@ python -m venv .venv
 ```
 
 GUI 打开后自动嵌入手机画面，点**开始**启动调度器（子进程），点**停止**立即结束。
+（scrcpy、模拟器版的 frida-server 首次运行缺失时会自动下载到 `resources/`，无需手动拉取；
+如需手动拉取也可运行 `tools/fetch_scrcpy.py` / `tools/fetch_frida_server.py`。）
+
+**模拟器模式**（Root 模拟器，如 MuMu）：QQ 搜索卡片打不开宠物主页时，带参数启动：
+
+```bash
+.venv/Scripts/python main.py --emulator --emulator-device 127.0.0.1:7555
+.venv/Scripts/python scenarios/runner.py --emulator --emulator-device 127.0.0.1:7555
+```
+
+`--emulator-device` 可省略（默认用 `config.yaml` 的 `adb.device_serial`，模拟器填 127.0.0.1:7555 这类地址）。
+首次运行会把内置的 frida-server 推送到模拟器并启动（需已开启 Root 与 ADB）；源码运行时若
+`resources/frida-server/` 里没有 xz，会自动用 `tools/fetch_frida_server.py` 下载（GitHub 失败自动试镜像），
+`main.py` 启动时也会后台检查补齐 scrcpy / frida-server。
+**打开宠物主页后 hook 保持注入不解除**（好友访问/踩踩/PK 的跳转接管需要持续生效；
+QQ 重启后恢复流程会自动重新注入）。注入前会等 QQ 启动稳定（避免被启动流程顶回主界面）。
+（Frida 17 起 Java 桥不再内置，注入前会自动用 `frida-tools` 自带的 `frida-java-bridge` 补桥，效果与上游一致。）
 
 ## 配置（config.yaml）
 
@@ -82,28 +99,47 @@ GUI 打开后自动嵌入手机画面，点**开始**启动调度器（子进程
 
 ```bash
 .venv/Scripts/python scenarios/runner.py --test coins              # 只测主页金币 OCR
+.venv/Scripts/python scenarios/runner.py --test opener             # 模拟器：直接用 opener 打开宠物主页
 .venv/Scripts/python scenarios/runner.py --test work.select_place  # 只跑某个阶段方法
 .venv/Scripts/python scenarios/runner.py --test care.read_status   # 只测体力/清洁识别
 ```
 
 场景脚本也可单独跑：`python scenarios/school.py --times 1`（work / adventure / care 同理）。
 
+模拟器诊断（QQ 更新后排查"访问好友"跳转）：用 [capture_visit_jump.py](tools/capture_visit_jump.py)
+在真机/模拟器上抓 `mqqapi://qpet/open` 跳转的完整 URL 与 attrs，对比差异定位问题：
+
+```bash
+.venv/Scripts/python tools/capture_visit_jump.py -s 127.0.0.1:7555 -c   # 模拟器自动点
+.venv/Scripts/python tools/capture_visit_jump.py -s ba286ada            # 真机手动点
+```
+
 ## 打包 exe
 
 ```bash
-.venv/Scripts/python build.py            # 单文件：dist/QQPetCopilot.exe
-.venv/Scripts/python build.py --onedir   # 目录模式
+.venv/Scripts/python build.py              # 单文件：dist/QQPetCopilot.exe（普通版）
+.venv/Scripts/python build.py --onedir     # 目录模式
+.venv/Scripts/python build.py --emulator   # 模拟器版：dist/QQPetCopilotEmulator.exe（内置 opener + frida）
+.venv/Scripts/python build.py --all        # 普通版 + 模拟器版一起打包
 ```
 
-`build.py` 打包前会自动下载 scrcpy（`tools/fetch_scrcpy.py`）和 OCR 模型
-（`tools/fetch_ocr_models.py`）。打包后 `config.yaml` 首次运行自动复制到 exe 旁，
-`runs/` 也生成在 exe 旁；exe 旁放同名 `scrcpy-win64/` 可覆盖包内资源，无需重新打包。冷启动需解压资源，会慢几秒。
+`build.py` 打包前会自动下载 scrcpy（`tools/fetch_scrcpy.py`）、OCR 模型
+（`tools/fetch_ocr_models.py`）；模拟器版会把 `assets/qqpet-module-opener/` 的 hook JS 和
+`resources/frida-server/` 的离线包打进 exe（默认 x86_64，本地已有 xz 直接用，缺失时尝试从 GitHub 下载）。
+hook JS 更新：QQ 更新导致打不开时，从上游
+[qqpet-module-opener](https://github.com/yikehuang/qqpet-module-opener) 的
+`src/open_qqpet_module.js` 手动同步到 `assets/qqpet-module-opener/open_qqpet_module.js` 后重新打包；
+frida-server 换版本需同时改 `requirements.txt` 的 frida 版本与 `build.py` 的 `FRIDA_VERSION`。
+打包后 `config.yaml` 首次运行自动复制到 exe 旁，`runs/` 也生成在 exe 旁；exe 旁 `runs/` 目录放同名资源
+可覆盖包内资源（如 `runs/resources/scrcpy-win64/`、`runs/resources/frida-server/`），无需重新打包。冷启动需解压资源，会慢几秒。
+模拟器版 exe 启动即默认开启模拟器模式，无需带参数。
+注意：打包前请先关闭正在运行的 `QQPetCopilot.exe`（Windows 不允许覆盖被占用的 exe）。
 
 ## 目录结构
 
 ```
 main.py               # PyQt6 GUI 入口（scrcpy 嵌入 + 日志 + 开始/停止/设置）
-build.py              # PyInstaller 打包脚本
+build.py              # PyInstaller 打包脚本（--emulator / --all 打模拟器版）
 config.yaml           # 全部可调配置
 scenarios/
   runner.py           # 统一调度器（金币/点数/冒险定时/状态检查）
@@ -114,13 +150,21 @@ scenarios/
 src/
   u2dev.py            # uiautomator2 封装：连接/截图/点击/滑动/持续按压
   locators.py         # UI 定位注册表（u2 控件选择器 + OCR 文字 + 相对坐标兜底）
-  adb/device.py       # adb 封装：设备在线管理、屏幕属性读取
+  opener.py     # 模拟器模式：frida 注入打开宠物主页（设备/Root/frida-server/注入全流程）
+  adb/device.py       # adb 封装：设备在线管理、屏幕属性读取、远程模拟器 connect
   scenario.py         # 场景基类：定位导航、回主页面、等待结束、被雇佣召回
   ocr.py              # RapidOCR 封装
   coins.py            # 主页金币 OCR
   progress.py         # 日志 + 每日次数持久化（含历史）
   settings.py         # config.yaml 读写（保留注释）
   config.py           # 配置加载与路径规划（兼容 PyInstaller）
+assets/
+  qqpet-module-opener/
+    open_qqpet_module.js     # hook JS（取自上游 qqpet-module-opener，手动更新，入库）
+resources/                   # 第三方二进制/离线包（不入库，build 时下载或本地放入）
+  scrcpy-win64/              # scrcpy 二进制
+  frida-server/
+    frida-server-*.xz        # frida-server 离线包（build.py --emulator 打包时带上）
 ```
 
 ## 定位方式
@@ -134,6 +178,15 @@ src/
 
 - [scrcpy](https://github.com/Genymobile/scrcpy)
   Android 画面镜像与控制工具，本项目的实时画面嵌入和 adb 能力实现。
+- [qqpet-module-opener](https://github.com/yikehuang/qqpet-module-opener)
+  模拟器初始化 QQ 宠物 SDK 并直接打开宠物主页，本项目的模拟器模式基于这一方案实现
+  （只保留其 hook JS `assets/qqpet-module-opener/open_qqpet_module.js` 并手动跟随更新）。
+- [frida](https://frida.re) / [frida-tools](https://github.com/frida/frida-tools)
+  注入框架；Frida 17 起 Java 桥不再内置，运行时用 frida-tools 自带的 `frida-java-bridge` 补桥。
+- [RapidOCR](https://github.com/RapidAI/RapidOCR) / [PP-OCRv6](https://github.com/PaddlePaddle/PaddleOCR)
+  文字识别引擎与模型（本项目用 PP-OCRv6 tiny），游戏内自绘按钮、金币/状态等数字识别全靠它。
+- [uiautomator2](https://github.com/openatx/uiautomator2)
+  Android UI 自动化框架，控件定位、点击/滑动与截图实现。
 
 ## 免责声明
 

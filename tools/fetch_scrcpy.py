@@ -1,4 +1,4 @@
-"""拉取 scrcpy（win64）到项目根的 scrcpy-win64/。
+"""拉取 scrcpy（win64）到项目根 resources/scrcpy-win64/。
 
 scrcpy 二进制不入库（体积大、更新频繁、易产生合并冲突），由本脚本从官方
 GitHub Release 下载解压。本地首次使用 GUI 前跑一次；build.py 和 CI 打包前也会自动调用。
@@ -23,7 +23,7 @@ import zipfile
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-TARGET_DIR = PROJECT_ROOT / 'scrcpy-win64'
+TARGET_DIR = PROJECT_ROOT / 'resources' / 'scrcpy-win64'
 SCRCPY_EXE = TARGET_DIR / 'scrcpy.exe'
 
 # 默认版本：与官方 Release 资产名 scrcpy-win64-v<版本>.zip 对应。

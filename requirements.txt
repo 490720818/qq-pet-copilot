@@ -9,3 +9,8 @@ ruamel.yaml>=0.17
 pyinstaller>=6.0
 onepush>=1.9.0
 winotify>=1.1.0; sys_platform == 'win32'
+# 模拟器模式（--emulator）注入打开宠物主页需要 frida；
+# 版本必须与离线打包的 frida-server 一致（resources/frida-server/frida-server-<版本>-android-x86_64.xz）
+frida==17.17.0
+# Frida 17 起 Java 桥不再内置，frida-tools 自带的 frida-java-bridge 用于注入 QQ 前补桥
+frida-tools==14.10.4

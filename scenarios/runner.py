@@ -27,9 +27,13 @@
   （参考 qq-farm-copilot 的 failure_interval 队列机制），先执行其他任务；
   主任务当天结束后若还有延后重试的支线任务，调度器睡到重试点继续，不提前退出
 
+模拟器（Root 模拟器）：python scenarios/runner.py --emulator [--emulator-device 127.0.0.1:7555]
+  （QQ 搜索卡片空入口打不开宠物主页，用 qqpet-module-opener frida 注入打开）
+
 运行：python scenarios/runner.py                     （调度循环，Ctrl+C 停止）
 单测：python scenarios/runner.py --test coins         （只测主页金币识别）
       python scenarios/runner.py --test recover       （只测异常恢复链路：reboot -> 重进宠物页）
+      python scenarios/runner.py --test opener        （模拟器：直接用 opener 打开宠物主页）
       python scenarios/runner.py --test work.select_place   （只跑某个阶段方法）
       python scenarios/runner.py --test school.select_course
 """
@@ -41,9 +45,11 @@ from datetime import datetime, timedelta
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from src.adb.device import Device
 from src.coins import read_coins
-from src.config import PROJECT_ROOT, find_adb, load_config
+from src.config import PROJECT_ROOT, find_adb, is_emulator_build, load_config
 from src.notify import send_alert
+from src.opener import open_pet_page
 from src.ocr import get_engine
 from src.progress import (
     ADVENTURE_PROGRESS_FILE,
@@ -89,13 +95,26 @@ def parse_hhmm(value, field: str):
 
 
 class Runner:
-    def __init__(self):
+    def __init__(self, use_opener: bool = False, opener_serial: str | None = None):
+        '''use_opener: 模拟器模式，用 qqpet-module-opener（frida 注入）打开宠物主页；
+        opener_serial: 模拟器 ADB 地址（如 127.0.0.1:7555），默认用 config 的 adb.device_serial。'''
+        self.use_opener = use_opener
+        self.opener_serial = opener_serial
+        log(('模拟器模式已开启，启动时用 opener 打开宠物主页' if use_opener
+             else '未开启模拟器模式（源码运行需加 --emulator；打包的模拟器版默认开启）'))
         # 启动时就加载 OCR 引擎（模型加载要几秒，避免第一轮调度才卡）
         log('加载 OCR 引擎...')
         get_engine()
         # 共享一个 u2 连接，避免每个场景重复连接和打印
         cfg = load_config()
-        dev = U2Device(find_adb(cfg.adb.path), cfg.adb.device_serial)
+        serial = opener_serial or cfg.adb.device_serial
+        if use_opener and serial and ':' in serial:
+            # 模拟器（MuMu/雷电等 127.0.0.1:port）可能还没进 adb devices，先 connect 一次
+            try:
+                Device(find_adb(cfg.adb.path), serial).connect_remote(serial)
+            except Exception as e:
+                log(f'adb connect {serial} 失败: {e}')
+        dev = U2Device(find_adb(cfg.adb.path), serial)
         self.school = SchoolScenario(dev)
         self.work = WorkScenario(dev)
         self.adventure = AdventureScenario(dev)
@@ -289,7 +308,9 @@ class Runner:
             return False
         self.recoveries += 1
         try:
-            dev = reenter_pet(self.school.dev.adb, self.school.cfg.recover.method)
+            dev = reenter_pet(self.school.dev.adb, self.school.cfg.recover.method,
+                              use_opener=self.use_opener,
+                              opener_serial=self.opener_serial)
         except Exception as e:
             log(f'恢复失败: {e}')
             return False
@@ -360,7 +381,20 @@ class Runner:
         except ValueError as e:
             log(f'{e}，沿用旧值')
 
+    def _open_pet_page_or_exit(self) -> None:
+        '''模拟器模式启动：QQ 搜索卡片空入口无法手动进宠物主页，先由 opener 打开。
+
+        失败视为硬故障（模拟器上没宠物主页后续任务无从谈起），发告警后退出调度器。'''
+        log('模拟器模式：正在用 qqpet-module-opener 打开 QQ 宠物主页...')
+        try:
+            serial = self.opener_serial or self.school.dev.adb.serial
+            open_pet_page(serial=serial, adb_path=self.school.dev.adb.adb)
+        except Exception as e:
+            self._alert_and_exit(f'模拟器模式打开宠物主页失败: {e}')
+
     def run(self) -> None:
+        if self.use_opener:
+            self._open_pet_page_or_exit()
         school_dead = False  # 学习今天不再可用（达上限/没有课程/执行失败）
         work_dead = False    # 打工今天不再可用
         adventure_dead = False  # 冒险今天不再可用（执行失败）
@@ -508,6 +542,13 @@ def run_test(name: str) -> None:
         reenter_pet(sc.dev.adb)
         log('recover 测试完成')
         return
+    if name == 'opener':
+        # 模拟器：直接用 qqpet-module-opener 打开宠物主页（绕过空搜索入口）
+        from src.opener import open_pet_page as _open
+        cfg = load_config()
+        _open(serial=cfg.adb.device_serial or None, adb_path=find_adb(cfg.adb.path))
+        log('opener 测试完成：宠物主页已打开')
+        return
 
     scen_name, _, method = name.partition('.')
     scenarios = {'school': SchoolScenario, 'work': WorkScenario,
@@ -529,13 +570,25 @@ if __name__ == '__main__':
 
     ap = argparse.ArgumentParser(description='统一执行器：按金币调度学习/打工')
     ap.add_argument('--test', metavar='TARGET',
-                    help='单模块测试: coins 或 school.<方法名> / work.<方法名>')
+                    help='单模块测试: coins / recover / opener 或 school.<方法名> / work.<方法名>')
+    ap.add_argument('--emulator', action='store_true',
+                    help='模拟器模式：用 qqpet-module-opener 打开宠物主页（绕过空搜索入口）')
+    ap.add_argument('--no-emulator', action='store_true',
+                    help='强制关闭模拟器模式（打包的模拟器版默认开启时用）')
+    ap.add_argument('--emulator-device', metavar='SERIAL',
+                    help='模拟器 ADB 地址（如 127.0.0.1:7555），默认用 config 的 adb.device_serial')
     args = ap.parse_args()
 
-    try:
-        if args.test:
-            run_test(args.test)
+    if args.test:
+        run_test(args.test)
+    else:
+        if args.emulator:
+            use_opener = True
+        elif args.no_emulator:
+            use_opener = False
         else:
-            Runner().run()
-    except KeyboardInterrupt:
-        log('手动停止')
+            use_opener = is_emulator_build()  # 打包的模拟器版默认开启
+        try:
+            Runner(use_opener=use_opener, opener_serial=args.emulator_device).run()
+        except KeyboardInterrupt:
+            log('手动停止')

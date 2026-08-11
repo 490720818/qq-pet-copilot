@@ -54,7 +54,8 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
+          # frida 17 需要 Python 3.11+（typing.NotRequired），与本机 venv 的 3.12 一致
+          python-version: '3.12'
 
       - name: Install dependencies
         shell: pwsh
@@ -81,7 +82,16 @@ jobs:
         env:
           PYTHONIOENCODING: utf-8
         run: |
+          # 普通版（真机使用）：dist/QQPetCopilot.exe，不含 frida/模拟器组件
           python build.py
+
+      - name: Build emulator version with PyInstaller
+        shell: pwsh
+        env:
+          PYTHONIOENCODING: utf-8
+        run: |
+          # 模拟器版：内置 hook JS + frida-server 离线包 + frida（build.py --emulator 会自动下载缺失的 frida-server）
+          python build.py --emulator
 
       - name: Prepare package asset
         id: package
@@ -108,11 +118,42 @@ jobs:
           "asset=$asset" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
           Write-Host "Package: $asset"
 
+      - name: Prepare emulator package asset
+        id: package_emulator
+        shell: pwsh
+        run: |
+          $tag = '${{ steps.meta.outputs.tag }}'
+          $src = 'dist/QQPetCopilotEmulator.exe'
+          $asset = "QQPetCopilotEmulator-$tag-windows-x64.zip"
+          $stageDir = Join-Path $PWD '_release_stage_emu'
+          $stagedExe = Join-Path $stageDir 'QQPetCopilotEmulator.exe'
+          if (-not (Test-Path $src)) {
+            throw "Emulator build output not found: $src"
+          }
+          if (Test-Path $stageDir) {
+            Remove-Item -LiteralPath $stageDir -Recurse -Force
+          }
+          New-Item -ItemType Directory -Path $stageDir | Out-Null
+          Copy-Item -LiteralPath $src -Destination $stagedExe
+          if (Test-Path $asset) {
+            Remove-Item -LiteralPath $asset -Force
+          }
+          Compress-Archive -Path $stagedExe -DestinationPath $asset -Force
+          Remove-Item -LiteralPath $stageDir -Recurse -Force
+          "asset=$asset" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          Write-Host "Package: $asset"
+
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
         with:
           name: QQPetCopilot-${{ steps.meta.outputs.tag }}-windows-x64
           path: ${{ steps.package.outputs.asset }}
+
+      - name: Upload emulator workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: QQPetCopilotEmulator-${{ steps.meta.outputs.tag }}-windows-x64
+          path: ${{ steps.package_emulator.outputs.asset }}
 
       - name: Build release notes (include all commits)
         id: notes
@@ -186,6 +227,16 @@ jobs:
 
           $notesFile = 'release_notes.md'
           $body = @()
+          # 两个 exe 的说明（发布页最顶部，方便下载者选对版本）
+          $body += '## 版本说明'
+          $body += ''
+          $body += '| 文件 | 说明 |'
+          $body += '| --- | --- |'
+          $body += '| `QQPetCopilot.exe` | 普通版：真机（物理手机）使用，标准自动化托管，无需 Root。 |'
+          $body += '| `QQPetCopilotEmulator.exe` | 模拟器版：Root 模拟器（MuMu/雷电/UU 等）使用；内置 qqpet-module-opener hook + frida-server 离线包，绕过模拟器 QQ 搜索卡片空入口打开宠物主页，并保持 hook 注入以支持频繁好友访问/踩踩/PK。 |'
+          $body += ''
+          $body += '---'
+          $body += ''
           $body += [string]$generated.body
           $body += ''
           $body += '---'
@@ -209,13 +260,14 @@ jobs:
           $tag = '${{ steps.meta.outputs.tag }}'
           $target = '${{ steps.meta.outputs.target }}'
           $asset = '${{ steps.package.outputs.asset }}'
+          $assetEmu = '${{ steps.package_emulator.outputs.asset }}'
           $notesFile = '${{ steps.notes.outputs.notes_file }}'
 
           if (gh release view $tag *> $null) {
-            Write-Host "Release already exists, upload asset with overwrite..."
-            gh release upload $tag $asset --clobber
+            Write-Host "Release already exists, upload assets with overwrite..."
+            gh release upload $tag $asset $assetEmu --clobber
             gh release edit $tag --title $tag --notes-file $notesFile --latest
           } else {
             Write-Host "Create new release..."
-            gh release create $tag $asset --target $target --title $tag --notes-file $notesFile --latest
+            gh release create $tag $asset $assetEmu --target $target --title $tag --notes-file $notesFile --latest
           }

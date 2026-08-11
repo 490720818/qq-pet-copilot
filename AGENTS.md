@@ -13,13 +13,15 @@ RapidOCR（文字/数字识别）+ PyQt6（GUI）。UI 定位分辨率无关：
 ## 运行与测试命令
 
 ```bash
-PY=.venv/Scripts/python          # 项目虚拟环境，所有命令用它
+PY=.venv/Scripts/python          # 项目虚拟环境，所有命令用它（Python 3.12）
 
 $PY -m py_compile <files>        # 改完代码最基本的验证，必做
 $PY main.py                      # GUI（scrcpy 嵌入 + 调度控制）
 $PY scenarios/runner.py          # 控制台调度器
-$PY scenarios/runner.py --test <target>   # 单模块测试：coins / recover / school.X / work.X / adventure.X / care.X
+$PY scenarios/runner.py --test <target>   # 单模块测试：coins / recover / opener / school.X / work.X / adventure.X / care.X
 $PY build.py                     # PyInstaller 打包（onefile），--onedir 目录模式
+$PY build.py --emulator          # 模拟器版（内置 hook JS + frida-server 离线包 + frida），--all 普通版+模拟器版一起打
+# 模拟器模式（Root 模拟器）：main.py / runner.py 加 --emulator [--emulator-device 127.0.0.1:7555]
 ```
 
 - 无设备测试：用 `DeviceScenario.__new__(DeviceScenario)` 跳过 u2 设备连接，
@@ -44,13 +46,18 @@ $PY build.py                     # PyInstaller 打包（onefile），--onedir �
 | `src/adb/device.py` | adb 封装：设备在线管理（start-server）、屏幕尺寸读取（scrcpy 嵌入比例用）、`reboot_and_wait()` / `launch_app()`（异常恢复用） |
 | `src/ocr.py` / `src/coins.py` | RapidOCR 封装；主页金币 = 顶部状态栏最右侧数值（全屏 OCR） |
 | `src/progress.py` | `log()`（控制台+文件+监听器）、每日次数持久化（含 history，跨天归档）、`count_cross` 交叉计数；多账号：识别到账号（status_cache 的 last_account）后 `load/save_progress` 自动重定向到 `runs/accounts/<账号>/`，首次识别迁移单账号时期的旧进度文件；`known_accounts()` 供 GUI 按账号显示（当前账号排最前） |
+| `src/opener.py` | 模拟器模式集成：自实现设备/Root/frida-server/启动 QQ/注入全流程（frida Python API），hook JS 从 `assets/qqpet-module-opener/open_qqpet_module.js` 读取（只保留上游这一个 JS，手动更新）；Frida 17 起 Java 桥不再内置，注入前用 frida-tools 的 `frida-java-bridge`（`frida_tools/bridges/java.js`，打包时随包）包一层暴露全局 `Java` 再拼 hook；打开宠物主页后**保持注入不解除**（`_KEEPALIVE` 持有引用防 GC，好友访问/踩踩/PK 的 doAction 接管持续生效），注入前 `_wait_qq_settle` 等 QQ 启动稳定 |
 | `src/status_cache.py` | 账号状态缓存（`runs/status_cache.json`，按账号名称组织，兼容多账号）：体力/清洁/心情（care 状态面板 OCR 后）、金币（主页 OCR 后）、香皂/饼干（喂食/洗澡结束时 OCR 控件附近小图；库存角标无文字，取离 `feed_10`/`shower_10` 控件最近的数字）；一键护理后清空体力/清洁/心情/饼干/香皂；GUI 日志页顶部状态条每 5 秒读一次 |
 | `src/config.py` | dataclass 配置 + 路径规划：`APP_ROOT`（可写）/ `RESOURCE_ROOT`（包内资源），`resource_path()` APP_ROOT 优先 |
 | `src/settings.py` | ruamel 往返读写 config.yaml（保留注释），GUI 设置页用 |
 | `src/notify.py` | 失败告警通知：Windows Toast（winotify）+ OnePush 多渠道推送（Bark/PushPlus/Server酱/SMTP/自定义 webhook 等），发送失败只记日志 |
 | `tools/dump_hierarchy.py` | 抓当前屏幕控件树 XML 存到 `xml/page.xml`（校准 locators 的 xpath/content-desc 用；`xml/` 已 git 排除） |
-| `tools/fetch_scrcpy.py` | 从官方 GitHub Release 下载解压 scrcpy（win64）到 `scrcpy-win64/`（该目录不入库）；`--version` 指定版本、`--force` 强制覆盖，build.py / CI 打包前自动调用 |
+| `tools/fetch_scrcpy.py` | 从官方 GitHub Release 下载解压 scrcpy（win64）到 `resources/scrcpy-win64/`（不入库）；`--version` 指定版本、`--force` 强制覆盖，build.py / CI 打包前自动调用 |
+| `tools/fetch_frida_server.py` | 下载 frida-server 离线包到 `resources/frida-server/`（不入库）；`--version`/`--arch`（可多个）/`--force`，GitHub 直连失败自动试镜像；源码运行 `src/opener.py` 缺失时自动调用，build.py --emulator 打包前也会调用 |
+| `assets/qqpet-module-opener/` | hook JS（取自上游，QQ 更新后手动同步，入库） |
+| `resources/` | 第三方二进制/离线包（不入库）：`scrcpy-win64/`（tools/fetch_scrcpy.py 拉取）、`frida-server/`（离线 xz，build.py --emulator 打包时带上） |
 | `tools/test_locator.py` | 测试 locator 的 xpath 在当前页面的命中稳定性（连设备连续多轮 dump，统计 live/snapshot 两种调用方式的命中率与 bounds 漂移，定位深层 xpath 时有时无/位置漂移问题） |
+| `tools/capture_visit_jump.py` | 抓取 QQ 宠物"访问好友"跳转参数（doJumpAction URL + doAction attrs），真机/模拟器对比、QQ 更新后排查用；`-s` 设备、`-c` 自动点 好友->访问 |
 
 ## 关键约定（改动时必须遵守）
 
@@ -99,6 +106,18 @@ $PY build.py                     # PyInstaller 打包（onefile），--onedir �
   （`visit_due()` / `pk_due()`），跑对应场景 `run()` 完整流程；不做长等待插空
   （好友入口只在主页面，上课/打工/冒险等待页没有）。
 - 控制台中文乱码是 Windows GBK 终端显示问题，日志文件（UTF-8）里是正常的，不要当 bug 修。
+- **模拟器模式**（`--emulator`）：模拟器里 QQ 搜索卡片的宠物入口是空的（点不到 `Q宠-*`），
+  由 `src/opener.py` 用 frida 注入已登录 QQ 进程直接打开宠物主页。
+  上游 qqpet-module-opener 只保留 hook JS（`assets/qqpet-module-opener/open_qqpet_module.js`），
+  QQ 版本兼容性修复都在这个 JS 里，QQ 更新打不开时从上游手动同步该文件后重新打包。
+  frida-server 默认离线打包 x86_64（`resources/frida-server/frida-server-<版本>-android-x86_64.xz`，
+  不入库）；frida 客户端版本必须与它一致（`requirements.txt` 的 `frida` 与 `build.py` 的 `FRIDA_VERSION`）。
+  Frida 17 起 `Java` 桥不再内置在运行时里（脚本里没有全局 `Java`），注入前由
+  `_wrap_java_bridge` 把 frida-tools 的 `frida-java-bridge` 暴露为全局 `Java` 再拼 hook；
+  frida-tools 版本随 frida 一起锁定（`requirements.txt`），普通版打包时排除 frida_tools。
+  模拟器模式下启动与 `recover()` 都走 opener 打开宠物主页（`src/recover.py` 的 `use_opener` 分支），
+  不再依赖 `Q宠-*` 入口；打包的模拟器版 exe（`build.py --emulator`）内置
+  `emulator_mode.txt` 标记，启动默认开启模拟器模式（`src/config.py` 的 `is_emulator_build()`）。
 - 不再修改手机分辨率/密度（wm size/density）：定位分辨率无关，无此需求。
 
 ## 打包
@@ -106,4 +125,4 @@ $PY build.py                     # PyInstaller 打包（onefile），--onedir �
 `python build.py`（onefile）。`scrcpy-win64/` 不入库（二进制），打包前
 `build.py` 自动调 `tools/fetch_scrcpy.py` 从官方 Release 拉取。路径约定：打包后
 `APP_ROOT` = exe 所在目录（config.yaml 首启复制、runs/ 生成于此），
-`RESOURCE_ROOT` = `sys._MEIPASS`。exe 旁放同名 `scrcpy-win64/` 可覆盖包内资源。
+`RESOURCE_ROOT` = `sys._MEIPASS`。exe 旁 `runs/` 目录放同名资源可覆盖包内资源（如 `runs/resources/scrcpy-win64/`、`runs/resources/frida-server/`）。

@@ -3,7 +3,7 @@
 
 adb:
   # adb 可执行文件路径；留空则自动搜索 PATH 和常见安装目录（相对路径相对项目根目录）
-  path: "scrcpy-win64/adb.exe"
+  path: "resources/scrcpy-win64/adb.exe"
   # 设备序列号；留空则使用第一台在线设备
   device_serial: ""
 
