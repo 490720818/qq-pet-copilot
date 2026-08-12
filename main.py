@@ -1,6 +1,6 @@
 """启动入口（PyQt6 GUI）：左侧嵌入 scrcpy 窗口，右侧实时显示调度器日志。
 
-- 启动前结束已有 scrcpy.exe 进程，再重新拉起并以 --window-borderless 嵌入
+- 启动前清理本设备遗留的 scrcpy（只清本实例/本设备，多开互不影响），再重新拉起并以 --window-borderless 嵌入
 - scrcpy 以 --turn-screen-off 运行（手机屏幕关闭，镜像照常）
 - 右侧顶部"开始/停止"按钮：开始 = 子进程启动调度器，停止 = 立即结束调度器进程
 - 右侧选项卡：日志（顶部当日统计条）/ 统计（各任务近 N 天平滑折线图）/ 设置
@@ -43,6 +43,7 @@ from PyQt6.QtWidgets import (
 
 import win32con
 import win32gui
+import win32process
 
 from src import settings as settings_io
 from src.adb.device import Device
@@ -64,7 +65,7 @@ from src.status_cache import FIELDS as STATUS_FIELDS
 from src.status_cache import load_accounts
 
 SCRCPY = resource_path('resources/scrcpy-win64') / 'scrcpy.exe'
-SCRCPY_TITLE = 'QQPetCopilotScrcpy'
+SCRCPY_TITLE_PREFIX = 'QQPetCopilotScrcpy'
 RUNNER_SCRIPT = PROJECT_ROOT / 'scenarios' / 'runner.py'
 EMBED_TRIES = 40  # 查找 scrcpy 窗口的次数（每次 500ms）
 SCRCPY_WATCHDOG_MS = 5000    # scrcpy 看门狗轮询间隔（毫秒）
@@ -166,14 +167,60 @@ SETTING_FIELDS = [
 ]
 
 
-def kill_existing_scrcpy() -> None:
-    """结束已在运行的 scrcpy.exe 进程。"""
-    proc = subprocess.run(
-        ['taskkill', '/F', '/IM', 'scrcpy.exe'],
-        capture_output=True, timeout=15, creationflags=_NO_WINDOW,
+def _scrcpy_title() -> str:
+    """本实例唯一的 scrcpy 窗口标题：设备序列号 + 本进程 PID。
+
+    多开时各实例标题互不相同，嵌入查找只匹配自己的窗口，
+    不会把别的实例的画面抓到本窗口里（同实例内看门狗重拉标题不变）。
+    """
+    serial = load_config().adb.device_serial or 'auto'
+    return f'{SCRCPY_TITLE_PREFIX}-{serial}-{os.getpid()}'
+
+
+def _kill_scrcpy_by_marker(marker: str) -> None:
+    """结束命令行里包含 marker 的 scrcpy.exe 进程（不影响其他实例/程序）。
+
+    taskkill /IM 会杀掉所有实例的 scrcpy（多开相互影响），这里用 PowerShell CIM
+    按命令行精确过滤；marker 经环境变量传入，避免引号/通配符转义问题。
+    """
+    ps = (
+        "Get-CimInstance Win32_Process -Filter \"Name='scrcpy.exe'\" "
+        "| Where-Object { $_.CommandLine -and $_.CommandLine.Contains($env:QQPET_SCRCPY_MARKER) } "
+        "| ForEach-Object { Stop-Process -Id $_.ProcessId -Force }"
     )
-    if proc.returncode == 0:
-        log('已结束之前运行的 scrcpy 进程')
+    env = dict(os.environ, QQPET_SCRCPY_MARKER=marker)
+    subprocess.run(
+        ['powershell', '-NoProfile', '-NonInteractive', '-Command', ps],
+        capture_output=True, timeout=20, creationflags=_NO_WINDOW, env=env,
+    )
+
+
+def kill_our_scrcpy(proc: subprocess.Popen | None = None) -> None:
+    """结束本实例的 scrcpy：跟踪的进程 + 命令行带本实例唯一标记的残留进程。
+
+    多开时只清自己的，不碰别的实例。
+    """
+    if proc is not None and proc.poll() is None:
+        proc.terminate()
+    try:
+        _kill_scrcpy_by_marker(_scrcpy_title())
+    except Exception:
+        log('结束本实例 scrcpy 残留进程失败（可忽略）')
+
+
+def kill_previous_scrcpy() -> None:
+    """启动时清理本设备上次崩溃遗留的 scrcpy（还占着镜像/关屏）。
+
+    只按"设备序列号"前缀匹配，不碰其他设备上的实例；未指定序列号时
+    无法安全区分，跳过（多开安全优先）。
+    """
+    serial = load_config().adb.device_serial
+    if not serial:
+        return
+    try:
+        _kill_scrcpy_by_marker(f'{SCRCPY_TITLE_PREFIX}-{serial}-')
+    except Exception:
+        log('清理本设备遗留 scrcpy 失败（可忽略）')
 
 
 def start_scrcpy() -> subprocess.Popen | None:
@@ -187,7 +234,7 @@ def start_scrcpy() -> subprocess.Popen | None:
         cmd += ['-s', serial]
     cmd += ['--no-audio',  # 只要画面，不要音频（镜像/自动化用不到声音）
             '--turn-screen-off', '--window-borderless', '--stay-awake',
-            f'--window-title={SCRCPY_TITLE}',
+            f'--window-title={_scrcpy_title()}',
             # 先放到屏幕外，嵌入容器时再移回来，避免窗口先弹出再嵌入的闪烁
             '--window-x=-2000', '--window-y=-2000']
     log(f'启动 scrcpy（--no-audio --turn-screen-off --window-borderless'
@@ -237,13 +284,27 @@ def start_scrcpy_screen_off() -> subprocess.Popen | None:
     return proc
 
 
-def find_scrcpy_hwnd() -> int | None:
-    """按固定标题查找 scrcpy 窗口句柄。"""
+def find_scrcpy_hwnd(proc: subprocess.Popen | None = None) -> int | None:
+    """按本实例唯一标题查找 scrcpy 窗口句柄。
+
+    proc 传本实例跟踪的 scrcpy 进程时，再按进程 PID 过滤：
+    重启瞬间旧窗口可能还没销毁（同标题），或别的实例窗口标题撞上，
+    只有属于自己进程的窗口才会被嵌入。
+    """
+    title = _scrcpy_title()
+    want_pid = proc.pid if proc is not None and proc.poll() is None else None
     found = []
 
     def _cb(hwnd, _):
-        if win32gui.IsWindowVisible(hwnd) and win32gui.GetWindowText(hwnd) == SCRCPY_TITLE:
-            found.append(hwnd)
+        if not win32gui.IsWindowVisible(hwnd):
+            return
+        if win32gui.GetWindowText(hwnd) != title:
+            return
+        if want_pid is not None:
+            _, pid = win32process.GetWindowThreadProcessId(hwnd)
+            if pid != want_pid:
+                return
+        found.append(hwnd)
 
     win32gui.EnumWindows(_cb, None)
     return found[0] if found else None
@@ -431,7 +492,7 @@ class MainWindow(QMainWindow):
         # Qt 槽里未捕获的异常会直接 abort 进程（无 traceback 的"闪退"），
         # 启动失败记日志并继续，调度器仍可手动开始
         try:
-            kill_existing_scrcpy()
+            kill_previous_scrcpy()
             if self.btn_scrcpy.isChecked():
                 self._scrcpy_proc = start_scrcpy()
             else:
@@ -447,7 +508,7 @@ class MainWindow(QMainWindow):
             self._embed_timer.start(500)
 
     def _try_embed(self) -> None:
-        hwnd = find_scrcpy_hwnd()
+        hwnd = find_scrcpy_hwnd(self._scrcpy_proc)
         if hwnd:
             self.scrcpy_view.embed(hwnd, device_aspect())
             self._embed_timer.stop()
@@ -841,7 +902,7 @@ class MainWindow(QMainWindow):
         if not self.btn_scrcpy.isChecked():
             return  # 开关关闭时不启动 scrcpy
         log('重新初始化 scrcpy...')
-        kill_existing_scrcpy()
+        kill_our_scrcpy(self._scrcpy_proc)
         self.scrcpy_view.set_hwnd(None)
         self._connect_emulator_adb()
         self._scrcpy_proc = start_scrcpy()
@@ -880,9 +941,7 @@ class MainWindow(QMainWindow):
     def _disable_scrcpy(self) -> None:
         """结束 scrcpy 并停止嵌入/看门狗维护（开关关闭状态）。"""
         self._embed_timer.stop()
-        if self._scrcpy_proc is not None and self._scrcpy_proc.poll() is None:
-            self._scrcpy_proc.terminate()
-        kill_existing_scrcpy()  # 兜底：连没被本程序记录到的 scrcpy 一起清
+        kill_our_scrcpy(self._scrcpy_proc)
         self._scrcpy_proc = None
         self.scrcpy_view.set_hwnd(None)
         # 镜像关闭：用无头 scrcpy 真正关掉设备屏幕（保持自动化可用）
