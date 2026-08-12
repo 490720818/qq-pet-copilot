@@ -74,6 +74,9 @@ from scenarios.work import WorkScenario
 
 # 连续异常恢复（adb reboot）次数上限，超过认为设备/环境有硬故障，放弃
 RECOVERY_LIMIT = 3
+# 距上次恢复超过该时长后计数重置：只拦"短时间内连续恢复"的死循环，
+# 支线任务长期失败（每 SIDE_TASK_RETRY_DELAY 重试一轮）不应永久锁死恢复能力
+RECOVERY_RESET_AFTER = 3600
 # 支线任务（冒险/踩踩/PK）多次重试仍失败后的延后重试间隔（秒）：
 # 参考 qq-farm-copilot 的 failure_interval 队列机制——失败任务重新排期，
 # 调度器先执行其他任务，到点后 due() 自动放行重试
@@ -121,7 +124,8 @@ class Runner:
         self.care = CareScenario(dev)
         self.visit = VisitScenario(dev)
         self.pk = PKScenario(dev)
-        self.recoveries = 0  # 连续异常恢复次数（成功跑完一轮清零）
+        self.recoveries = 0  # 连续异常恢复次数（成功跑完一轮清零；距上次超过 RECOVERY_RESET_AFTER 也清零）
+        self.last_recovery_at = 0.0  # 上次发起恢复的 monotonic 时间
         self.retry_after: dict[str, datetime] = {}  # 支线任务名 -> 失败后的下次可执行时间
         self.visit_dead = False  # 踩踩今天不再可用（执行失败）
         self.pk_dead = False     # PK 今天不再可用（执行失败）
@@ -303,10 +307,15 @@ class Runner:
     def recover(self) -> bool:
         """异常恢复：adb reboot -> 启动 QQ -> 点 Q宠-* 入口回宠物页面，
         并刷新各场景的设备连接。返回是否成功。"""
+        now = time.monotonic()
         if self.recoveries >= RECOVERY_LIMIT:
-            log(f'已连续恢复 {self.recoveries} 次仍异常，放弃恢复')
-            return False
+            if now - self.last_recovery_at < RECOVERY_RESET_AFTER:
+                log(f'已连续恢复 {self.recoveries} 次仍异常，放弃恢复')
+                return False
+            log(f'距上次恢复已超 {RECOVERY_RESET_AFTER}s，重置恢复计数再试')
+            self.recoveries = 0
         self.recoveries += 1
+        self.last_recovery_at = now
         try:
             dev = reenter_pet(self.school.dev.adb, self.school.cfg.recover.method,
                               use_opener=self.use_opener,

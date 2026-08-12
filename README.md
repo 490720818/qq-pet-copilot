@@ -36,15 +36,34 @@ PyQt6 图形界面内嵌 scrcpy 实时画面，按金币和每日点数规则自
 
 ## 快速开始
 
+两种方式二选一：**直接下载 Releases 打包好的 exe 使用**（推荐，无需 Python），或 **源码运行**（开发者 / 需要改代码）。
+
+### 方式一：直接下载 Releases 打包好的 exe（无需 Python）
+
+1. 打开 [Releases 发布页](https://github.com/490720818/qq-pet-copilot/releases)，下载对应版本并解压：
+   - `QQPetCopilot-<版本>-windows-x64.zip` —— **普通版**：真机（物理手机）使用，无需 Root；
+   - `QQPetCopilotEmulator-<版本>-windows-x64.zip` —— **模拟器版**：Root 模拟器（MuMu/雷电 等）使用，
+     内置 qqpet-module-opener hook + frida-server 离线包，绕过模拟器 QQ 搜索卡片空入口。
+   - **模拟器版使用前提**：推荐使用最新版本 MuMu 模拟器（下载地址 [https://mumu.163.com/](https://mumu.163.com/)），
+     模拟器内安装 **QQ 9.3.25 及以上版本**并登录账号后，再开启脚本。
+2. 双击解压出的 `QQPetCopilot.exe` / `QQPetCopilotEmulator.exe` 启动：
+   - 首次运行会自动在 exe 旁生成 `config.yaml` 和 `runs/` 目录；scrcpy、OCR 模型、frida-server 等资源都已打进包内，无需联网下载。
+   - Windows 若提示"已保护你的电脑"（exe 未签名），点 **更多信息 → 仍要运行**。
+3. 手机开 USB 调试并连接电脑（或启动 Root 模拟器），在 GUI 设置页（或直接编辑 exe 旁的 `config.yaml`）填好 `adb.device_serial`。
+4. 点**开始**运行。模拟器版 exe 启动即默认模拟器模式，无需带参数。
+   - **多开**（多台设备 / 多个账号）：把整个解压目录复制成多份，每份配置各自的设备序列号，
+     各实例的 `config.yaml` / `runs/` 互相独立，互不影响。
+
+### 方式二：源码运行（开发者 / 需要改代码）
+
+需要 **Python 3.12**：
+
 ```bash
 python -m venv .venv
 .venv/Scripts/pip install -r requirements.txt   # 含 frida（模拟器模式注入用）
 ```
 
-> 需要 **Python 3.12**。
-
 1. 手机开 USB 调试并连接电脑（可用 `resources/scrcpy-win64/adb.exe devices` 确认）。
-   首次运行时 uiautomator2 会自动往手机安装 atx-agent，需在手机弹窗上允许安装。
 2. 编辑 `config.yaml`（或在运行后在 GUI 设置页里改）。
 3. 启动：
 
@@ -57,7 +76,9 @@ GUI 打开后自动嵌入手机画面，点**开始**启动调度器（子进程
 （scrcpy、模拟器版的 frida-server 首次运行缺失时会自动下载到 `resources/`，无需手动拉取；
 如需手动拉取也可运行 `tools/fetch_scrcpy.py` / `tools/fetch_frida_server.py`。）
 
-**模拟器模式**（Root 模拟器，如 MuMu）：QQ 搜索卡片打不开宠物主页时，带参数启动：
+**模拟器模式**（Root 模拟器，如 MuMu）：推荐使用最新版本 MuMu 模拟器（下载地址
+[https://mumu.163.com/](https://mumu.163.com/)），模拟器内安装 **QQ 9.3.25 及以上版本**并登录账号后再启动；
+QQ 搜索卡片打不开宠物主页时，带参数启动：
 
 ```bash
 .venv/Scripts/python main.py --emulator --emulator-device 127.0.0.1:7555
@@ -71,6 +92,8 @@ GUI 打开后自动嵌入手机画面，点**开始**启动调度器（子进程
 **打开宠物主页后 hook 保持注入不解除**（好友访问/踩踩/PK 的跳转接管需要持续生效；
 QQ 重启后恢复流程会自动重新注入）。注入前会等 QQ 启动稳定（避免被启动流程顶回主界面）。
 （Frida 17 起 Java 桥不再内置，注入前会自动用 `frida-tools` 自带的 `frida-java-bridge` 补桥，效果与上游一致。）
+
+> 提示：两种方式首次连接手机时，uiautomator2 都会自动往手机安装 atx-agent，需在手机弹窗上允许安装。
 
 ## 配置（config.yaml）
 

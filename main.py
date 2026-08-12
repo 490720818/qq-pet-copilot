@@ -450,6 +450,10 @@ class MainWindow(QMainWindow):
         splitter.setCollapsible(1, False)
         self.setCentralWidget(splitter)
 
+        self._scrcpy_proc: subprocess.Popen | None = None
+        self._runner_proc: subprocess.Popen | None = None
+        self._runner_started_at: float | None = None  # 调度器启动时刻（monotonic），日志页显示运行时间用
+
         # 日志：本进程监听器 + 调度子进程 stdout -> 队列 -> 定时器刷到界面
         self._log_queue: queue.Queue = queue.Queue()
         add_log_listener(self._log_queue.put)
@@ -460,8 +464,6 @@ class MainWindow(QMainWindow):
         self._stats_timer.start(5000)
         self._refresh_stats()
 
-        self._scrcpy_proc: subprocess.Popen | None = None
-        self._runner_proc: subprocess.Popen | None = None
         self._embed_tries = 0
         self._embed_timer = QTimer(self, timeout=self._try_embed)
         # scrcpy 看门狗：设备重启/掉线后 scrcpy 进程会退出，自动重拉并重嵌入
@@ -545,20 +547,31 @@ class MainWindow(QMainWindow):
 
     # ---- 当日统计 ----
 
+    def _run_time_prefix(self) -> str:
+        """调度器运行时长前缀（未运行时显示 0小时0分钟）。"""
+        if (self._runner_started_at is not None
+                and self._runner_proc is not None
+                and self._runner_proc.poll() is None):
+            secs = int(time.monotonic() - self._runner_started_at)
+        else:
+            secs = 0
+        return f'运行时间 {secs // 3600}小时{(secs % 3600) // 60}分钟　'
+
     def _refresh_stats(self) -> None:
-        """刷新日志页顶部：账号状态条（状态缓存，每账号一行）+ 各任务当日统计。"""
+        """刷新日志页顶部：运行时间 + 账号状态条（状态缓存，每账号一行）+ 各任务当日统计。"""
         try:
+            run_prefix = self._run_time_prefix()
             accounts = load_accounts()
             if accounts:
-                # 多账号兼容：缓存里每个账号一行
+                # 多账号兼容：缓存里每个账号一行（运行时间只在首行显示一次）
                 lines = []
-                for name, st in accounts.items():
+                for i, (_, st) in enumerate(accounts.items()):
                     parts = '　'.join(f'{label} {st.get(key, "-")}'
                                       for key, label in STATUS_FIELDS)
-                    lines.append(f'账号 {name}　{parts}')
+                    lines.append(run_prefix + parts if i == 0 else parts)
                 self.status_label.setText('\n'.join(lines))
             else:
-                self.status_label.setText('账号状态: 暂无（调度器运行后自动更新）')
+                self.status_label.setText(run_prefix + '账号状态: 暂无（调度器运行后自动更新）')
         except Exception as e:
             self.status_label.setText(f'账号状态读取失败: {e}')
         try:
@@ -583,8 +596,7 @@ class MainWindow(QMainWindow):
                         # 经验日常（好友照顾）当日是否完成：踩踩次数满但经验未完成时仍会继续
                         _, exp_done, _ = load_exp_daily(quiet=True, account=name)
                         parts.append('经验日常' + ('✓' if exp_done else '✗'))
-                prefix = f'账号 {name}　今日: ' if name else '今日: '
-                lines.append(prefix + '　'.join(parts))
+                lines.append('今日: ' + '　'.join(parts))
             self.stats_label.setText('\n'.join(lines))
         except Exception as e:
             self.stats_label.setText(f'今日统计读取失败: {e}')
@@ -988,11 +1000,13 @@ class MainWindow(QMainWindow):
         threading.Thread(
             target=self._read_runner_logs, args=(self._runner_proc,), daemon=True
         ).start()
+        self._runner_started_at = time.monotonic()
 
     def stop_runner(self) -> None:
         if self._runner_proc and self._runner_proc.poll() is None:
             log('结束调度器进程')
             self._runner_proc.terminate()
+        self._runner_started_at = None
 
     def _read_runner_logs(self, proc: subprocess.Popen) -> None:
         """把调度器子进程的输出逐行送入日志队列。"""
@@ -1018,6 +1032,8 @@ class MainWindow(QMainWindow):
             bar.setValue(bar.maximum())
         # 按调度器进程状态同步按钮
         running = bool(self._runner_proc and self._runner_proc.poll() is None)
+        if not running:
+            self._runner_started_at = None
         self.btn_start.setEnabled(not running)
         self.btn_stop.setEnabled(running)
 

@@ -344,13 +344,27 @@ class DeviceScenario:
         # 有几秒加载延迟，未匹配到任何状态时重试几次再下结论。
         for attempt in range(1, attempts + 1):
             screen = self.screen()
-            # 职业升级弹窗（"你将进阶成为..." + "查看"按钮，出门页新弹窗）：
-            # 点查看进职业树（职业树无原生返回键），连续按系统返回键逐层退出，
+            # 职业升级 / 获得新职业弹窗（"你将进阶成为..." 或 "神秘人/快去职业树里看看吧"
+            # + "查看/去看看"按钮，出门页新弹窗）：先连点三次弹窗识别到的坐标（展开/交互），
+            # 再重新截图找对应按钮点击进职业树（职业树无原生返回键），连续按系统返回键逐层退出，
             # 再回主页面重新开始本轮，避免挡住进行中状态检测
-            if self.see('career_upgrade', screen):
-                view = self.see('career_upgrade_view', screen)
+            career_upgrading = self.see('career_upgrade', screen)
+            career_new_hit = self.see('career_new', screen)
+            if career_upgrading or career_new_hit:
+                popup_hit = career_upgrading or career_new_hit
+                for _tap in range(3):
+                    self.click(popup_hit[0], popup_hit[1])
+                    time.sleep(CLICK_INTERVAL)
+                # 点三次后界面可能已变化：找按钮必须重新截图（不能复用旧 screen 的 OCR 缓存）。
+                # 职业升级按钮是"查看"，获得新职业按钮是"去看看"
+                if career_upgrading:
+                    view = self.see('career_upgrade_view')
+                    btn_name = '查看'
+                else:
+                    view = self.see('career_new_view')
+                    btn_name = '去看看'
                 if view:
-                    log(f'检测到职业升级弹窗，点击"查看" ({view[0]}, {view[1]})')
+                    log(f'检测到{"职业升级" if career_upgrading else "获得新职业"}弹窗，点击"{btn_name}" ({view[0]}, {view[1]})')
                     self.click(view[0], view[1])
                     time.sleep(CLICK_INTERVAL)
                 for _back in range(4):

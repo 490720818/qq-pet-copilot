@@ -301,47 +301,55 @@ def _frida_open_module(serial: str, pid: int) -> None:
     import frida
     device = _frida_device(serial)
     session = device.attach(pid)
-    script = session.create_script(_hook_source())
-    opened = False
-    error = ''
-
-    def on_message(message, data):  # noqa: ARG001 - data 不用
-        nonlocal opened, error
-        mtype = message.get('type')
-        if mtype == 'send':
-            payload = message.get('payload') or {}
-            event = payload.get('event')
-            detail = str(payload.get('detail') or '')
-            if event == 'account':
-                log('已读取当前 ' + detail)
-            elif event == 'opened':
-                opened = True
-            elif event == 'visited':
-                # 好友访问（踩踩/PK）跳转被 hook 接管并打开目标宠物页
-                log('好友访问: ' + detail)
-            elif event == 'error':
-                if opened:
-                    log(f'hook 运行中报错: {detail}')
-                else:
-                    error = detail
-        elif mtype == 'error':
-            msg = message.get('stack') or message.get('description') or str(message)
-            if opened:
-                log(f'hook 运行中报错: {msg}')
-            else:
-                error = msg
-
-    def on_log(level: str, text: str) -> None:
-        # hook 里 console.log 的 [QQPET_*] 行，转发到项目日志便于排查
-        log(f'[frida:{level}] {text}')
-
-    script.on('message', on_message)
-    script.set_log_handler(on_log)
     try:
-        script.load()
-    except Exception as e:
-        # 常见原因：frida-server 未运行/版本不匹配、QQ 进程已退出
-        raise OpenPetPageError(f'注入 QQ 失败（frida-server 是否已运行、版本是否匹配？）: {e}') from e
+        script = session.create_script(_hook_source())
+        opened = False
+        error = ''
+
+        def on_message(message, data):  # noqa: ARG001 - data 不用
+            nonlocal opened, error
+            mtype = message.get('type')
+            if mtype == 'send':
+                payload = message.get('payload') or {}
+                event = payload.get('event')
+                detail = str(payload.get('detail') or '')
+                if event == 'account':
+                    log('已读取当前 ' + detail)
+                elif event == 'opened':
+                    opened = True
+                elif event == 'visited':
+                    # 好友访问（踩踩/PK）跳转被 hook 接管并打开目标宠物页
+                    log('好友访问: ' + detail)
+                elif event == 'error':
+                    if opened:
+                        log(f'hook 运行中报错: {detail}')
+                    else:
+                        error = detail
+            elif mtype == 'error':
+                msg = message.get('stack') or message.get('description') or str(message)
+                if opened:
+                    log(f'hook 运行中报错: {msg}')
+                else:
+                    error = msg
+
+        def on_log(level: str, text: str) -> None:
+            # hook 里 console.log 的 [QQPET_*] 行，转发到项目日志便于排查
+            log(f'[frida:{level}] {text}')
+
+        script.on('message', on_message)
+        script.set_log_handler(on_log)
+        try:
+            script.load()
+        except Exception as e:
+            # 常见原因：frida-server 未运行/版本不匹配、QQ 进程已退出
+            raise OpenPetPageError(f'注入 QQ 失败（frida-server 是否已运行、版本是否匹配？）: {e}') from e
+    except Exception:
+        # attach 之后、load 成功之前的任何失败都要 detach，避免会话堆积在 frida-server 侧
+        try:
+            session.detach()
+        except Exception:
+            pass
+        raise
     deadline = time.monotonic() + INJECT_TIMEOUT
     while time.monotonic() < deadline and not opened and not error:
         time.sleep(0.2)

@@ -108,8 +108,11 @@ LOCATORS: dict[str, dict] = {
     'quit': {'xpath': ['//*[@content-desc="返回"]']},
 
     # 职业升级弹窗（出门页新弹窗）：点"查看"进职业树，再用系统返回键关闭
-    'career_upgrade': {'ocr': ['你将进阶成为', '恭喜！']},
+    'career_upgrade': {'ocr': ['学院校长','你将进阶成为', '恭喜！']},
+    # 获得新职业弹窗（"神秘人" + "快去职业树里看看吧"）：按钮是"去看看"，同样进职业树
+    'career_new': {'ocr': ['神秘人', '快去职业树里看看吧']},
     'career_upgrade_view': {'ocr': ['查看']},
+    'career_new_view': {'ocr': ['去看看']},
     # 职业树页面（查看后进入）：无原生返回键，靠系统返回键逐层退出
     'career_tree': {'ocr': ['职业树']},
 

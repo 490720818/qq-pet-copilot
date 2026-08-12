@@ -92,7 +92,9 @@ $PY build.py --emulator          # 模拟器版（内置 hook JS + frida-server 
 - **异常分级重试**：场景抛异常 → 先回主页面重进场景重试一次（页面错乱多半能
   自愈，不必重启）→ 仍失败才走 `Runner.recover()`（`src/recover.py`：adb reboot →
   启动 QQ → 等并点 `Q宠-*` 入口回宠物页）→ 最后再试一次；连续 `RECOVERY_LIMIT`
-  次恢复仍失败才放弃恢复。恢复成功后必须把新 U2Device 刷新到各场景的 `dev`。
+  次恢复仍失败才放弃恢复（距上次恢复超过 `RECOVERY_RESET_AFTER` 秒计数重置，
+  只拦短时间连续恢复的死循环，支线长期失败不永久锁死恢复能力）。
+  恢复成功后必须把新 U2Device 刷新到各场景的 `dev`。
   多次重试均失败按任务类型分流：主任务（学习/打工）发告警通知（`src/notify.py`：
   Windows Toast + OnePush，附当前手机截图存 `runs/alert_*.png`）并退出调度器
   （SystemExit）；支线任务（冒险/踩踩/PK）不退出——抛 `ScenarioFailed`，

@@ -31,7 +31,7 @@ U2_CONNECT_INTERVAL = 5.0
 PET_ENTRY_TIMEOUT = 120.0   # 启动 QQ 后等 Q宠-* 入口出现的超时（秒）
 PET_ENTRY_POLL_INTERVAL = 3.0
 PET_ENTRY_CLICK_TRIES = 3   # 点入口后宠物页没出来时的重试点击次数
-PET_PAGE_TIMEOUT = 5.0     # 每次点击后等宠物主页加载的超时（秒）
+PET_PAGE_TIMEOUT = 15.0    # 每次点击后等宠物主页加载的超时（秒，冷启动可能要十几秒）
 PET_PAGE_POLL_INTERVAL = 3.0
 
 
