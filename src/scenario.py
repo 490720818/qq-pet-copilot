@@ -2,13 +2,19 @@
 from __future__ import annotations
 
 import time
+from datetime import datetime, timedelta
 
 from .config import find_adb, load_config
 from .locators import LOCATORS, ocr_screen
 from .locators import see as locate
 from .locators import see_all as locate_all
 from .ocr import parse_employed_ratio, parse_employed_remaining
-from .progress import count_cross, log
+from .progress import (
+    HIRE_FRIEND_PROGRESS_FILE,
+    count_cross,
+    increment_progress,
+    log,
+)
 from .u2dev import U2Device
 
 # ---- 可调参数 ----
@@ -19,6 +25,20 @@ BUSY_GATE_ATTEMPTS = 2     # 出门后进行中状态的检测次数（活动面
 WAIT_LOG_INTERVAL = 300.0  # 长等待期间的心跳日志间隔（秒），避免每轮检测刷屏
 ENCOURAGE_LOG_INTERVAL = 300.0  # "鼓励宠物"点击日志节流间隔（秒）：按钮每 ~12s 出现，避免刷屏
 EMPLOYED_MAX_WAIT_MINUTES = 45  # 被雇佣"等到25/75（小于45min）"：面板剩余时间超过该值立即召回
+DEFER_DETECTION_ATTEMPTS = 3    # 延时收尾模式判定进行中/结束状态的检测次数
+DEFER_FALLBACK_SECONDS = 60     # OCR 识别不到剩余时间时的兜底重估间隔（秒）
+DEFER_END_MARGIN_SECONDS = 1    # 剩余时间换算收尾时间点时加的余量（秒）
+FINISH_DETECTION_ATTEMPTS = 5   # finish_pending 出门后检测结算页/进行中状态的重试次数
+
+
+class TaskDeferred(Exception):
+    """任务主动要求延后调度：到 until 时间再执行（如雇佣好友时发现宠物
+    正在打工/学习/冒险/被雇佣中，按剩余时间延后）。与 ScenarioFailed 的
+    失败退避语义不同，调度层需单独捕获。"""
+
+    def __init__(self, until: datetime, reason: str = ''):
+        super().__init__(reason or f'延后到 {until:%H:%M:%S}')
+        self.until = until
 
 
 class DeviceScenario:
@@ -29,6 +49,11 @@ class DeviceScenario:
         if dev is None:
             dev = U2Device(find_adb(self.cfg.adb.path), self.cfg.adb.device_serial)
         self.dev = dev
+        # 延时收尾模式（任务队列调度器对主任务开启）：进行中不阻塞等待，
+        # OCR 剩余时间登记 self.pending 后先回主页面调度其他任务，到点由
+        # finish_pending() 收尾计数。legacy 引擎保持 False（原阻塞等待）。
+        self.defer_wait = False
+        self.pending = None  # dict: in_name/end_name/until(datetime)/on_finish/desc/encourage
 
     def screen(self):
         return self.dev.screenshot()
@@ -190,7 +215,9 @@ class DeviceScenario:
         """等待 end_name 出现并点 quit 退出，期间点 in_name 画面防设备休眠。
 
         encourage=True 时每轮顺带检测"鼓励宠物"按钮（d(description="鼓励宠物")），
-        出现就点一下（学习等待期间提升心情/互动收益）。
+        出现就点一下（学习等待期间提升心情/互动收益）；检测到结束标志后、点 quit 前
+        再按 schedule.encourage_times 快速点够鼓励次数（非阻塞调度的鼓励主要靠
+        defer_busy_end/_defer_busy 登记 pending 时在进行中页面就地点击，结算页没有该按钮）。
         check_interval=None 时用统一配置 schedule.check_interval。
         """
         if check_interval is None:
@@ -220,6 +247,11 @@ class DeviceScenario:
                 log('仍在进行中...')
                 last_log_at = now
             time.sleep(check_interval)
+        if encourage:
+            # 结束前再快速点够鼓励次数（等待期间已逐次点过，补一轮无妨；
+            # 非阻塞调度的鼓励主要靠 defer_busy_end/_defer_busy 登记 pending 时
+            # 在进行中页面就地点击）
+            self._encourage_burst()
         quit_hit = self.see('quit')
         if quit_hit:
             self.click(quit_hit[0], quit_hit[1])
@@ -238,8 +270,73 @@ class DeviceScenario:
         (剩余秒数, x, y, score) 或 None（解析不到由调用方回退到只等分成比例）。"""
         return parse_employed_remaining(ocr_screen(screen))
 
+    def employed_recall_ready(self, screen) -> bool:
+        """单次判定被雇佣是否到召回时机（不等待）：
+        立刻召回 总是召回；等到25/75（小于45min）剩余时间 >45 分钟直接召回；
+        三种方式都在分成比例到"雇佣者<=25% 被雇佣者>=75%"终态时召回。"""
+        action = getattr(self.cfg.employed, 'action', '等到25/75')
+        if action == '立刻召回':
+            log('按配置"立刻召回"被雇佣宠物')
+            return True
+        if action == '等到25/75（小于45min）':
+            rem = self.see_employed_remaining(screen)
+            if rem is not None:
+                secs, _x, _y, _score = rem
+                if secs > EMPLOYED_MAX_WAIT_MINUTES * 60:
+                    h, m, ss = secs // 3600, (secs % 3600) // 60, secs % 60
+                    log(f'剩余时间 {h:02d}:{m:02d}:{ss:02d}'
+                        f'（>{EMPLOYED_MAX_WAIT_MINUTES} 分钟），立即召回')
+                    return True
+        sign = self.see_employed_sign(screen)
+        if sign:
+            log(f'检测到召回标志（分成比例终态） (score={sign[2]:.2f})')
+            return True
+        return False
+
+    def _recall_employed(self) -> None:
+        """召回被雇佣宠物：点"现在召回"，处理确认按钮，等 employed_end 点 quit 并计数。"""
+        # 召回：先点"现在召回"，再处理可能弹出的确认按钮
+        for attempt in range(1, NAV_TIMEOUT + 1):
+            # 先查确认按钮：召回点击后 confirm 可能延迟弹出，
+            # 此时 come_back 已消失，只查 come_back 会永远等不到
+            # 两个按钮都是自绘 OCR 定位，不需要控件树快照，只截图
+            screen = self.screen()
+            confirm = self.see('employed_come_back_confirm', screen)
+            if confirm:
+                self.click(confirm[0], confirm[1])
+                time.sleep(CLICK_INTERVAL)
+                break
+            back = self.see('employed_come_back', screen)
+            if back:
+                self.click(back[0], back[1])
+            else:
+                if attempt == 1 or attempt == NAV_TIMEOUT:
+                    log(f'未找到召回/确认按钮，重试 ({attempt}/{NAV_TIMEOUT})')
+            time.sleep(CLICK_INTERVAL)
+        else:
+            raise RuntimeError('出现召回标志但召回/确认按钮未找到')
+        # 确认后等待结束界面，点 quit 退出并计数
+        for attempt in range(1, NAV_TIMEOUT + 1):
+            screen, source = self.snapshot()
+            end = self.see('employed_end', screen, source)
+            if end:
+                log(f'检测到被雇佣结束标志 employed_end (score={end[2]:.2f})')
+                break
+            if attempt == 1 or attempt == NAV_TIMEOUT:
+                log(f'等待 employed_end 出现 ({attempt}/{NAV_TIMEOUT})')
+            time.sleep(CLICK_INTERVAL)
+        else:
+            raise RuntimeError('召回确认后未出现 employed_end')
+        quit_hit = self.see('quit')
+        if quit_hit:
+            self.click(quit_hit[0], quit_hit[1])
+            time.sleep(CLICK_INTERVAL)
+        else:
+            log('未找到 quit 按钮，直接返回')
+        count_cross('employed')  # 点完 quit 就计数
+
     def wait_employed_back(self, check_interval: float | None = None) -> None:
-        """被雇佣中：按配置 employed.action 决定召回时机。
+        """被雇佣中：按配置 employed.action 决定召回时机（阻塞等到召回条件满足）。
 
         等到25/75：分成比例到"雇佣者<=25% 被雇佣者>=75%"（宠物分成最高终态）
         才点 employed_come_back 提前召回；
@@ -251,88 +348,217 @@ class DeviceScenario:
         """
         if check_interval is None:
             check_interval = self.check_interval
-        action = getattr(self.cfg.employed, 'action', '等到25/75')
-        immediate = action == '立刻召回'
-        time_capped = action == '等到25/75（小于45min）'
         last_log_at = 0.0
         while True:
             # 本循环全是 OCR 定位（剩余时间/分成比例/被雇佣中），
             # 不需要控件树快照（dump 一次 1~4s），只截图即可
             screen = self.screen()
-            if immediate:
-                log('按配置"立刻召回"被雇佣宠物')
-            else:
-                recall_ready = False
-                if time_capped:
-                    rem = self.see_employed_remaining(screen)
-                    if rem is not None:
-                        secs, _x, _y, _score = rem
-                        if secs > EMPLOYED_MAX_WAIT_MINUTES * 60:
-                            h, m, ss = secs // 3600, (secs % 3600) // 60, secs % 60
-                            log(f'剩余时间 {h:02d}:{m:02d}:{ss:02d}'
-                                f'（>{EMPLOYED_MAX_WAIT_MINUTES} 分钟），立即召回')
-                            recall_ready = True
-                if not recall_ready:
-                    sign = self.see_employed_sign(screen)
-                    if not sign:
-                        # 点击一次被雇佣画面防止设备休眠
-                        cur = self.see('employed_in', screen)
-                        if cur:
-                            self.dev.click(cur[0], cur[1])  # 防休眠点击不记日志
-                        now = time.monotonic()
-                        if now - last_log_at >= WAIT_LOG_INTERVAL:
-                            log('仍在被雇佣中...')
-                            last_log_at = now
-                        time.sleep(check_interval)
-                        continue
-                    log(f'检测到召回标志（分成比例终态） (score={sign[2]:.2f})')
-            # 召回：先点"现在召回"，再处理可能弹出的确认按钮
-            for attempt in range(1, NAV_TIMEOUT + 1):
-                # 先查确认按钮：召回点击后 confirm 可能延迟弹出，
-                # 此时 come_back 已消失，只查 come_back 会永远等不到
-                # 两个按钮都是自绘 OCR 定位，不需要控件树快照，只截图
-                screen = self.screen()
-                confirm = self.see('employed_come_back_confirm', screen)
-                if confirm:
-                    self.click(confirm[0], confirm[1])
-                    time.sleep(CLICK_INTERVAL)
-                    break
-                back = self.see('employed_come_back', screen)
-                if back:
-                    self.click(back[0], back[1])
-                else:
-                    if attempt == 1 or attempt == NAV_TIMEOUT:
-                        log(f'未找到召回/确认按钮，重试 ({attempt}/{NAV_TIMEOUT})')
+            if self.employed_recall_ready(screen):
+                break
+            # 点击一次被雇佣画面防止设备休眠
+            cur = self.see('employed_in', screen)
+            if cur:
+                self.dev.click(cur[0], cur[1])  # 防休眠点击不记日志
+            now = time.monotonic()
+            if now - last_log_at >= WAIT_LOG_INTERVAL:
+                log('仍在被雇佣中...')
+                last_log_at = now
+            time.sleep(check_interval)
+        self._recall_employed()
+
+    def read_remaining_seconds(self, screen=None) -> int | None:
+        """OCR 整屏"剩余 HH:MM:SS"倒计时（学习/打工/冒险/被雇佣面板通用），
+        返回剩余秒数或 None。"""
+        if screen is None:
+            screen = self.screen()
+        rem = parse_employed_remaining(ocr_screen(screen))
+        return rem[0] if rem else None
+
+    def detect_busy_remaining(self, attempts: int = BUSY_GATE_ATTEMPTS) -> tuple[str, int] | None:
+        """出门检测宠物是否正在打工/学习/冒险/被雇佣中（不等待、不收尾）：
+        命中进行中状态则 OCR 剩余时间，返回 (kind, 剩余秒数)；OCR 不到
+        剩余时间按 DEFER_FALLBACK_SECONDS 兜底。四种状态都未命中返回 None。
+        用于雇佣好友等场景在出发前主动延后，与 wait_busy_end 的阻塞等待互补。
+        调用前需已在主页面（内部直接 leave_home）。
+        """
+        self.leave_home()
+        time.sleep(0.5)  # 出门后活动面板有几秒加载延迟
+        signs = {'school_in': 'school', 'work_in': 'work',
+                 'adventure_in': 'adventure', 'employed_in': 'employed'}
+        for attempt in range(1, attempts + 1):
+            screen = self.screen()
+            for sign, kind in signs.items():
+                if self.see(sign, screen):
+                    secs = self.read_remaining_seconds(screen)
+                    if secs is None:
+                        secs = DEFER_FALLBACK_SECONDS
+                        log(f'检测到{kind}进行中，未识别到剩余时间，按兜底 {secs} 秒延后')
+                    return kind, secs
+            if attempt < attempts:
+                time.sleep(0.5)
+        return None
+
+    def defer_busy_end(self, in_name: str, end_name: str, on_finish, desc: str,
+                       encourage: bool = False) -> bool:
+        """延时收尾（非阻塞等待）：检测到进行中就 OCR 剩余时间登记 pending，
+        返回 True（调用方回主页面，到点由 finish_pending() 收尾计数）；
+        检测到已结束则原地走 wait_end 收尾并 on_finish() 计数，返回 False；
+        两种状态都检测不到抛 RuntimeError（页面异常，走场景重试）。
+
+        OCR 识别不到剩余时间按 DEFER_FALLBACK_SECONDS 兜底，避免卡死。
+        """
+        for attempt in range(1, DEFER_DETECTION_ATTEMPTS + 1):
+            screen, source = self.snapshot()
+            if self.see(end_name, screen, source):
+                log(f'{desc}: 已出现结束标志 {end_name}，直接收尾')
+                self.wait_end(in_name, end_name, self.check_interval, encourage)
+                on_finish()
+                return False
+            if self.see(in_name, screen, source):
+                if encourage:
+                    # 鼓励按钮只在进行中页面常驻（结算页没有），登记 pending 离开前就地点击
+                    self._encourage_burst()
+                secs = self.read_remaining_seconds(screen)
+                if secs is None:
+                    secs = DEFER_FALLBACK_SECONDS
+                    log(f'{desc}: 未识别到剩余时间，按兜底 {secs} 秒后再来收尾')
+                until = datetime.now() + timedelta(seconds=secs + DEFER_END_MARGIN_SECONDS)
+                self.pending = {'in_name': in_name, 'end_name': end_name, 'until': until,
+                                'on_finish': on_finish, 'desc': desc, 'encourage': encourage}
+                log(f'{desc}: 进行中，预计 {secs} 秒后结束（{until:%H:%M:%S} 收尾），先调度其他任务')
+                return True
+            if attempt < DEFER_DETECTION_ATTEMPTS:
                 time.sleep(CLICK_INTERVAL)
-            else:
-                raise RuntimeError('出现召回标志但召回/确认按钮未找到')
-            # 确认后等待结束界面，点 quit 退出并计数
-            for attempt in range(1, NAV_TIMEOUT + 1):
-                screen, source = self.snapshot()
-                end = self.see('employed_end', screen, source)
-                if end:
-                    log(f'检测到被雇佣结束标志 employed_end (score={end[2]:.2f})')
-                    break
-                if attempt == 1 or attempt == NAV_TIMEOUT:
-                    log(f'等待 employed_end 出现 ({attempt}/{NAV_TIMEOUT})')
-                time.sleep(CLICK_INTERVAL)
-            else:
-                raise RuntimeError('召回确认后未出现 employed_end')
-            quit_hit = self.see('quit')
-            if quit_hit:
-                self.click(quit_hit[0], quit_hit[1])
-                time.sleep(CLICK_INTERVAL)
-            else:
-                log('未找到 quit 按钮，直接返回')
-            count_cross('employed')  # 点完 quit 就计数
+        raise RuntimeError(f'{desc}: 未检测到进行中或结束状态')
+
+    def _encourage_burst(self) -> None:
+        """在"鼓励宠物"按钮可见的页面上快速点击 schedule.encourage_times 次。
+
+        按钮在学习/打工进行中页面常驻，结算页实测没有（日志连续 0/50），
+        所以非阻塞调度（defer_wait）在登记 pending（正停在进行中页面）时就地点击；
+        结算页路径保留调用兜底。按钮不是一直渲染，每轮 see 不到就短等重试，
+        最多 times*3 轮防卡死。
+        """
+        times = int(getattr(self.cfg.schedule, 'encourage_times', 0) or 0)
+        if times <= 0:
             return
+        clicked = 0
+        misses = 0
+        for _ in range(times * 3):
+            hit = self.see('encourage_pet')
+            if hit:
+                self.click(hit[0], hit[1])
+                clicked += 1
+                if clicked >= times:
+                    break
+            else:
+                misses += 1
+                # 页面可能根本没有鼓励按钮（如结算页）：一次都没点到时 3 轮不中就不再等
+                if clicked == 0 and misses >= 3:
+                    break
+            time.sleep(0.1)  # 点击间隔（快速连点）
+        log(f'鼓励宠物: 快速点击 {clicked}/{times} 次')
+
+    def finish_pending(self) -> bool:
+        """pending 到点收尾：回主页面出门，结算页（学习"教师评语"/打工"打工总结"
+        （含雇佣好友名称），即 end_name 的"分享"按钮）在出门页面出现——见结算页点 quit
+        （落在出门页面，由后续任务继续）、on_finish() 计数，返回 True；
+        活动还在进行中（计时误差）时 pend['encourage'] 则先在进行中页面就地鼓励
+        （结算页没有鼓励按钮，鼓励主要靠登记 pending 时的就地点击），重新 OCR 剩余时间
+        更新 until 并回主页面，返回 False。无 pending 时直接返回 True。"""
+        pend = self.pending
+        if pend is None:
+            return True
+        # 学习/打工/雇佣好友不停留在进行中页面，下一次主任务调度点出门后
+        # 才会出现 end 结算页面：先回主页面再出门
+        self.ensure_main_page()
+        self.leave_home()
+        in_progress = False
+        for _attempt in range(FINISH_DETECTION_ATTEMPTS):
+            screen, source = self.snapshot()
+            if self.see(pend['end_name'], screen, source):
+                log(f"{pend['desc']}: 检测到结算页 {pend['end_name']}，收尾")
+                if pend.get('encourage'):
+                    # 结算页实测没有鼓励按钮（快速 3 轮不中即放弃），仅作兜底
+                    self._encourage_burst()
+                quit_hit = self.see('quit', screen, source)
+                if quit_hit:
+                    self.click(quit_hit[0], quit_hit[1])
+                    time.sleep(CLICK_INTERVAL)
+                else:
+                    log(f"{pend['desc']}: 未找到 quit 按钮，直接返回")
+                self.pending = None
+                pend['on_finish']()
+                return True
+            if self.see(pend['in_name'], screen, source):
+                in_progress = True
+                break  # 还在进行中（计时误差）：跳出检测，重估收尾时间
+            time.sleep(CLICK_INTERVAL)
+        else:
+            log(f"{pend['desc']}: 出门后未检测到结算页或进行中状态，重估收尾时间")
+        if in_progress and pend.get('encourage'):
+            # 还在进行中：鼓励按钮在进行中页面常驻，离开前就地点击
+            self._encourage_burst()
+        secs = self.read_remaining_seconds()
+        if secs is None:
+            secs = DEFER_FALLBACK_SECONDS
+        pend['until'] = datetime.now() + timedelta(seconds=secs + DEFER_END_MARGIN_SECONDS)
+        log(f"{pend['desc']}: 尚未结束，重估剩余 {secs} 秒（{pend['until']:%H:%M:%S} 再收尾）")
+        self.ensure_main_page()
+        return False
+
+    def _defer_busy(self, kind: str, screen) -> bool:
+        """出门检测到进行中且 defer_wait 开启：OCR 剩余时间登记 pending 返回 True
+        （on_finish 按 kind 交叉计数）；识别不到剩余时间返回 False，回退阻塞等待。
+        被雇佣按召回策略处理，不做延时收尾。"""
+        if kind == 'employed':
+            return False
+        secs = self.read_remaining_seconds(screen)
+        if secs is None:
+            return False
+        names = {'school': ('school_in', 'school_end', '上课'),
+                 'work': ('work_in', 'work_end', '打工'),
+                 'adventure': ('adventure_in', 'adventure_end', '冒险')}
+        in_name, end_name, desc = names[kind]
+        if kind in ('school', 'work'):
+            # 鼓励按钮只在进行中页面常驻（结算页没有），登记 pending 离开前就地点击
+            self._encourage_burst()
+        until = datetime.now() + timedelta(seconds=secs + DEFER_END_MARGIN_SECONDS)
+        self.pending = {'in_name': in_name, 'end_name': end_name, 'until': until,
+                        'on_finish': lambda k=kind: count_cross(k), 'desc': desc,
+                        'encourage': kind in ('school', 'work')}
+        log(f'检测到正在{desc}，预计 {secs} 秒后结束（{until:%H:%M:%S} 收尾），先调度其他任务')
+        return True
+
+    def _detect_settlement(self, screen, source) -> str | None:
+        """出门后的结算页检测（上次活动已结束未收尾，如调度器重启丢失 pending 后，
+        点出门直接出现结算页）：OCR 文案区分——"教师评语"=学习、"打工总结"=打工
+        （文案含配置的雇佣好友名称时再计一次雇佣好友）；都没有但有"分享"按钮
+        （adventure_end）=冒险结算。命中返回 'school'/'work'/'adventure'，否则 None。"""
+        results = ocr_screen(screen)
+        texts = [t for t, *_ in results]
+        if any('教师评语' in t for t in texts):
+            return 'school'
+        if any('打工总结' in t for t in texts):
+            hf_name = getattr(getattr(self.cfg, 'hire_friend', None), 'friend_name', '') or ''
+            hf_name = hf_name.strip()
+            if hf_name and any(hf_name in t for t in texts):
+                # 打工总结含雇佣好友名称：同时计一次雇佣好友（打工次数由调用方计）
+                n = increment_progress(HIRE_FRIEND_PROGRESS_FILE)
+                log(f'打工总结含雇佣好友 {hf_name}，已计入雇佣好友次数（{n} 次）')
+            return 'work'
+        if self.see('adventure_end', screen, source):
+            return 'adventure'
+        return None
 
     def wait_busy_end(self, check_interval: float | None = None,
                       attempts: int = BUSY_GATE_ATTEMPTS) -> str | None:
-        """出门后检测是否正在上课/工作/冒险/被雇佣中，是则等待结束并退出。
+        """出门后检测是否正在上课/工作/冒险/被雇佣中，是则等待结束并退出；
+        若直接出现结算页（上次活动已结束未收尾，如调度器重启丢失 pending 后），
+        点 quit 收尾（_detect_settlement：教师评语=学习/打工总结=打工/分享=冒险）。
 
         返回 'school' / 'work' / 'adventure' / 'employed' / None
-        （等完的是哪种，用于计入对应计数）。
+        （等完/收尾的是哪种，用于计入对应计数）。
         check_interval=None 时用统一配置 schedule.check_interval；
         attempts: 最多检测次数，默认 BUSY_GATE_ATTEMPTS。
         """
@@ -376,15 +602,38 @@ class DeviceScenario:
                 self.ensure_main_page()
                 self.leave_home()
                 continue
+            # 结算页（上次活动已结束未收尾）：点 quit 收尾并返回对应类型（计数同
+            # 等完活动的语义；"打工总结"含雇佣好友名称时 _detect_settlement 已计雇佣）。
+            # xpath 定位（分享/quit）source 传 None 按需 dump（结算页是低频路径）
+            settle = self._detect_settlement(screen, None)
+            if settle:
+                settle_names = {'school': '学习', 'work': '打工', 'adventure': '冒险'}
+                log(f'出门后检测到{settle_names[settle]}结算页，点 quit 收尾')
+                if settle in ('school', 'work'):
+                    # 结算页实测没有鼓励按钮（快速 3 轮不中即放弃），仅作兜底
+                    self._encourage_burst()
+                quit_hit = self.see('quit', screen)
+                if quit_hit:
+                    self.click(quit_hit[0], quit_hit[1])
+                    time.sleep(CLICK_INTERVAL)
+                else:
+                    log('结算页未找到 quit 按钮，直接返回')
+                return settle
             if self.see('school_in', screen):
+                if self.defer_wait and self._defer_busy('school', screen):
+                    return 'school'
                 log('检测到正在上课，等待这节课结束...')
                 self.wait_end('school_in', 'school_end', check_interval, encourage=True)
                 return 'school'
             if self.see('work_in', screen):
+                if self.defer_wait and self._defer_busy('work', screen):
+                    return 'work'
                 log('检测到正在打工，等待这次工作结束...')
                 self.wait_end('work_in', 'work_end', check_interval, encourage=True)
                 return 'work'
             if self.see('adventure_in', screen):
+                if self.defer_wait and self._defer_busy('adventure', screen):
+                    return 'adventure'
                 log('检测到正在冒险，等待这次冒险结束...')
                 self.wait_end('adventure_in', 'adventure_end', check_interval)
                 return 'adventure'

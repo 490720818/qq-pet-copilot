@@ -2,8 +2,7 @@
 
 样式参考 qq-farm-copilot 的 steal_chart_panel：Catmull-Rom 样条转三次贝塞尔
 （曲线精确穿过数据点）、虚线网格、悬停显示明细、滚轮缩放天数窗口。
-数据来源：runs/*_progress.json（未识别账号）或 runs/accounts/<账号>/*_progress.json
-的 history 字段（{日期: 次数}），按天补齐 0；多账号时下拉切换账号。
+数据来源：runs/*_progress.json 的 history 字段（{日期: 次数}），按天补齐 0。
 """
 from __future__ import annotations
 
@@ -12,7 +11,6 @@ from datetime import date, timedelta
 from PyQt6.QtCore import QPointF, Qt
 from PyQt6.QtGui import QColor, QPainter, QPainterPath, QPen
 from PyQt6.QtWidgets import (
-    QComboBox,
     QHBoxLayout,
     QLabel,
     QToolTip,
@@ -26,8 +24,6 @@ from .progress import (
     SCHOOL_PROGRESS_FILE,
     VISIT_PROGRESS_FILE,
     WORK_PROGRESS_FILE,
-    current_account,
-    known_accounts,
     load_progress,
 )
 
@@ -51,14 +47,11 @@ _TEXT_COLOR = '#1e293b'
 _GRID_COLOR = '#e2e8f0'
 
 
-def load_daily_counts(days: int, account: str = '') -> list[tuple[str, list[int]]]:
-    """读各任务进度文件的 history，返回 [(日期, [各任务次数])]，最近 days 天、缺天补 0。
-
-    account 为账号名时读该账号的进度（runs/accounts/<账号>/），空串读默认路径。
-    """
+def load_daily_counts(days: int) -> list[tuple[str, list[int]]]:
+    """读各任务进度文件的 history，返回 [(日期, [各任务次数])]，最近 days 天、缺天补 0。"""
     histories = []
     for _, progress_file, _ in TASKS:
-        _, _, history = load_progress(progress_file, quiet=True, account=account)
+        _, _, history = load_progress(progress_file, quiet=True)
         histories.append(history)
     today = date.today()
     out = []
@@ -219,10 +212,6 @@ class StatsPanel(QWidget):
         self._title = QLabel(f'任务统计（最近 {self._days} 天，滚轮缩放）')
         self._title.setStyleSheet('font-weight: bold; font-size: 14px;')
         title_row.addWidget(self._title)
-        # 多账号：下拉切换查看哪个账号的统计（无已知账号时隐藏）
-        self._account_combo = QComboBox()
-        self._account_combo.currentTextChanged.connect(lambda _t: self.refresh())
-        title_row.addWidget(self._account_combo)
         title_row.addStretch()
         for name, _, color in TASKS:  # 图例：色点 + 名称
             dot = QLabel('●')
@@ -243,24 +232,8 @@ class StatsPanel(QWidget):
         self.refresh()
 
     def refresh(self) -> None:
-        # 刷新账号下拉（保持已选项；默认选当前账号），无已知账号时隐藏走默认路径
-        accounts = known_accounts()
-        selected = self._account_combo.currentText()
-        self._account_combo.blockSignals(True)
-        self._account_combo.clear()
-        if accounts:
-            self._account_combo.addItems(accounts)
-            preferred = selected if selected in accounts else (current_account() or '')
-            idx = self._account_combo.findText(preferred)
-            self._account_combo.setCurrentIndex(idx if idx >= 0 else 0)
-        self._account_combo.blockSignals(False)
-        self._account_combo.setVisible(bool(accounts))
-        account = self._account_combo.currentText() if accounts else ''
-        title = f'任务统计（最近 {self._days} 天，滚轮缩放）'
-        if account:
-            title = f'任务统计：{account}（最近 {self._days} 天，滚轮缩放）'
-        self._title.setText(title)
-        self._chart.set_data(load_daily_counts(self._days, account))
+        self._title.setText(f'任务统计（最近 {self._days} 天，滚轮缩放）')
+        self._chart.set_data(load_daily_counts(self._days))
 
     def showEvent(self, event) -> None:
         super().showEvent(event)

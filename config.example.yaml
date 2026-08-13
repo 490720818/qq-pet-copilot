@@ -7,6 +7,18 @@ adb:
   # 设备序列号；留空则使用第一台在线设备
   device_serial: ""
 
+# 模拟器信息（异常恢复"重启设备"时自动探测实例用；serial 匹配到多个实例时用于消歧，
+# 全部留空/auto 则纯自动探测，参考 ALAS EmulatorInfo）
+emulator:
+  # 模拟器类型：auto 自动探测，或 MuMuPlayer12 / MuMuPlayer / MuMuPlayerX /
+  # LDPlayer3 / LDPlayer4 / LDPlayer9 / NoxPlayer / NoxPlayer64 /
+  # BlueStacks4 / BlueStacks5 / MEmuPlayer
+  type: auto
+  # 实例名称（留空自动探测）
+  name: ""
+  # 模拟器安装路径（留空自动探测）
+  path: ""
+
 school:
   # 属性点课程选择：力量 / 智力 / 魅力
   attribute: "力量"
@@ -31,6 +43,8 @@ schedule:
   daily_point_limit: 480
   # 进行中状态（上课/打工/冒险/被雇佣）的统一检查间隔（秒）
   check_interval: 15
+  # 鼓励次数：在学习/打工进行中页面快速点击"鼓励宠物"按钮的次数，0 为不鼓励
+  encourage_times: 10
 
 adventure:
   # 每天冒险次数，0 为不冒险
@@ -63,11 +77,125 @@ pk:
   # PK 调度时间（HH:MM）：到达后开始处理
   start_time: "00:01"
 
+friend_care:
+  # 启用好友护理开关
+  enabled: false
+  # 好友护理时间段（HH:MM-HH:MM）：到达开始时间后访问指定好友家护理，
+  # 到结束时间退出场景；支持跨零点（如 22:00-02:00）
+  time_range: "14:00-19:30"
+  # 护理好友名称（好友列表 content-desc "好友 xxx" 里匹配，支持部分匹配）
+  friend_name: ""
+  # 护理好友方式：ocr检测（读好友状态面板，体力/清洁护理到 90）/
+  # 一键护理（点好友页的一键护理按钮）
+  method: ocr检测
+  # 调度间隔（秒）：每次调度只做一次护理巡检，距上次巡检至少间隔这么久才再次调度
+  interval_seconds: 60
+
+hire_friend:
+  # 雇佣好友开关
+  enabled: false
+  # 雇佣好友时间段（HH:MM-HH:MM，支持跨零点）：时间段内才调度雇佣
+  time_range: "19:31-23:59"
+  # 雇佣好友调度间隔（秒）：距上次调度至少间隔这么久才再次调度（收尾后快速接下一轮）
+  interval_seconds: 5
+  # 雇佣好友名称（好友列表 content-desc "好友 xxx" 里匹配，支持部分匹配）
+  friend_name: ""
+  # 每天雇佣好友次数，0 为不雇佣；进度按天持久化
+  times_per_day: 8
+
+# 调度引擎：task_queue（任务队列调度，默认）/ legacy（老主循环调度，可无缝切回）
+runner:
+  engine: task_queue
+
+# 任务调度：顺序（> 分隔，越靠前越优先，不在 order 里的任务不调度）+ 每任务调度设置
+# 可选任务名：care(护理) adventure(冒险) visit(踩踩) pk(PK)
+#   hire_friend(好友雇佣) friend_care(好友护理) school(学习) work(打工)
+tasks:
+  order: care>school>friend_care>hire_friend>adventure>visit>pk>work
+  # 主任务组（冒险/学习/打工/雇佣好友互斥，不能同时做）组内优先级：
+  # > 分隔，越靠前越优先；没列出的主任务按默认顺序兜底排最后
+  main_order: school>hire_friend>adventure>work
+  # trigger: interval=按间隔秒数（interval_seconds 为最小执行间隔）/
+  #   daily=按每日时间点列表（到点打开执行窗口，窗口内可反复执行直到当天任务完成；
+  #   下一个时间点重新打开窗口）
+  # enabled_time_range: 允许执行的时间窗（HH:MM:SS-HH:MM:SS）
+  # success_interval / failure_interval: 成功/失败后距下次执行的最小间隔（秒）
+  care:
+    enabled: true
+    trigger: interval
+    interval_seconds: 300
+    enabled_time_range: 00:00:00-23:59:59
+    success_interval: 300
+    failure_interval: 600
+  adventure:
+    enabled: true
+    trigger: daily
+    daily_times: ["09:10"]
+    enabled_time_range: 00:00:00-23:59:59
+    success_interval: 60
+    failure_interval: 1800
+  visit:
+    enabled: true
+    trigger: daily
+    daily_times: ["00:01"]
+    enabled_time_range: 00:00:00-23:59:59
+    success_interval: 60
+    failure_interval: 1800
+  pk:
+    enabled: true
+    trigger: daily
+    daily_times: ["00:01"]
+    enabled_time_range: 00:00:00-23:59:59
+    success_interval: 60
+    failure_interval: 1800
+  # 好友雇佣/好友护理的时间条件由各自配置段决定（hire_friend.time_range /
+  # friend_care.time_range），这里用 interval 触发即可
+  hire_friend:
+    enabled: true
+    trigger: interval
+    interval_seconds: 60
+    enabled_time_range: 00:00:00-23:59:59
+    success_interval: 60
+    failure_interval: 1800
+  friend_care:
+    enabled: true
+    trigger: interval
+    interval_seconds: 60
+    enabled_time_range: 00:00:00-23:59:59
+    success_interval: 60
+    failure_interval: 1800
+  school:
+    enabled: true
+    trigger: interval
+    interval_seconds: 60
+    enabled_time_range: 00:00:00-23:59:59
+    success_interval: 60
+    failure_interval: 1800
+  work:
+    enabled: true
+    trigger: interval
+    interval_seconds: 60
+    enabled_time_range: 00:00:00-23:59:59
+    success_interval: 60
+    failure_interval: 1800
+
 recover:
   # 异常恢复方式：重启设备（adb reboot，彻底）/ 重启游戏（只强停并重开 QQ，快）
   method: 重启设备
+  # 模拟器重启命令（模拟器模式"重启设备"用）：MuMu 不支持 adb reboot（会把 adb 服务卡死），
+  # 配了则改为执行该命令重启模拟器整机；留空自动探测 MuMu 实例分步停/启
+  # （src/emulator.py，shutdown -> launch），探测不到才回退 adb reboot
+  # 例（MuMu 12）："D:/Netease/MuMu Player 12/shell/MuMuManager.exe" control -v 0 restart
+  emulator_restart_cmd: ""
 
 employed:
+  # 被雇佣开关：开启后按时间段+检查间隔出门检查是否被雇佣中
+  enabled: false
+  # 被雇佣时间段（HH:MM-HH:MM，支持跨零点）：时间段内定时检查，
+  # 且主任务（冒险/学习/打工/雇佣好友）不触发
+  time_range: "19:31-23:59"
+  # 被雇佣检查间隔（秒）：距上次检查至少间隔这么久才再次出门检查
+  interval_seconds: 60
   # 被雇佣后处理：等到25/75（分成到 雇佣者<=25% 被雇佣者>=75% 才召回，收益最高）/
   # 等到25/75（小于45min）（面板剩余时间 >45 分钟立即召回，<=45 分钟继续等到25/75）/
   # 立刻召回（进被雇佣面板直接点"现在召回"）

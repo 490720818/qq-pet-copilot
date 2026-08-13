@@ -96,19 +96,23 @@ class Device:
         return int(size[0]), int(size[1])
 
     def reboot_and_wait(self, timeout: float = 180.0, interval: float = 5.0) -> None:
-        """重启设备并等待开机完成（sys.boot_completed=1），超时抛 AdbError。
+        """重启设备并等待开机完成（sys.boot_completed=1），超时抛 AdbError。"""
+        self._run("reboot")
+        self.wait_boot_completed(timeout, interval)
 
-        开机过程中设备反复 offline/online，wait-for-device 容易卡在
+    def wait_boot_completed(self, timeout: float = 180.0, interval: float = 5.0) -> None:
+        """轮询等开机完成（sys.boot_completed=1），超时抛 AdbError。
+
+        开机/掉线过程中设备反复 offline/online，wait-for-device 容易卡在
         子进程超时上，改为轮询 getprop：未就绪时 adb 直接报错返回，继续等。
         """
-        self._run("reboot")
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             time.sleep(interval)
             proc = self._run("shell", "getprop", "sys.boot_completed", check=False)
             if proc.returncode == 0 and proc.stdout.decode("utf-8", "replace").strip() == "1":
                 return
-        raise AdbError(f"设备重启后 {timeout:.0f}s 内未完成开机")
+        raise AdbError(f"{timeout:.0f}s 内未完成开机")
 
     def force_stop_app(self, package: str) -> None:
         """强停应用（重启游戏恢复用，如 QQ）。"""

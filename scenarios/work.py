@@ -339,6 +339,11 @@ class WorkScenario(DeviceScenario):
             self.ensure_main_page()
             finished = self.goto_town()
             if finished:
+                if self.pending is not None:
+                    # 延时收尾模式：出门检测到的进行中活动已登记 pending，计数由
+                    # finish_pending 收尾时统一进行（on_finish），本地不再计数，
+                    # 本轮直接结束
+                    return True
                 if finished == 'work':
                     # 出门时等完了一次上次未结束的工作，计入当天次数
                     done += 1
@@ -372,6 +377,13 @@ class WorkScenario(DeviceScenario):
                 self.hire_friend()
             self._start_work()
             log('已开始工作，等待结束...')
+            if self.defer_wait:
+                # 延时收尾：登记 pending（到点由调度器 finish_pending 收尾计数，
+                # 本地 done 不再自增）后回主页面，本轮直接结束
+                self.defer_busy_end('work_in', 'work_end',
+                                    lambda: count_cross('work'), '打工', encourage=True)
+                self.ensure_main_page()
+                return True
             self.wait_work_end()
             done += 1
             save_progress(PROGRESS_FILE, today, done, history)

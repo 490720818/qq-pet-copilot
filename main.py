@@ -18,16 +18,20 @@ import subprocess
 import sys
 import threading
 import time
+from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from PyQt6.QtCore import QObject, QTimer, pyqtSignal
+from PyQt6.QtCore import QObject, Qt, QTimer, pyqtSignal
+from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (
+    QAbstractItemView,
     QApplication,
     QCheckBox,
     QComboBox,
     QFormLayout,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
     QLineEdit,
     QMainWindow,
@@ -36,6 +40,8 @@ from PyQt6.QtWidgets import (
     QScrollArea,
     QSpinBox,
     QSplitter,
+    QTableWidget,
+    QTableWidgetItem,
     QTabWidget,
     QVBoxLayout,
     QWidget,
@@ -47,15 +53,24 @@ import win32process
 
 from src import settings as settings_io
 from src.adb.device import Device
-from src.config import APP_ROOT, PROJECT_ROOT, find_adb, is_emulator_build, load_config, resource_path
+from src.emulator import EMULATOR_TYPES
+from src.config import (
+    APP_ROOT,
+    PROJECT_ROOT,
+    TASK_KEYS,
+    find_adb,
+    is_emulator_build,
+    load_config,
+    resource_path,
+)
 from src.progress import (
     ADVENTURE_PROGRESS_FILE,
+    EMPLOYED_PROGRESS_FILE,
     PK_PROGRESS_FILE,
     SCHOOL_PROGRESS_FILE,
     VISIT_PROGRESS_FILE,
     WORK_PROGRESS_FILE,
     add_log_listener,
-    known_accounts,
     load_exp_daily,
     load_progress,
     log,
@@ -63,6 +78,7 @@ from src.progress import (
 from src.stats_chart import StatsPanel
 from src.status_cache import FIELDS as STATUS_FIELDS
 from src.status_cache import load_accounts
+from src.queue_status import load_queue_status
 
 SCRCPY = resource_path('resources/scrcpy-win64') / 'scrcpy.exe'
 SCRCPY_TITLE_PREFIX = 'QQPetCopilotScrcpy'
@@ -136,19 +152,40 @@ class _NoWheelSpinBox(QSpinBox):
 
 # 设置页面字段：(点路径, 显示名, 类型)
 # 类型: 'int' / 'str' / 'bool' / 'text'(多行文本) / 'devices'(adb 设备下拉) / 选项列表
+# 设置选项卡：连接/调度引擎/全局规则/告警等全局设置（场景任务相关的在任务选项卡）
 SETTING_FIELDS = [
     ('adb.path', 'adb 路径', 'str'),
     ('adb.device_serial', '设备序列号', 'devices'),
-    ('school.attribute', '属性点课程', ['力量', '智力', '魅力']),
-    ('school.times_per_day', '每天学习次数（0 不限）', 'int'),
-    ('work.location', '打工地点', 'str'),
-    ('work.times_per_day', '每天打工次数（0 不限）', 'int'),
-    ('work.employ_scroll_limit', '雇佣拖动上限', 'int'),
+    ('emulator.type', '模拟器类型', ['auto'] + EMULATOR_TYPES),
+    ('emulator.name', '实例名称（留空自动探测）', 'str'),
+    ('emulator.path', '模拟器安装路径（留空自动探测）', 'str'),
+    ('runner.engine', '调度引擎', ['task_queue', 'legacy']),
     ('schedule.coin_threshold', '金币阈值', 'int'),
     ('schedule.school_factor', '学习点数系数', 'int'),
     ('schedule.work_factor', '打工点数系数', 'int'),
     ('schedule.daily_point_limit', '每日点数上限', 'int'),
     ('schedule.check_interval', '状态检查间隔（秒）', 'int'),
+    ('recover.method', '异常处理方式', ['重启设备', '重启游戏']),
+    ('recover.emulator_restart_cmd', '模拟器重启命令（留空自动探测）', 'str'),
+    ('notify.win_toast', '失败告警 Windows 通知', 'bool'),
+    ('notify.onepush_config', '失败告警 OnePush 配置', 'text'),
+]
+
+# 模拟器专用设置项：非模拟器模式在设置页隐藏
+EMULATOR_SETTING_KEYS = {
+    'emulator.type', 'emulator.name', 'emulator.path', 'recover.emulator_restart_cmd',
+}
+
+# 任务选项卡字段：任务队列顺序 + 各场景任务相关设置
+TASK_SETTING_FIELDS = [
+    ('tasks.order', '任务执行顺序（> 分隔）', 'str'),
+    ('tasks.main_order', '主任务顺序（> 分隔）', 'str'),
+    ('school.attribute', '属性点课程', ['力量', '智力', '魅力']),
+    ('school.times_per_day', '每天学习次数（0 不限）', 'int'),
+    ('schedule.encourage_times', '鼓励次数（进行中页面快速点击）', 'int'),
+    ('work.location', '打工地点', 'str'),
+    ('work.times_per_day', '每天打工次数（0 不限）', 'int'),
+    ('work.employ_scroll_limit', '雇佣拖动上限', 'int'),
     ('adventure.times_per_day', '每天冒险次数（0 不冒险）', 'int'),
     ('adventure.start_time', '冒险调度时间（HH:MM）', 'str'),
     ('adventure.skip_bad_weather', '冒险跳过"天色不对"', 'bool'),
@@ -157,14 +194,29 @@ SETTING_FIELDS = [
     ('visit.start_time', '踩踩调度时间（HH:MM）', 'str'),
     ('pk.times_per_day', '每天 PK 次数（0 不 PK）', 'int'),
     ('pk.start_time', 'PK 调度时间（HH:MM）', 'str'),
+    ('friend_care.enabled', '启用好友护理', 'bool'),
+    ('friend_care.time_range', '好友护理时间段（HH:MM-HH:MM）', 'str'),
+    ('friend_care.friend_name', '护理好友名称', 'str'),
+    ('friend_care.method', '护理好友方式', ['一键护理', 'ocr检测']),
+    ('friend_care.interval_seconds', '好友护理调度间隔（秒）', 'int'),
+    ('hire_friend.enabled', '雇佣好友开关', 'bool'),
+    ('hire_friend.time_range', '雇佣好友时间段（HH:MM-HH:MM）', 'str'),
+    ('hire_friend.interval_seconds', '雇佣好友调度间隔（秒）', 'int'),
+    ('hire_friend.friend_name', '雇佣好友名称', 'str'),
+    ('hire_friend.times_per_day', '雇佣好友次数（0 不雇佣）', 'int'),
+    ('care.method', '护理方式', ['一键护理', 'ocr检测']),
     ('care.energy_threshold', '体力阈值', 'int'),
     ('care.clean_threshold', '清洁阈值', 'int'),
-    ('care.method', '护理方式', ['一键护理', 'ocr检测']),
     ('employed.action', '被雇佣后处理', ['等到25/75（小于45min）', '等到25/75', '立刻召回']),
-    ('recover.method', '异常处理方式', ['重启设备', '重启游戏']),
-    ('notify.win_toast', '失败告警 Windows 通知', 'bool'),
-    ('notify.onepush_config', '失败告警 OnePush 配置', 'text'),
+    ('employed.enabled', '被雇佣开关', 'bool'),
+    ('employed.time_range', '被雇佣时间段（HH:MM-HH:MM）', 'str'),
+    ('employed.interval_seconds', '被雇佣检查间隔（秒）', 'int'),
 ]
+
+# 调度选项卡的任务显示名（任务键定义在 src/config.py 的 TASK_KEYS）
+SCHEDULE_TASK_NAMES = {'care': '护理', 'adventure': '冒险', 'visit': '踩踩', 'pk': 'PK',
+                       'hire_friend': '雇佣好友', 'friend_care': '好友护理',
+                       'school': '学习', 'work': '打工'}
 
 
 def _scrcpy_title() -> str:
@@ -371,6 +423,22 @@ def device_aspect() -> tuple[int, int] | None:
         return None
 
 
+def _format_remaining(seconds: float) -> str:
+    """剩余秒数 -> 人性化倒计时：>1 天 xx天xx小时xx分钟，>1 小时 xx小时xx分钟，
+    >1 分钟 xx分钟xx秒，否则 xx秒。"""
+    secs = max(0, int(seconds))
+    days, secs = divmod(secs, 86400)
+    hours, secs = divmod(secs, 3600)
+    minutes, secs = divmod(secs, 60)
+    if days:
+        return f'{days}天{hours}小时{minutes}分钟'
+    if hours:
+        return f'{hours}小时{minutes}分钟'
+    if minutes:
+        return f'{minutes}分钟{secs}秒'
+    return f'{secs}秒'
+
+
 class MainWindow(QMainWindow):
     def __init__(self, emulator_mode: bool = False, emulator_device: str | None = None):
         super().__init__()
@@ -430,9 +498,17 @@ class MainWindow(QMainWindow):
         log_layout.addWidget(self.log_view)
 
         self.tabs = QTabWidget()
+        # 设置/任务选项卡的表单控件注册表（加载/保存共用，见 _build_settings_form）
+        self._setting_widgets: dict = {}
+        # 护理方式选"一键护理"时体力/清洁阈值用不上，隐藏对应表单行（label + 控件）
+        self._care_threshold_rows: dict = {}
+        # 模拟器相关设置行（label + 控件），非模拟器模式隐藏
+        self._emulator_rows: list = []
         self.tabs.addTab(log_page, '日志')
+        self.tabs.addTab(self._build_schedule_page(), '调度')
         self.stats_panel = StatsPanel()
         self.tabs.addTab(self.stats_panel, '统计')
+        self.tabs.addTab(self._build_tasks_page(), '任务')
         self.tabs.addTab(self._build_settings_page(), '设置')
         self.tabs.currentChanged.connect(self._on_tab_changed)
 
@@ -459,9 +535,9 @@ class MainWindow(QMainWindow):
         add_log_listener(self._log_queue.put)
         self._log_timer = QTimer(self, timeout=self._drain_logs)
         self._log_timer.start(100)
-        # 当日统计：每 5 秒从进度文件刷新一次
+        # 当日统计：每秒从进度文件刷新一次（状态条倒计时需要秒级刷新）
         self._stats_timer = QTimer(self, timeout=self._refresh_stats)
-        self._stats_timer.start(5000)
+        self._stats_timer.start(1000)
         self._refresh_stats()
 
         self._embed_tries = 0
@@ -557,21 +633,48 @@ class MainWindow(QMainWindow):
             secs = 0
         return f'运行时间 {secs // 3600}小时{(secs % 3600) // 60}分钟　'
 
+    def _queue_status_line(self) -> str:
+        """任务队列状态行：当前任务 / 下一任务 / 待执行数量 / 等待中数量
+        （调度器 task_queue 引擎每轮写 runs/queue_status.json，本方法每秒读一次）。"""
+        running = self._runner_proc is not None and self._runner_proc.poll() is None
+        if not running:
+            return '任务队列: 调度器未运行'
+        st = load_queue_status()
+        if not st:
+            return '任务队列: 暂无（调度器运行后自动更新）'
+        current = st.get('current') or (
+            f"{st['pending']}（进行中）" if st.get('pending') else '无')
+        nxt = st.get('next') or '无'
+        if st.get('next_at'):
+            nxt = f"{nxt} {st['next_at']}"
+            # 按时间戳算剩余时间（每次刷新重新算，自然形成倒计时）；
+            # 已过等待点、调度器还没写新一轮状态时会短暂为负，显示"xx前"
+            ts = st.get('next_ts') or 0
+            if ts:
+                delta = ts - time.time()
+                if delta >= 0:
+                    nxt += f'（{_format_remaining(delta)}后）'
+                else:
+                    nxt += f'（{_format_remaining(-delta)}前）'
+        return (f"任务队列: 当前任务 {current}　下一任务 {nxt}"
+                f"　待执行 {st.get('ready', 0)}　等待中 {st.get('waiting', 0)}")
+
     def _refresh_stats(self) -> None:
-        """刷新日志页顶部：运行时间 + 账号状态条（状态缓存，每账号一行）+ 各任务当日统计。"""
+        """刷新日志页顶部：运行时间 + 状态条（状态缓存）+ 任务队列状态行 + 各任务当日统计。"""
         try:
             run_prefix = self._run_time_prefix()
+            queue_line = self._queue_status_line()
             accounts = load_accounts()
             if accounts:
-                # 多账号兼容：缓存里每个账号一行（运行时间只在首行显示一次）
-                lines = []
-                for i, (_, st) in enumerate(accounts.items()):
-                    parts = '　'.join(f'{label} {st.get(key, "-")}'
-                                      for key, label in STATUS_FIELDS)
-                    lines.append(run_prefix + parts if i == 0 else parts)
-                self.status_label.setText('\n'.join(lines))
+                # 单条目（default；老缓存文件可能残留多账号条目，优先取 default，
+                # 调度器第一次写状态缓存时会自愈清掉残留条目）
+                st = accounts.get('default') or next(iter(accounts.values()))
+                parts = '　'.join(f'{label} {st.get(key, "-")}'
+                                  for key, label in STATUS_FIELDS)
+                self.status_label.setText(run_prefix + parts + '\n' + queue_line)
             else:
-                self.status_label.setText(run_prefix + '账号状态: 暂无（调度器运行后自动更新）')
+                self.status_label.setText(
+                    run_prefix + '账号状态: 暂无（调度器运行后自动更新）\n' + queue_line)
         except Exception as e:
             self.status_label.setText(f'账号状态读取失败: {e}')
         try:
@@ -582,36 +685,156 @@ class MainWindow(QMainWindow):
                 ('冒险', ADVENTURE_PROGRESS_FILE, cfg.adventure.times_per_day),
                 ('踩踩', VISIT_PROGRESS_FILE, cfg.visit.times_per_day),
                 ('PK', PK_PROGRESS_FILE, cfg.pk.times_per_day),
+                ('被雇佣', EMPLOYED_PROGRESS_FILE, 0),  # 无次数上限，只显示当日次数
             ]
-            accounts = known_accounts()
-            if not accounts:
-                accounts = ['']  # 未识别账号：读默认路径，单行显示（不带账号前缀）
-            lines = []
-            for name in accounts:
-                parts = []
-                for label, progress_file, limit in tasks:
-                    _, done, _ = load_progress(progress_file, quiet=True, account=name)
-                    parts.append(f'{label} {done}/{limit}' if limit else f'{label} {done}')
-                    if label == '踩踩':
-                        # 经验日常（好友照顾）当日是否完成：踩踩次数满但经验未完成时仍会继续
-                        _, exp_done, _ = load_exp_daily(quiet=True, account=name)
-                        parts.append('经验日常' + ('✓' if exp_done else '✗'))
-                lines.append('今日: ' + '　'.join(parts))
-            self.stats_label.setText('\n'.join(lines))
+            parts = []
+            for label, progress_file, limit in tasks:
+                _, done, _ = load_progress(progress_file, quiet=True)
+                parts.append(f'{label} {done}/{limit}' if limit else f'{label} {done}')
+                if label == '踩踩':
+                    # 经验日常（好友照顾）当日是否完成：踩踩次数满但经验未完成时仍会继续
+                    _, exp_done, _ = load_exp_daily(quiet=True)
+                    parts.append('经验日常' + ('✓' if exp_done else '✗'))
+            self.stats_label.setText('今日: ' + '　'.join(parts))
         except Exception as e:
             self.stats_label.setText(f'今日统计读取失败: {e}')
+        try:
+            self._refresh_schedule()
+        except Exception as e:
+            log(f'调度状态刷新失败: {e}')
 
-    # ---- 设置页面 ----
+    # ---- 调度页面 ----
 
-    def _build_settings_page(self) -> QWidget:
-        """设置页：表单编辑 config.yaml，字段失焦自动保存（保留注释）。"""
+    def _build_schedule_page(self) -> QWidget:
+        """调度选项卡：每个任务的 开关 / 执行间隔 / 启用时段 / 下次执行（只读表格，
+        每秒随 _refresh_stats 刷新；修改在"任务"选项卡的表单里做）。"""
         page = QWidget()
         layout = QVBoxLayout(page)
+        self.schedule_table = QTableWidget(0, 5)
+        self.schedule_table.setHorizontalHeaderLabels(
+            ['任务', '开关', '执行间隔', '启用时段', '下次执行'])
+        self.schedule_table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.Stretch)
+        self.schedule_table.verticalHeader().setVisible(False)
+        self.schedule_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.schedule_table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        layout.addWidget(self.schedule_table)
+        note = QLabel('每秒自动刷新；开关/间隔/启用时段在"任务"选项卡修改，'
+                      '"下次执行"由调度器（task_queue 引擎）运行时写入，调度器未运行显示 —')
+        note.setStyleSheet('color: #888; padding: 4px 2px;')
+        note.setWordWrap(True)
+        layout.addWidget(note)
+        return page
+
+    @staticmethod
+    def _fmt_seconds(seconds: int) -> str:
+        """间隔秒数人类可读：整小时/整分钟换算，否则显示秒。"""
+        seconds = int(seconds)
+        if seconds >= 3600 and seconds % 3600 == 0:
+            return f'{seconds // 3600} 小时'
+        if seconds >= 60 and seconds % 60 == 0:
+            return f'{seconds // 60} 分钟'
+        return f'{seconds} 秒'
+
+    @staticmethod
+    def _fmt_hhmm(value) -> str:
+        """HH:MM 显示：YAML 1.1 会把不带引号的 19:31 解析成分钟数 1171，转回 HH:MM。"""
+        if isinstance(value, int):
+            return f'{value // 60:02d}:{value % 60:02d}'
+        return str(value)
+
+    @classmethod
+    def _task_schedule_text(cls, key: str, item, cfg) -> str:
+        """调度选项卡"执行间隔"列：场景自带每日时间的任务（冒险/踩踩/PK）
+        显示"每日 HH:MM"（参考 qq-farm-copilot 的每日时间）；好友护理/雇佣好友显示
+        调度间隔；学习/打工由主任务组统一调度没有固定间隔；其余显示 tasks.<key> 的触发设置。"""
+        if key == 'adventure':
+            return f'每日 {cls._fmt_hhmm(cfg.adventure.start_time)}'
+        if key == 'visit':
+            return f'每日 {cls._fmt_hhmm(cfg.visit.start_time)}'
+        if key == 'pk':
+            return f'每日 {cls._fmt_hhmm(cfg.pk.start_time)}'
+        if key == 'hire_friend':
+            return f'每 {cls._fmt_seconds(cfg.hire_friend.interval_seconds)}'
+        if key == 'friend_care':
+            return f'每 {cls._fmt_seconds(cfg.friend_care.interval_seconds)}'
+        if key in ('school', 'work'):
+            return '—'  # 主任务组（冒险/学习/打工/雇佣好友互斥）按需统一调度
+        if item.trigger == 'daily':
+            return '每日 ' + ('/'.join(str(t) for t in item.daily_times) or '（未设时间点）')
+        return f'每 {cls._fmt_seconds(item.interval_seconds)}'
+
+    @staticmethod
+    def _task_range_text(key: str, item, cfg) -> str:
+        """调度选项卡"启用时段"列：好友护理/雇佣好友用场景的 time_range；全天简化为"全天"。"""
+        if key == 'friend_care':
+            return str(cfg.friend_care.time_range)
+        if key == 'hire_friend':
+            return str(cfg.hire_friend.time_range)
+        r = str(item.enabled_time_range)
+        return '全天' if r in ('00:00:00-23:59:59', '00:00-23:59') else r
+
+    def _refresh_schedule(self) -> None:
+        """刷新调度选项卡：开关/间隔/时段读 config.yaml，下次执行读
+        runs/queue_status.json 的 tasks 段（调度器每轮写入）。"""
+        cfg = load_config()
+        running = self._runner_proc is not None and self._runner_proc.poll() is None
+        states = (load_queue_status() or {}).get('tasks', {}) if running else {}
+        order = [k.strip() for k in cfg.tasks.order.split('>') if k.strip()]
+        # 表格顺序 = tasks.order，不在 order 里的任务排最后并标注不调度
+        rows = [k for k in order if k in SCHEDULE_TASK_NAMES]
+        rows += [k for k in TASK_KEYS if k not in rows]
+        self.schedule_table.setRowCount(len(rows))
+        now = datetime.now()
+        for row, key in enumerate(rows):
+            item = getattr(cfg.tasks, key)
+            in_order = key in order
+            if not in_order:
+                enabled_text, next_text = '不调度', '—'
+            elif not item.enabled:
+                enabled_text, next_text = '停用', '—'
+            else:
+                enabled_text = '启用'
+                state = states.get(key, {})
+                st, nxt = state.get('state', ''), state.get('next', '')
+                if not state:
+                    next_text = '—'  # 调度器未运行/legacy 引擎不写状态
+                elif st == 'ready':
+                    next_text = '待执行'
+                elif st == 'dead':
+                    next_text = f'明天 {nxt[11:16]}' if nxt else '当天已结束'
+                elif nxt:
+                    try:
+                        dt = datetime.strptime(nxt, '%Y-%m-%d %H:%M:%S')
+                        next_text = (dt.strftime('%H:%M:%S') if dt.date() == now.date()
+                                     else dt.strftime('%m-%d %H:%M'))
+                    except ValueError:
+                        next_text = nxt
+                else:
+                    next_text = '—'
+            values = (SCHEDULE_TASK_NAMES[key], enabled_text,
+                      self._task_schedule_text(key, item, cfg),
+                      self._task_range_text(key, item, cfg), next_text)
+            for col, text in enumerate(values):
+                cell = QTableWidgetItem(str(text))
+                if col == 1:
+                    # 开关列着色：启用绿 / 停用灰 / 不调度黄
+                    color = {'启用': '#7cfc90', '停用': '#999'}.get(text, '#ffd54f')
+                    cell.setForeground(QColor(color))
+                elif col == 4 and text == '待执行':
+                    cell.setForeground(QColor('#7cfc90'))
+                self.schedule_table.setItem(row, col, cell)
+
+    # ---- 设置/任务页面 ----
+
+    def _build_settings_form(self, fields: list) -> QWidget:
+        """按字段列表构建设置表单页（表单编辑 config.yaml，字段失焦自动保存，保留注释）。
+
+        设置选项卡和任务选项卡共用：控件都注册进 self._setting_widgets，
+        加载/保存逻辑（load_settings / save_field）不区分来自哪个选项卡。
+        """
         form = QFormLayout()
-        self._setting_widgets: dict = {}
-        # 护理方式选"一键护理"时体力/清洁阈值用不上，隐藏对应表单行（label + 控件）
-        self._care_threshold_rows: dict = {}
-        for key, label, kind in SETTING_FIELDS:
+        for key, label, kind in fields:
             if kind == 'int':
                 w = _NoWheelSpinBox()
                 # 体力/清洁是 0-100，其余次数/阈值放宽
@@ -666,23 +889,66 @@ class MainWindow(QMainWindow):
             form.addRow(label, w)
             if key in ('care.energy_threshold', 'care.clean_threshold'):
                 self._care_threshold_rows[key] = (form.labelForField(w), w)
+            if key in EMULATOR_SETTING_KEYS:
+                self._emulator_rows.append((form.labelForField(w), w))
+        return form
+
+    def _wrap_form_page(self, form: QFormLayout) -> QWidget:
+        """把表单包进滚动区域页。"""
+        form_widget = QWidget()
+        form_widget.setLayout(form)
+        scroll = QScrollArea()
+        scroll.setWidget(form_widget)
+        scroll.setWidgetResizable(True)
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.addWidget(scroll)
+        return page
+
+    def _build_tasks_page(self) -> QWidget:
+        """任务选项卡：任务队列执行顺序 + 各场景任务相关设置。"""
+        return self._wrap_form_page(self._build_settings_form(TASK_SETTING_FIELDS))
+
+    def _build_settings_page(self) -> QWidget:
+        """设置选项卡：连接/调度引擎/全局规则/告警等全局设置。"""
+        form = self._build_settings_form(SETTING_FIELDS)
+        if not self.emulator_mode:
+            # 非模拟器版：模拟器相关设置用不上，隐藏
+            for label, w in self._emulator_rows:
+                label.hide()
+                w.hide()
+        else:
+            self._fill_emulator_placeholders()
         # 通知测试：按当前 config.yaml 的 notify 配置发一条测试告警。
         # 点击按钮会先让输入框失焦（失焦自动保存），未落盘的修改也会先生效；
         # 各渠道发送结果见日志页
         test_btn = QPushButton('发送通知测试')
         test_btn.clicked.connect(self._test_notify)
         form.addRow('通知测试', test_btn)
-        form_widget = QWidget()
-        form_widget.setLayout(form)
-        scroll = QScrollArea()
-        scroll.setWidget(form_widget)
-        scroll.setWidgetResizable(True)
-        layout.addWidget(scroll)
-        return page
+        return self._wrap_form_page(form)
+
+    def _fill_emulator_placeholders(self) -> None:
+        """实例名称/安装路径留空自动探测：占位符显示按当前设备序列号探测到的值。"""
+        try:
+            from src.emulator import find_instance
+
+            serial = load_config().adb.device_serial
+            if not serial:
+                return
+            inst = find_instance(serial)
+            if inst is None:
+                return
+            for key, value in (('emulator.name', inst.name),
+                               ('emulator.path', str(inst.path))):
+                item = self._setting_widgets.get(key)
+                if item and value:
+                    item[0].setPlaceholderText(f'自动探测：{value}')
+        except Exception:
+            pass  # 占位符只是提示，探测失败不影响设置页
 
     def _on_tab_changed(self, index: int) -> None:
-        """切到设置页（第 3 个选项卡）时加载当前配置。"""
-        if index == 2:
+        """切到任务页（第 3 个）或设置页（第 4 个）时加载当前配置。"""
+        if index in (2, 3):
             self.load_settings()
 
     def _on_care_method_changed(self, method: str) -> None:
@@ -820,7 +1086,8 @@ class MainWindow(QMainWindow):
 
     def _fill_devices(self, combo: QComboBox, current: str) -> None:
         """枚举在线 adb 设备填充序列号下拉（可编辑，支持手动输入），
-        首项为 自动（第一台）。手动输入的序列号（不在线/模拟器地址）下拉里没有时写回编辑框。"""
+        首项为 自动（第一台）。手动输入的序列号（不在线/模拟器地址）下拉里没有时写回编辑框。
+        另外合并自动扫描到的 MuMu 模拟器实例 serial（离线也列出，供模拟器模式直接选）。"""
         combo.clear()
         combo.addItem('自动（第一台）', '')
         try:
@@ -832,6 +1099,14 @@ class MainWindow(QMainWindow):
                 combo.addItem(serial, serial)
         except Exception as e:
             log(f'枚举设备失败: {e}')
+        try:
+            from src.emulator import scan_serials
+
+            for serial in scan_serials():
+                if combo.findData(serial) < 0:
+                    combo.addItem(serial, serial)
+        except Exception as e:
+            log(f'扫描模拟器 serial 失败: {e}')
         idx = combo.findData(current)
         if idx >= 0:
             combo.setCurrentIndex(idx)
@@ -839,7 +1114,8 @@ class MainWindow(QMainWindow):
             combo.setEditText(current)  # 下拉里没有的自定义序列号，填回编辑框
 
     def save_field(self, key: str) -> None:
-        """字段失焦自动保存：校验 -> 写回 config.yaml -> 调度器在跑则延时重启生效。"""
+        """字段失焦自动保存：校验 -> 值没变直接返回 -> 写回 config.yaml ->
+        adb 连接字段重拉 scrcpy/防抖重启调度器，其余字段调度器每轮热加载生效。"""
         w, kind = self._setting_widgets[key]
         if kind == 'devices':
             # 可编辑下拉：用户手动输入不匹配任何下拉项时，Qt 仍保留上次选中项的
@@ -880,6 +1156,11 @@ class MainWindow(QMainWindow):
             w.blockSignals(False)
         try:
             data = settings_io.load_raw()  # 重新读取，避免覆盖其他字段
+            current = settings_io.get_value(data, key)
+            # 值没变（失焦/信号误触发，如切换选项卡导致的 editingFinished）：
+            # 不写文件、不打日志、不触发 scrcpy 重拉/调度器重启
+            if current is not None and current == fixed:
+                return
             settings_io.set_value(data, key, fixed)
             settings_io.save_raw(data)
         except Exception as e:
@@ -1161,9 +1442,11 @@ def main() -> None:
                     stream.reconfigure(encoding='utf-8', errors='replace')
                 except (OSError, ValueError):
                     pass  # windowed 下 stdout/stderr 可能是无效流
-        from scenarios.runner import Runner
+        from scenarios.runner import run_scheduler
 
-        Runner(use_opener=emulator, opener_serial=emulator_device).run()
+        # 与控制台入口一致：按 config.yaml 的 runner.engine 选调度引擎
+        # （之前这里写死 legacy Runner，导致打包版不写 runs/queue_status.json）
+        run_scheduler(use_opener=emulator, opener_serial=emulator_device)
         return
     _ensure_runtime_resources(emulator)
     app = QApplication(_strip_emulator_args(sys.argv))

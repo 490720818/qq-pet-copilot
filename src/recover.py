@@ -13,12 +13,19 @@ QQ 宠物入口的 content-desc 形如 "Q宠-1000004"，后缀数字随账号/�
 """
 from __future__ import annotations
 
+import subprocess
+import sys
 import time
 
 from .adb.device import Device
+from .config import EmulatorConfig
+from .emulator import find_instance, restart_instance
 from .progress import log
 from .opener import OpenPetPageError, open_pet_page
 from .u2dev import U2Device
+
+# Windows 下隐藏子进程的命令行窗口
+_NO_WINDOW = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
 
 QQ_PACKAGE = 'com.tencent.mobileqq'
 # QQ 宠物入口的 content-desc 前缀（完整值形如 "Q宠-1000004"，后缀数字不固定）
@@ -26,6 +33,8 @@ PET_ENTRY_DESC_PREFIX = 'Q宠-'
 
 BOOT_TIMEOUT = 180.0        # adb reboot 后等开机完成的超时（秒）
 BOOT_POLL_INTERVAL = 5.0
+EMULATOR_CMD_TIMEOUT = 180.0   # 模拟器重启命令的执行超时（秒）
+EMULATOR_BOOT_TIMEOUT = 300.0  # 模拟器重启后等开机完成的超时（秒，冷启动比手机慢）
 U2_CONNECT_TIMEOUT = 60.0   # 开机后等 atx-agent 就绪、u2 可连的超时（秒）
 U2_CONNECT_INTERVAL = 5.0
 PET_ENTRY_TIMEOUT = 120.0   # 启动 QQ 后等 Q宠-* 入口出现的超时（秒）
@@ -36,11 +45,17 @@ PET_PAGE_POLL_INTERVAL = 3.0
 
 
 def reenter_pet(adb: Device, method: str = "重启设备",
-                use_opener: bool = False, opener_serial: str | None = None) -> U2Device:
+                use_opener: bool = False, opener_serial: str | None = None,
+                emulator_restart_cmd: str = "",
+                emulator_cfg: "EmulatorConfig | None" = None) -> U2Device:
     """按 recover.method 恢复：重启设备 或 重启游戏，再进宠物页面，返回新 U2Device。
 
     模拟器模式（use_opener=True）：QQ 搜索卡片的宠物入口是空的（点不到 Q宠-*），
     改用 qqpet-module-opener（frida 注入）打开宠物主页，由 opener 负责启动 QQ。
+    模拟器不支持 adb reboot（MuMu 会把 adb 服务卡死）："重启设备"分支按优先级——
+    配置的 emulator_restart_cmd > 自动探测模拟器实例分步停/启（src/emulator.py，
+    serial 匹配到多个实例时用 emulator_cfg 的 类型/实例名称/安装路径 消歧）>
+    回退 adb reboot（MuMu 会卡死 adb 服务，仅兜底）。
     其余场景点完入口会等宠物主页（"宠物状态"容器）真的加载出来；没出来重新点，
     最多 PET_ENTRY_CLICK_TRIES 次。失败抛异常，由调用方决定再次恢复或放弃。
     """
@@ -48,6 +63,13 @@ def reenter_pet(adb: Device, method: str = "重启设备",
         # 只重开 QQ，不重启设备（快；设备级卡死/u2 挂掉时治不了）
         log('异常恢复：重启 QQ 游戏（不重启设备）...')
         adb.force_stop_app(QQ_PACKAGE)
+        dev = _connect_u2(adb)
+    elif use_opener and emulator_restart_cmd.strip():
+        # 模拟器不支持 adb reboot：执行配置的重启命令重启模拟器整机
+        _restart_emulator(emulator_restart_cmd.strip(), adb)
+        dev = _connect_u2(adb)
+    elif use_opener and _restart_emulator_auto(adb, emulator_cfg):
+        # 自动探测到 MuMu 实例：分步停/启（shutdown -> launch）
         dev = _connect_u2(adb)
     else:
         log('异常恢复：adb reboot 重启设备...')
@@ -72,6 +94,61 @@ def reenter_pet(adb: Device, method: str = "重启设备",
             return dev
         log(f'点击入口后宠物主页未出现，重试点击 ({attempt}/{PET_ENTRY_CLICK_TRIES})')
     raise RuntimeError(f'点击 {PET_ENTRY_CLICK_TRIES} 次宠物入口仍未进入宠物页面')
+
+
+def _restart_emulator(command: str, adb: Device) -> None:
+    """执行配置的模拟器重启命令（MuMu 等模拟器不支持 adb reboot——会把 adb 服务
+    卡死），然后等 adb 重新认出设备并开机完成。
+
+    命令由用户在 config.yaml 的 recover.emulator_restart_cmd 配置（如 MuMu 12：
+    MuMuManager.exe control -v 0 restart）。
+    """
+    log(f'异常恢复：重启模拟器（{command}）...')
+    try:
+        proc = subprocess.run(command, shell=True, capture_output=True,
+                              timeout=EMULATOR_CMD_TIMEOUT,
+                              creationflags=_NO_WINDOW)
+        if proc.returncode != 0:
+            log(f'模拟器重启命令返回码 {proc.returncode}: '
+                f'{proc.stderr.decode("utf-8", "replace").strip()}')
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(
+            f'模拟器重启命令超时（{EMULATOR_CMD_TIMEOUT:.0f}s）: {command}') from None
+    _adb_back_online(adb)
+
+
+def _restart_emulator_auto(adb: Device,
+                           emulator_cfg: "EmulatorConfig | None" = None) -> bool:
+    """自动探测当前设备所属的模拟器实例并分步停/启（src/emulator.py：
+    stop -> 等进程退出 -> start），探测不到返回 False（调用方回退 adb reboot）。"""
+    try:
+        inst = find_instance(
+            adb.serial,
+            emulator=emulator_cfg.type if emulator_cfg else '',
+            name=emulator_cfg.name if emulator_cfg else '',
+            path=emulator_cfg.path if emulator_cfg else '')
+    except Exception as e:
+        log(f'扫描模拟器实例失败: {e}')
+        return False
+    if inst is None:
+        log(f'未探测到 {adb.serial} 对应的模拟器实例')
+        return False
+    log(f'异常恢复：重启模拟器实例 {inst.type} {inst.name}（分步停/启）...')
+    restart_instance(inst)
+    _adb_back_online(adb)
+    return True
+
+
+def _adb_back_online(adb: Device) -> None:
+    """模拟器重启后恢复 adb：重启 adb 服务（之前的 adb reboot 可能已把服务卡死）、
+    重新 connect 远程端口、轮询等开机完成。"""
+    subprocess.run([adb.adb, 'kill-server'], capture_output=True, timeout=30,
+                   creationflags=_NO_WINDOW, check=False)
+    subprocess.run([adb.adb, 'start-server'], capture_output=True, timeout=30,
+                   creationflags=_NO_WINDOW, check=False)
+    adb.connect_remote()
+    adb.wait_boot_completed(EMULATOR_BOOT_TIMEOUT, BOOT_POLL_INTERVAL)
+    log('模拟器重启完成，已开机')
 
 
 def _click_pet_entry(dev: U2Device) -> None:

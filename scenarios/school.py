@@ -203,6 +203,14 @@ class SchoolScenario(DeviceScenario):
         self.select_course()
         self.click_until_gone_or_see('school_start', 'school_in', '开始学习')
         log('已进入课堂，等待下课...')
+        if self.defer_wait:
+            # 延时收尾：进行中登记 pending（到点由调度器 finish_pending 收尾）或
+            # 已结束原地收尾，然后回主页面；计数统一走 on_finish（count_cross），
+            # 本地 learned 不再自增，防止重复计数
+            self.defer_busy_end('school_in', 'school_end',
+                                lambda: count_cross('school'), '上课', encourage=True)
+            self.ensure_main_page()
+            return False
         return self.wait_class_end()
 
     def run(self, max_times: int | None = None, max_rounds: int = 0) -> bool:
@@ -233,6 +241,11 @@ class SchoolScenario(DeviceScenario):
                         return True
                     log('毕业处理完成，重新进学校')
                     continue
+                if self.pending is not None:
+                    # 延时收尾模式：出门检测到的进行中活动已登记 pending，计数由
+                    # finish_pending 收尾时统一进行（on_finish），本地不再计数，
+                    # 本轮直接结束
+                    return True
                 if finished == 'school':
                     # 出门时等完了一节上次未结束的课，计入当天次数
                     learned += 1
@@ -252,6 +265,9 @@ class SchoolScenario(DeviceScenario):
                 log('本轮结束，回主页面重新开始')
                 continue
             cont = self.attend_class()
+            if self.defer_wait:
+                # 延时收尾模式：计数在 pending 收尾时统一进行，本轮直接结束
+                return True
             learned += 1
             save_progress(PROGRESS_FILE, today, learned, history)
             log(f'已完成第 {learned} 次学习' + (f' / 目标 {max_times} 次' if max_times else ''))

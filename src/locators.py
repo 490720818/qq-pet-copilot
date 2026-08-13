@@ -145,7 +145,8 @@ LOCATORS: dict[str, dict] = {
     # 此时点"关闭"再点两次 back 回主页面，重新进学校选下一阶段课程
     'school_graduated': {'xpath': ['//*[@content-desc="去找同学玩"]']},
     'school_graduate_close': {'xpath': ['//*[@content-desc="关闭"]']},
-    # 学习等待期间的"鼓励宠物"按钮（点击提升心情/互动收益，wait_end(encourage=True) 用）。
+    # 学习/打工进行中页面的"鼓励宠物"按钮（点击提升心情/互动收益；结算页没有该按钮，
+    # 非阻塞调度在登记 pending 离开进行中页面前就地快速点击，见 scenario._encourage_burst）。
     # xpath 优先：复用 wait_end 已有的控件树快照，避免 u2 选择器再实时查一次
     'encourage_pet': {'xpath': ['//*[@content-desc="鼓励宠物"]']},
 
@@ -238,9 +239,15 @@ LOCATORS: dict[str, dict] = {
     'pk_end': {'xpath': ['//*[@content-desc="分享"]']},
     'pk_again': {'xpath': ['//*[@content-desc="再来一局"]']},
 
+    # ---- 好友雇佣（好友家的雇佣按钮） ----
+    # 范围内带雇佣剩余 CD 倒计时（如 28:05），hire_friend.py 裁这块 OCR 判倒计时
+    'hire': {'xpath': ['//*[@content-desc="hire"]']},
+
     # ---- 照顾 ----
     # 宠物状态面板区域：care.read_status 只裁这块做 OCR（整屏/半屏太慢）；
-    # 位置固定，cache 命中一次后 see_bounds() 直接复用 bounds
+    # 位置固定，cache 命中一次后 see_bounds() 直接复用 bounds。
+    # 注意：该深层结构 xpath 在好友宠物页可能误命中底部好友列表栏，
+    # read_status 有 OCR 结果校验（一个状态关键词都没有则回退上半屏重识别）兜底
     'status_region': {
         'cache': True,
         'xpath': ['//*[@resource-id="com.tencent.mobileqq:id/ckj"]'
@@ -256,6 +263,19 @@ LOCATORS: dict[str, dict] = {
     'care_region': {'xpath': ['//*[starts-with(@content-desc, "one_click_care")]/parent::*']},
     # 一键护理后的支付确认按钮：点击护理按钮后若弹出"支付并护理"，必须点掉才完成护理
     'one_click_pay': {'xpath': ['//*[@content-desc="支付并护理"]']},
+    # 饼干不足（无 feed_10）时的金币兑换食物：喂食面板点"兑换食物" ->
+    # 兑换弹窗数量输入框（//*[@text="5"]，set_text 改 99，见 care.py 的 _exchange_food）
+    # -> 点"支付 xx 金币"（金额不固定：前缀"支付" + 含"金币"）。
+    # 页面有两个"兑换食物"节点，先匹配到的那个 bounds 虚高（y 917~1280，可见内容
+    # 只有顶部 917~996）：直接点节点中心（y≈1098 的空白区）点不开弹窗，
+    # 改为点其第一个子 ImageView（可见按钮图标中心，实测可点开）
+    'exchange_food': {'xpath': ['//*[@content-desc="兑换食物"]/android.widget.ImageView[1]']},
+    # 香皂不足（无 shower_10）时的金币购买洗澡道具：洗澡面板点"购买洗澡道具" ->
+    # 购买弹窗数量输入框（//*[@text="10"]，set_text 改 99，见 care.py 的 _buy_soap）
+    # -> 点"支付 xx 金币"（与兑换食物弹窗相同，共用 exchange_pay）
+    'buy_soap': {'xpath': ['//*[@content-desc="购买洗澡道具"]/android.widget.ImageView[1]']},
+    'exchange_pay': {'xpath': ['//*[starts-with(@content-desc, "支付")'
+                               ' and contains(@content-desc, "金币")]']},
     'feed_10': {
         'xpath': ['//androidx.recyclerview.widget.RecyclerView'
                   '/android.widget.FrameLayout[1]/android.widget.FrameLayout[1]'],

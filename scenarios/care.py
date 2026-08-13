@@ -3,7 +3,8 @@
 流程（主页面操作，u2 控件/OCR 文字定位，坐标为 720x1280 参考值自动换算）：
 1. 点击 pet_status（宠物状态按钮，xpath 定位）展开宠物状态
 2. OCR 状态面板区域（xpath 定范围）识别 体力/清洁/心情 三个数值及 账号名称/宠物名称
-3. 体力低于阈值 -> 喂食：点 feed -> 反复点 feed_10 并复测体力，直到达标
+3. 体力低于阈值 -> 喂食：点 feed -> 反复点 feed_10 并复测体力，直到达标；
+   没有 feed_10（饼干不足）时先点"兑换食物"金币兑换 99 个（弹窗数量改 99 -> 支付）再继续
 4. 清洁低于阈值 -> 洗澡：点 shower -> 按住肥皂（shower_10 控件中心）不松手
    （d.touch down/move/up）拖到 (50%, 40%)，再在 (50%, 67%) 和 (50%, 40%)
    之间来回搓洗，直到清洁达标后抬手（点位按当前分辨率百分比换算）
@@ -37,8 +38,14 @@ SCRUB_BOTTOM_PCT = (0.5, 0.67)  # 搓洗下端点 / 抬手点
 STATUS_ROW_TOL = 40  # 名字右侧同行数字的纵向容差
 STATUS_COL_TOL = 80  # 名字下方同列数字的横向容差
 FEED_RESULT_WAIT = 1.5  # 喂食后等数值刷新的时间（秒）
+FEED_PANEL_RETRIES = 4  # 点 feed 后等喂食面板加载（feed_10 或"兑换食物"出现）的重试次数
 MAX_FEED_ATTEMPTS = 10    # 喂食最多次数，超过认为异常
+EXCHANGE_FOOD_COUNT = 99  # 饼干不足时金币兑换食物的数量（弹窗输入框默认 5）
+EXCHANGE_POPUP_RETRIES = 3  # 等兑换食物弹窗（数量输入框）出现的重试次数
 MAX_SHOWER_ATTEMPTS = 25  # 搓洗最多回合数，超过认为异常
+# 清洁连续多少回合不提升判定按压失效（minitouch 会话静默中断，touch_move 全丢，
+# 肥皂停在原地）：抬手重按肥皂自愈。正常上涨约每 2 回合 +10，取 4 留余量
+SCRUB_STALL_REPRESS = 4
 STATUS_READ_RETRIES = 4   # 状态面板数值是异步加载的，刚展开可能只有账号/宠物名，重试读
 ONE_CLICK_PAY_RETRIES = 2 # 点击一键护理后确认"支付并护理"弹窗的重试次数（每次等 1 秒）
 
@@ -162,6 +169,13 @@ class CareScenario(DeviceScenario):
             log('未定位到宠物状态区域，回退上半屏 OCR')
             region = screen[: screen.shape[0] // 2]
         results = ocr_texts(region)
+        # status_region 的深层结构 xpath 在好友宠物页会误命中底部好友列表栏
+        # （bounds 缓存让错误整个进程粘住）：区域 OCR 一个状态关键词都没有
+        # 就认为定位错了，回退上半屏重新 OCR
+        if not any(name in text for text, *_ in results for name in STATUS_NAMES):
+            log('状态区域未识别到状态数值，回退上半屏 OCR')
+            region = screen[: screen.shape[0] // 2]
+            results = ocr_texts(region)
         log('状态区域 OCR: '
             + (', '.join(f'{t!r}@({x},{y})' for t, x, y, _ in results) or '无'))
         # 不做放大：容差按当前屏宽相对 720 参考分辨率等比缩放
@@ -228,18 +242,88 @@ class CareScenario(DeviceScenario):
 
     # ---- 照顾动作 ----
 
+    def _pay_buy_popup(self, amount_default: str) -> None:
+        """购买弹窗（兑换食物/购买洗澡道具点开后的弹窗）通用流程：
+        数量输入框（默认 amount_default）改为 EXCHANGE_FOOD_COUNT ->
+        点"支付 xx 金币"（两个弹窗的支付按钮相同，共用 exchange_pay），
+        弹窗关闭后由调用方重新找物品按钮继续护理。"""
+        # 数量输入框有默认值，改成 EXCHANGE_FOOD_COUNT。
+        # set_text 需要控件句柄（LOCATORS 的 see() 只给坐标），直接用 u2 xpath
+        amount = self.dev.d.xpath(f'//*[@text="{amount_default}"]')
+        for attempt in range(1, EXCHANGE_POPUP_RETRIES + 1):
+            if amount.exists:
+                break
+            log(f'等待购买弹窗 ({attempt}/{EXCHANGE_POPUP_RETRIES})')
+            time.sleep(CLICK_INTERVAL)
+        else:
+            raise RuntimeError(f'购买弹窗未找到数量输入框（text="{amount_default}"）')
+        amount.set_text(str(EXCHANGE_FOOD_COUNT))
+        time.sleep(0.5)  # 等"支付 xx 金币"按钮金额随数量刷新
+        pay = self.see('exchange_pay')
+        if not pay:
+            raise RuntimeError('购买弹窗未找到"支付 xx 金币"按钮')
+        log(f'购买 {EXCHANGE_FOOD_COUNT} 个，点击支付 ({pay[0]}, {pay[1]})')
+        self.click(pay[0], pay[1])
+        time.sleep(CLICK_INTERVAL)
+
+    def _exchange_food(self, source=None) -> None:
+        """饼干不足（无 feed_10）时用金币兑换食物：同一控件树里点"兑换食物" ->
+        兑换弹窗数量输入框（默认 5）改 99 -> 支付，回喂食面板后继续喂食。"""
+        hit = self.see('exchange_food', source=source)
+        if not hit:
+            raise RuntimeError('喂食界面未找到 feed_10 按钮，也没有"兑换食物"')
+        log('未找到 feed_10（饼干不足），点击"兑换食物"')
+        self.click(hit[0], hit[1])
+        time.sleep(CLICK_INTERVAL)
+        self._pay_buy_popup('5')
+
+    def _buy_soap(self, source=None) -> None:
+        """香皂不足（无 shower_10）时用金币购买洗澡道具：同一控件树里点"购买洗澡道具" ->
+        购买弹窗数量输入框（默认 10）改 99 -> 支付，回洗澡面板后继续洗澡。"""
+        hit = self.see('buy_soap', source=source)
+        if not hit:
+            raise RuntimeError('洗澡界面未找到 shower_10 肥皂，也没有"购买洗澡道具"')
+        log('未找到 shower_10（香皂不足），点击"购买洗澡道具"')
+        self.click(hit[0], hit[1])
+        time.sleep(CLICK_INTERVAL)
+        self._pay_buy_popup('10')
+
     def feed(self, source=None) -> None:
-        """喂食：点 feed -> 反复点 feed_10 并复测体力，直到达到阈值。"""
+        """喂食：点 feed -> 反复点 feed_10 并复测体力，直到达到阈值。
+        没有 feed_10（饼干不足）时先 _exchange_food() 金币兑换食物再继续；
+        支付后面板若被收起则原地重新点 feed 打开（不回主页面重进）。"""
         hit = self.see('feed', source=source)
         if not hit:
             raise RuntimeError('未找到 feed 喂食按钮')
         self.click(hit[0], hit[1])
         time.sleep(CLICK_INTERVAL)
         source = self.dev.hierarchy()
+        # 好友家页面偶发卡顿，喂食面板加载慢：等 feed_10 或"兑换食物"出现再进喂食循环
+        for attempt in range(1, FEED_PANEL_RETRIES + 1):
+            if self.see('feed_10', source=source) or self.see('exchange_food', source=source):
+                break
+            log(f'等待喂食面板加载 ({attempt}/{FEED_PANEL_RETRIES})')
+            time.sleep(CLICK_INTERVAL)
+            source = self.dev.hierarchy()
+        exchanged = False  # 每次喂食最多兑换一次（99 个足够），防兑换后仍无 feed_10 死循环
         for attempt in range(1, MAX_FEED_ATTEMPTS + 1):
             btn = self.see('feed_10', source=source)
             if not btn:
-                raise RuntimeError('喂食界面未找到 feed_10 按钮')
+                if exchanged:
+                    raise RuntimeError('兑换食物后仍未找到 feed_10 按钮')
+                self._exchange_food(source)
+                exchanged = True
+                source = self.dev.hierarchy()
+                if not self.see('feed_10', source=source):
+                    # 支付后喂食面板可能被收起（回宠物页）：原地重新点 feed 打开，
+                    # 不抛异常——异常会让调度器回主页面重进好友家
+                    feed = self.see('feed', source=source)
+                    if feed:
+                        log('兑换后喂食面板已关闭，原地重新打开')
+                        self.click(feed[0], feed[1])
+                        time.sleep(CLICK_INTERVAL)
+                        source = self.dev.hierarchy()
+                continue
             self.click(btn[0], btn[1])
             time.sleep(FEED_RESULT_WAIT)
             screen, source = self.snapshot()
@@ -262,10 +346,14 @@ class CareScenario(DeviceScenario):
     def shower(self, source=None) -> None:
         """洗澡：点 shower -> 按住肥皂（shower_10 控件中心）不松手拖到
         (50%, 40%)，再在 (50%, 67%) 和 (50%, 40%) 之间来回搓洗，直到清洁达到阈值后抬手。
+        没有 shower_10（香皂不足）时先 _buy_soap() 金币购买洗澡道具再继续；
+        支付后面板若被收起则原地重新点 shower 打开（不回主页面重进）。
 
         用 u2 的 d.touch.down/move/up 分步注入，整个搓洗过程不抬手
         （普通 swipe 每次都会抬手，游戏不累计清洁度）。
         搓洗点位按当前分辨率百分比换算（SCRUB_TOP_PCT / SCRUB_BOTTOM_PCT）。
+        清洁连续 SCRUB_STALL_REPRESS 回合不提升判定按压失效（模拟器上 minitouch
+        会话会静默中断，之后 touch_move 全丢、肥皂停在原地），自动抬手重按自愈。
         """
         hit = self.see('shower', source=source)
         if not hit:
@@ -275,7 +363,22 @@ class CareScenario(DeviceScenario):
         source = self.dev.hierarchy()
         soap = self.see('shower_10', source=source)
         if not soap:
-            raise RuntimeError('洗澡界面未找到 shower_10 肥皂')
+            # 香皂不足：金币购买一次（99 个足够，只买一次防死循环）后重新找
+            self._buy_soap(source)
+            source = self.dev.hierarchy()
+            soap = self.see('shower_10', source=source)
+            if not soap:
+                # 支付后洗澡面板可能被收起（回宠物页）：原地重新点 shower 打开，
+                # 不抛异常——异常会让调度器回主页面重进好友家
+                hit = self.see('shower', source=source)
+                if hit:
+                    log('购买后洗澡面板已关闭，原地重新打开')
+                    self.click(hit[0], hit[1])
+                    time.sleep(CLICK_INTERVAL)
+                    source = self.dev.hierarchy()
+                    soap = self.see('shower_10', source=source)
+            if not soap:
+                raise RuntimeError('购买洗澡道具后仍未找到 shower_10 肥皂')
         w, h = self.dev.window_size()
         top = (round(w * SCRUB_TOP_PCT[0]), round(h * SCRUB_TOP_PCT[1]))
         bottom = (round(w * SCRUB_BOTTOM_PCT[0]), round(h * SCRUB_BOTTOM_PCT[1]))
@@ -284,6 +387,8 @@ class CareScenario(DeviceScenario):
         try:
             # 从肥皂慢速拖到搓洗上端点进入搓洗
             self.scrub_path(soap[0], soap[1], *top)
+            last_clean: int | None = None
+            stall = 0  # 清洁连续不提升的回合数
             for attempt in range(1, MAX_SHOWER_ATTEMPTS + 1):
                 # 在 (50%, 67%) 和 (50%, 40%) 之间来回拖（截图复测不影响按压）
                 self.scrub_path(*bottom, *top)
@@ -294,6 +399,25 @@ class CareScenario(DeviceScenario):
                     log(f'清洁已达标（>= {self.clean_threshold}）')
                     self.cache_care_items('shower_10', clean=clean)
                     return
+                # 按压失效检测：清洁连续 SCRUB_STALL_REPRESS 回合不提升，
+                # 说明 minitouch 会话静默中断（touch_move 全丢，肥皂停在原地），
+                # 抬手重按肥皂自愈；识别不到（None）不计入停滞
+                if clean is not None and last_clean is not None and clean <= last_clean:
+                    stall += 1
+                elif clean is not None:
+                    stall = 0
+                if clean is not None:
+                    last_clean = clean
+                if stall >= SCRUB_STALL_REPRESS:
+                    log(f'清洁连续 {stall} 回合未提升，按压可能失效，抬手重按肥皂')
+                    self.dev.touch_up(*bottom)
+                    time.sleep(CLICK_INTERVAL)
+                    soap = self.see('shower_10')
+                    if not soap:
+                        raise RuntimeError('重按肥皂时未找到 shower_10')
+                    self.dev.touch_down(soap[0], soap[1])
+                    self.scrub_path(soap[0], soap[1], *top)
+                    stall = 0
             raise RuntimeError(f'搓洗 {MAX_SHOWER_ATTEMPTS} 回合后清洁仍未达到 {self.clean_threshold}')
         finally:
             self.dev.touch_up(*bottom)
@@ -371,8 +495,8 @@ class CareScenario(DeviceScenario):
         log(f'宠物状态: 体力={status.get("体力")} '
             f'清洁={status.get("清洁")} 心情={status.get("心情")} '
             f'账号名称={status.get("账号名称")} 宠物名称={status.get("宠物名称")}')
-        # 写状态缓存（GUI 日志页顶部状态条按账号显示）
-        update_status(status.get('账号名称'),
+        # 写状态缓存（GUI 日志页顶部状态条显示；已取消多账号区分，固定 default 条目）
+        update_status(None,
                       pet_name=status.get('宠物名称'),
                       energy=status.get('体力'),
                       clean=status.get('清洁'),

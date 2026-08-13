@@ -7,7 +7,7 @@ import yaml
 from ruamel.yaml import YAML
 from ruamel.yaml.scalarstring import DoubleQuotedScalarString, LiteralScalarString
 
-from .config import CONFIG_FILE
+from .config import CONFIG_FILE, MAIN_TASK_KEYS, TASK_KEYS
 
 _yaml = YAML()  # 默认 round-trip，保留注释
 
@@ -15,6 +15,9 @@ _yaml = YAML()  # 默认 round-trip，保留注释
 DEFAULTS = {
     'adb.path': 'resources/scrcpy-win64/adb.exe',
     'adb.device_serial': '',
+    'emulator.type': 'auto',
+    'emulator.name': '',
+    'emulator.path': '',
     'school.attribute': '力量',
     'school.times_per_day': 0,
     'work.location': '风铃旅社',
@@ -25,6 +28,7 @@ DEFAULTS = {
     'schedule.work_factor': 45,
     'schedule.daily_point_limit': 480,
     'schedule.check_interval': 8,
+    'schedule.encourage_times': 10,
     'adventure.times_per_day': 1,
     'adventure.start_time': '08:00',
     'adventure.skip_bad_weather': False,
@@ -33,10 +37,27 @@ DEFAULTS = {
     'visit.start_time': '00:01',
     'pk.times_per_day': 15,
     'pk.start_time': '00:01',
+    'friend_care.enabled': False,
+    'friend_care.time_range': '14:00-19:30',
+    'friend_care.friend_name': '',
+    'friend_care.method': 'ocr检测',
+    'friend_care.interval_seconds': 60,
+    'hire_friend.enabled': False,
+    'hire_friend.time_range': '19:31-23:59',
+    'hire_friend.interval_seconds': 5,
+    'hire_friend.friend_name': '',
+    'hire_friend.times_per_day': 8,
+    'runner.engine': 'task_queue',
+    'tasks.order': 'care>school>friend_care>hire_friend>adventure>visit>pk>work',
+    'tasks.main_order': 'school>hire_friend>adventure>work',
     'care.energy_threshold': 60,
     'care.clean_threshold': 60,
     'care.method': '一键护理',
+    'employed.enabled': False,
+    'employed.time_range': '19:31-23:59',
+    'employed.interval_seconds': 60,
     'employed.action': '等到25/75（小于45min）',
+    'recover.emulator_restart_cmd': '',
     'notify.win_toast': True,
     'notify.onepush_config': '',
 }
@@ -56,12 +77,49 @@ def validate_field(key: str, value):
         return (True, value) if str(value).strip() else (False, default)
     if key == 'school.attribute':
         return (True, value) if value in ('力量', '智力', '魅力') else (False, default)
-    if key == 'care.method':
+    if key == 'care.method' or key == 'friend_care.method':
         return (True, value) if value in ('ocr检测', '一键护理') else (False, default)
+    if key in ('friend_care.time_range', 'employed.time_range', 'hire_friend.time_range'):
+        try:
+            start_s, end_s = str(value).split('-', 1)
+            datetime.strptime(start_s.strip(), '%H:%M')
+            datetime.strptime(end_s.strip(), '%H:%M')
+            # 必须带引号写回：9:00 不带引号会被 YAML 1.1 解析成整数 540
+            return True, DoubleQuotedScalarString(str(value))
+        except ValueError:
+            return False, DoubleQuotedScalarString(str(default))
+    if key == 'friend_care.friend_name' or key == 'hire_friend.friend_name':
+        return True, str(value).strip()
+    if key in ('friend_care.enabled', 'hire_friend.enabled', 'employed.enabled'):
+        return (True, value) if isinstance(value, bool) else (False, default)
+    if key == 'runner.engine':
+        return (True, value) if value in ('task_queue', 'legacy') else (False, default)
+    if key == 'emulator.type':
+        from .emulator import EMULATOR_TYPES
+        return (True, value) if value in ('auto', *EMULATOR_TYPES) else (False, default)
+    if key in ('emulator.name', 'emulator.path'):
+        return True, str(value).strip()
+    if key == 'tasks.order':
+        keys = [k.strip() for k in str(value).split('>') if k.strip()]
+        if keys and all(k in TASK_KEYS for k in keys):
+            return True, '>'.join(keys)
+        return False, default
+    if key == 'tasks.main_order':
+        # 主任务组内优先级：只需要求非空且都是主任务名；没列出的按默认顺序兜底
+        keys = [k.strip() for k in str(value).split('>') if k.strip()]
+        if keys and all(k in MAIN_TASK_KEYS for k in keys):
+            return True, '>'.join(keys)
+        return False, default
     if key in ('care.energy_threshold', 'care.clean_threshold'):
         return (True, value) if 0 <= int(value) <= 100 else (False, default)
     if key == 'schedule.check_interval':
         # 检查间隔至少 1 秒（0 会变成无间隔死循环）
+        try:
+            return (True, value) if int(value) >= 1 else (False, default)
+        except (TypeError, ValueError):
+            return False, default
+    if key in ('employed.interval_seconds', 'hire_friend.interval_seconds'):
+        # 调度间隔至少 1 秒（0 会变成无间隔连续调度）
         try:
             return (True, value) if int(value) >= 1 else (False, default)
         except (TypeError, ValueError):

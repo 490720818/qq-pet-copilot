@@ -81,11 +81,23 @@ class AdventureScenario(DeviceScenario):
     def do_adventure(self) -> None:
         """准备页面 -> 开始冒险 -> 等待 adventure_end -> 点 quit 退出。
         开关开启时开始后先检测"天色不对"：命中则召回并确认，不再等冒险结束
-        （调用方照常计入一次冒险）。"""
+        （调用方照常计入一次冒险）。
+        延时收尾模式（defer_wait）：进行中登记 pending 后回主页面，到点由
+        调度器 finish_pending 收尾计数；召回同步完成则立即 count_cross 计数。"""
         self.click_until_gone_or_see('adventure_start', 'adventure_in', '开始冒险')
         if self.skip_bad_weather and self.recall_bad_weather():
+            if self.defer_wait:
+                # 召回即同步完成：立即计数（计数统一走 count_cross，
+                # 由 run() 刷新本地计数判断上限）
+                count_cross('adventure')
             return
         log('已开始冒险，等待结束...')
+        if self.defer_wait:
+            # 延时收尾：登记 pending（到点由调度器 finish_pending 收尾计数）后回主页面
+            self.defer_busy_end('adventure_in', 'adventure_end',
+                                lambda: count_cross('adventure'), '冒险')
+            self.ensure_main_page()
+            return
         self.wait_end('adventure_in', 'adventure_end')
 
     def recall_bad_weather(self) -> bool:
@@ -172,6 +184,10 @@ class AdventureScenario(DeviceScenario):
             self.ensure_main_page()
             finished = self.goto_adventure()
             if finished:
+                if self.pending is not None:
+                    # 延时收尾模式：出门检测到的进行中活动已登记 pending，计数由
+                    # finish_pending 收尾时统一进行，本轮直接结束
+                    return True
                 if count_finished(finished):
                     log('达到当天冒险次数，结束')
                     return True
@@ -182,11 +198,22 @@ class AdventureScenario(DeviceScenario):
             # 连跑 batch 次冒险，期间不回主页面
             for i in range(batch):
                 self.do_adventure()
-                # 检测到 adventure_end 点完 quit 就计数
-                done += 1
-                save_progress(PROGRESS_FILE, today, done, history)
-                log(f'已完成第 {done} 次冒险'
-                    + (f' / 目标 {max_times} 次' if max_times else ''))
+                if self.defer_wait:
+                    if self.pending is not None:
+                        # 冒险进行中已登记 pending，计数由 finish_pending 收尾时
+                        # 统一进行，本轮（本批）直接结束
+                        return True
+                    # 召回同步完成（skip_bad_weather）：count_cross 已计数，
+                    # 刷新本地计数判断上限
+                    today, done, history = load_progress(PROGRESS_FILE)
+                    log(f'已完成第 {done} 次冒险'
+                        + (f' / 目标 {max_times} 次' if max_times else ''))
+                else:
+                    # 检测到 adventure_end 点完 quit 就计数
+                    done += 1
+                    save_progress(PROGRESS_FILE, today, done, history)
+                    log(f'已完成第 {done} 次冒险'
+                        + (f' / 目标 {max_times} 次' if max_times else ''))
                 if max_times and done >= max_times:
                     self.ensure_main_page()
                     log('达到当天冒险次数，结束')
@@ -201,6 +228,8 @@ class AdventureScenario(DeviceScenario):
                         log('冒险后未在出门页面，回主页面重新进入')
                         self.ensure_main_page()
                         finished = self.goto_adventure()
+                        if finished and self.pending is not None:
+                            return True  # 延时收尾：pending 已登记，本轮直接结束
                         if finished and count_finished(finished):
                             return True
                         if finished:
