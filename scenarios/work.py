@@ -8,9 +8,10 @@
 3. 点击 town 进入小镇
 4. 点 back 重置默认地点，OCR 整屏文字找到配置的打工地点并点击进入；
    没进面板就回主页面重新进小镇再试
-5. 把第一框拖到第三框归位（两次），点击第二框选择第二个工作（最高收益）
+5. 把第一框拖到第三框归位（两次），按配置 work.duration 点击对应工作选择框
+   （10分钟/45分钟/2小时 -> select_box_1/2/3）
 6. 点击 work_outworker 进入雇佣好友界面（OCR 标题确认弹出）：
-   - 识别到雇佣按钮（OCR 右侧第一个）-> 点击最上方的一个
+   - 识别到雇佣按钮（OCR 右侧第一个，排除"被雇佣中"状态标签）-> 点击最上方的一个
    - 没有（当前页好友不可雇佣时不渲染按钮）-> 点工作面板顶部"智力"坐标
      关闭雇佣面板并确认弹层已关，回到打工面板由下一步点 work_start 直接开工（不雇佣）
 7. 点击 work_start 开始工作，直到出现 work_in
@@ -28,7 +29,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.locators import locate_cached
+from src.locators import OCR_MIN_SCORE, locate_cached
 from src.ocr import find_text, ocr_fullscreen, parse_panel_location
 from src.progress import (
     WORK_PROGRESS_FILE,
@@ -46,6 +47,9 @@ PROGRESS_FILE = WORK_PROGRESS_FILE
 # 进入打工地点面板的最多重试次数（点空/页面加载慢时快速重试，不再长时间确认）
 WORK_PLACE_ATTEMPTS = 3
 
+# 打工时长选择 -> 工作选择框（打工与雇佣好友共用，配置 work.duration）
+DURATION_BOXES = {'10分钟': 'select_box_1', '45分钟': 'select_box_2', '2小时': 'select_box_3'}
+
 
 class WorkScenario(DeviceScenario):
     def __init__(self, dev=None):
@@ -53,11 +57,16 @@ class WorkScenario(DeviceScenario):
         self.location = self.cfg.work.location
         if not self.location:
             raise ValueError('config.yaml 中 work.location 未配置打工地点')
+        self.duration = self.cfg.work.duration
+        if self.duration not in DURATION_BOXES:
+            raise ValueError(
+                f'config.yaml 中 work.duration 配置无效: {self.duration!r}，'
+                f'可选: {"/".join(DURATION_BOXES)}')
         self.times_per_day = self.cfg.work.times_per_day
         # employ_scroll_limit 保留配置兼容（旧流程下滑找雇佣按钮已移除，
         # 当前页没有雇佣按钮时直接关闭面板开工），runner 仍会赋值
         self.employ_scroll_limit = self.cfg.work.employ_scroll_limit
-        log(f'打工地点: {self.location}，每天打工次数: '
+        log(f'打工地点: {self.location}，打工时长: {self.duration}，每天打工次数: '
             f'{self.times_per_day if self.times_per_day else "不限"}')
 
     # ---- 各阶段 ----
@@ -153,8 +162,8 @@ class WorkScenario(DeviceScenario):
         return loc == self.location.replace(' ', '')
 
     def select_job(self) -> None:
-        """先把第一框拖到第三框归位（两次），点第二个工作（最高收益），
-        再点 work_outworker 进雇佣界面。
+        """先把第一框拖到第三框归位（两次），按配置 work.duration 点对应工作选择框
+        （10分钟/45分钟/2小时 -> select_box_1/2/3），再点 work_outworker 进雇佣界面。
 
         轮播有 4 个（打工）/7 个（学园）选择框、xpath 只认可见 3 个，
         必须归位到第一页再选，否则可能选到绝对第几个不是第 2 个；
@@ -164,9 +173,10 @@ class WorkScenario(DeviceScenario):
         # 抓一次控件树快照，与容器推导共用，总共只 dump 一次
         source = None if locate_cached('work_outworker') else self.dev.hierarchy()
         self.reset_select_boxes(source=source)
-        hit = self.see('select_box_2', source=source)
+        box = DURATION_BOXES[self.duration]
+        hit = self.see(box, source=source)
         if not hit:
-            raise RuntimeError('未定位到工作选择框: select_box_2')
+            raise RuntimeError(f'未定位到工作选择框: {box}')
         time.sleep(CLICK_INTERVAL)
         self.click(hit[0], hit[1])
         # work_outworker 是独立按钮，不依赖选框结果，点完直接进雇佣面板
@@ -194,14 +204,26 @@ class WorkScenario(DeviceScenario):
 
         面板标题"宠友雇佣加成排行榜（实时刷新）"也含"雇佣"，但它在左侧；
         雇佣按钮在每行右侧（x >= 屏宽一半），按 x 排除标题后取最上面一个。
+        右侧的"被雇佣中"状态标签同样含"雇佣"：剔除含"被雇佣"/"雇佣中"的文本，
+        并优先取文字恰好是"雇佣"的命中（按钮文案就是两个字）。
         整屏 OCR 约 0.5s，比 dump 控件树（4s+）快得多。
         """
         screen = self.screen()
         w = screen.shape[1]
-        for x, y, score in self.see_all('employ', screen):
-            if x >= w / 2:
-                return x, y, score
-        return None
+        exact = []   # 文字恰好是"雇佣"（按钮）
+        fuzzy = []   # 含"雇佣"的其他文本（OCR 碎片兜底）
+        for text, x, y, score in ocr_fullscreen(screen):
+            t = text.replace(' ', '')
+            if x < w / 2 or score < OCR_MIN_SCORE or '雇佣' not in t:
+                continue
+            if '被雇佣' in t or '雇佣中' in t:
+                continue  # "被雇佣中"状态标签，不是雇佣按钮
+            (exact if t == '雇佣' else fuzzy).append((x, y, score))
+        candidates = exact or fuzzy
+        if not candidates:
+            return None
+        candidates.sort(key=lambda m: (m[1], m[0]))
+        return candidates[0]
 
     def hire_friend(self) -> None:
         """雇佣好友：有雇佣按钮就点；没有则直接关闭雇佣页面去开工。
@@ -296,6 +318,9 @@ class WorkScenario(DeviceScenario):
         """
         clicked = False
         for attempt in range(1, 4):
+            # 点"去打工"可能触发"体力/清洁不足"弹窗（u2 层，OCR 看不到）：
+            # 每轮同时检测，命中回主页面护理一次并抛 StatBlocked（调度器重试当前任务）
+            self.handle_low_stat_dialog()
             results = ocr_fullscreen(self.screen())
             if find_text(results, '正在打工'):
                 log('开始工作: 已出现 work_in')

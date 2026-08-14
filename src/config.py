@@ -88,6 +88,9 @@ class SchoolConfig:
 class WorkConfig:
     # 打工地点（OCR 文字匹配），如：风铃旅社 / 星尘魔法塔 / 彩虹画室
     location: str = "风铃旅社"
+    # 打工时长选择：10分钟（select_box_1）/ 45分钟（select_box_2）/ 2小时（select_box_3），
+    # 打工与雇佣好友共用
+    duration: str = "45分钟"
     # 每天打工次数上限，0 为不限
     times_per_day: int = 0
     # 已不再使用：旧流程"下滑找雇佣按钮"已移除（当前页没有雇佣按钮时直接关闭面板开工），
@@ -109,6 +112,9 @@ class ScheduleConfig:
     # 鼓励次数：在学习/打工进行中页面快速点击"鼓励宠物"按钮的次数，0 为不鼓励
     # （非阻塞调度在登记 pending 离开进行中页面前就地点击；结算页没有该按钮）
     encourage_times: int = 10
+    # 主页面检测次数：连续这么多次识别不到主页面标志（金币胶囊）才允许点 back
+    # （主页面点 back 会退出游戏；默认 1 = 识别不到立即点 back，即原逻辑）
+    main_page_checks: int = 1
 
 
 @dataclass

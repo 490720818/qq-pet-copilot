@@ -111,7 +111,11 @@ class PKScenario(VisitScenario):
         """
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
-            hit = self.see('pk_start', source=self.dev.hierarchy())
+            source = self.dev.hierarchy()
+            # 点开始可能触发"体力/清洁不足"弹窗：识别 pk_start 的同时同帧检测，
+            # 命中回主页面护理一次并抛 StatBlocked（调度器重试当前任务）
+            self.handle_low_stat_dialog(source)
+            hit = self.see('pk_start', None, source)
             if hit:
                 return hit
             time.sleep(CLICK_INTERVAL)
@@ -154,6 +158,9 @@ class PKScenario(VisitScenario):
             # 流程（按原本 PK_DURATION 秒等 PK 结束）；匹配不到说明没真正开打
             # （加载卡住/已提前结算），立即按超时处理点 quit 换好友，不等 11 秒
             time.sleep(PK_START_CHECK_DELAY)
+            # 体力/清洁不足弹窗：点开始后同帧检测，命中回主页面护理一次并抛
+            # StatBlocked（调度器重试当前任务），避免被 _handle_pk_timeout 误判超时
+            self.handle_low_stat_dialog()
             if not self.see('pk_in', self.screen()):
                 self._handle_pk_timeout('未匹配到"正在PK"')
                 return done

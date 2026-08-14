@@ -581,7 +581,8 @@ def get_serial_pair(serial: str) -> str:
 def find_instance(serial: str, emulator: str = '', name: str = '',
                   path: str = '') -> EmulatorInstance | None:
     """按 serial 找所属实例；命中多个时用配置的 类型/实例名称/安装路径 逐级消歧
-    （ALAS find_emulator_instance：serial 是主键，其余字段只用于消歧）。"""
+    （ALAS find_emulator_instance：serial 是主键，其余字段只用于消歧）；
+    仍多个（如 MuMu12 每个实例的 .nemu 都转发 7555）再按端口实际监听进程反查。"""
     pair = get_serial_pair(serial)
     hits = [inst for inst in scan_instances()
             if serial in inst.serials or pair in inst.serials]
@@ -596,7 +597,51 @@ def find_instance(serial: str, emulator: str = '', name: str = '',
             return filtered[0]
         if filtered:
             hits = filtered
-    return hits[0] if len(hits) == 1 else None
+    if len(hits) == 1:
+        return hits[0]
+    return _match_by_listener(serial, hits)
+
+
+def _listener_cmdlines(port: int) -> list[tuple[str, str]]:
+    """监听指定端口的进程 [(监听地址, 命令行)]（多实例消歧用，查询失败返回空）。"""
+    ps = (
+        f'Get-NetTCPConnection -LocalPort {port} -State Listen'
+        ' -ErrorAction SilentlyContinue | ForEach-Object {'
+        ' "{0}`t{1}" -f $_.LocalAddress,'
+        ' (Get-CimInstance Win32_Process -Filter "ProcessId=$($_.OwningProcess)").CommandLine }'
+    )
+    try:
+        proc = subprocess.run(
+            ['powershell', '-NoProfile', '-NonInteractive', '-Command', ps],
+            capture_output=True, timeout=15, creationflags=_NO_WINDOW)
+        out = proc.stdout.decode('utf-8', 'replace')
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    entries = []
+    for line in out.splitlines():
+        addr, _, cmd = line.partition('\t')
+        if cmd.strip():
+            entries.append((addr.strip(), cmd.strip()))
+    return entries
+
+
+def _match_by_listener(serial: str,
+                       hits: list[EmulatorInstance]) -> EmulatorInstance | None:
+    """多个实例声称同一 serial 时的最终消歧：查该端口实际监听的进程命令行，
+    MuMu12 的 MuMuVMMHeadless.exe --comment 参数就是实例名，据此反查真正
+    持有该 serial 的实例。同一端口同时有 0.0.0.0 通配和 127.0.0.1 精确绑定时，
+    连接到 127.0.0.1 的流量落在精确绑定上，优先用精确绑定的进程。"""
+    m = re.match(r'127\.0\.0\.1:(\d+)', serial)
+    if not m:
+        return None
+    entries = _listener_cmdlines(int(m.group(1)))
+    if not entries:
+        return None
+    exact = [cmd for addr, cmd in entries if addr == '127.0.0.1']
+    cmdlines = exact or [cmd for _, cmd in entries]
+    matched = [inst for inst in hits
+               if any(f'--comment {inst.name}' in cmd for cmd in cmdlines)]
+    return matched[0] if len(matched) == 1 else None
 
 
 # ---------------------------------------------------------------- 停/启

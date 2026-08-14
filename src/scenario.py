@@ -41,6 +41,20 @@ class TaskDeferred(Exception):
         self.until = until
 
 
+class StatBlocked(Exception):
+    """开始任务（点 *_start）时体力/清洁不足弹窗：handle_low_stat_dialog 已回
+    主页面护理一次，调度器应重试当前任务一次（不算失败、不重启）。与
+    TaskDeferred（延后）、ScenarioFailed（失败退避）语义不同：护理已完成，
+    立即重试当前任务。"""
+
+
+# 点 *_start 开始上课/打工/冒险/PK 时，体力/清洁不足弹窗（content-desc 整句，u2 定位）
+LOW_STAT_DIALOGS = {
+    'pet_low_energy': '你的宠物体力不足，请回家补充体力',
+    'pet_low_clean': '你的宠物清洁值不足，请回家洗澡',
+}
+
+
 class DeviceScenario:
     """各场景共用：截图、u2 控件/OCR 文字定位、点击/拖动、回主页面。"""
 
@@ -114,6 +128,11 @@ class DeviceScenario:
         for attempt in range(1, max_attempts + 1):
             # 只抓控件树快照，截图按需懒加载（see 内部 OCR 需要时才截）
             source = self.dev.hierarchy()
+            if click_name.endswith('_start'):
+                # 点开始按钮可能触发"体力/清洁不足"弹窗：识别 _start 的同时同帧
+                # 检测弹窗，命中则回主页面护理一次并抛 StatBlocked，由调度器
+                # 重试当前任务（见 handle_low_stat_dialog）
+                self.handle_low_stat_dialog(source)
             target = self.see(click_name, None, source)
             if target and wait_ocr_only:
                 # OCR wait：点击目标在就只管点，避免每轮截图+OCR 拖慢点击。
@@ -151,25 +170,68 @@ class DeviceScenario:
     def ensure_main_page(self):
         """确认在主页面；不在则点 back 直到回来，返回主页面控件树快照。
 
-        识别不到 main_sign（金币胶囊，只有自己主页面有，好友宠物页没有）
-        就直接点 back，然后立即重新抓控件树判断。
+        识别不到 main_sign（金币胶囊，只有自己主页面有，好友宠物页没有）时，
+        连续 schedule.main_page_checks 次（默认 1 = 立即点 back）识别都失败
+        才允许点 back（主页面点 back 会退出游戏，需要宽限防识别抖动误退）。
         返回的 source 可直接给同一个页面上的后续 XPath 定位复用。
         """
-        for attempt in range(1, MAIN_PAGE_ATTEMPTS + 1):
+        checks = max(1, int(getattr(self.cfg.schedule, 'main_page_checks', 1) or 1))
+        max_attempts = MAIN_PAGE_ATTEMPTS * checks
+        misses = 0
+        for attempt in range(1, max_attempts + 1):
             screen, source = self.snapshot()
             hit = self.see('main_sign', screen, source)
             if hit:
                 log(f'已在主页面 (score={hit[2]:.2f})')
                 return source
+            misses += 1
+            if misses < checks:
+                # 未达检测次数：等一下重新识别（页面可能还在加载/识别抖动）
+                time.sleep(CLICK_INTERVAL)
+                continue
+            misses = 0
             back = self.see('back', screen, source)
             if back:
-                log(f'未识别到主页面，点击 back ({back[0]}, {back[1]})')
+                log(f'未识别到主页面'
+                    + (f'（连续 {checks} 次）' if checks > 1 else '')
+                    + f'，点击 back ({back[0]}, {back[1]})')
                 self.click(back[0], back[1])
                 continue
-            if attempt == 1 or attempt == MAIN_PAGE_ATTEMPTS:
-                log(f'未识别到主页面也找不到 back，等待重试 ({attempt}/{MAIN_PAGE_ATTEMPTS})')
+            if attempt == 1 or attempt == max_attempts:
+                log(f'未识别到主页面也找不到 back，等待重试 ({attempt}/{max_attempts})')
             time.sleep(CLICK_INTERVAL)
         raise RuntimeError('无法回到主页面')
+
+    def handle_low_stat_dialog(self, source=None) -> None:
+        """点 *_start 开始任务时，同时检测"体力/清洁不足"弹窗（content-desc 整句）。
+
+        命中：点 back 关掉弹窗 -> 回主页面 -> 护理一次（同调度器的护理检查）-> 抛
+        StatBlocked，由调度器 run_one 捕获后立即重试当前任务一次（不算失败、不重启）。
+        未命中返回 None，调用方继续原流程。
+        """
+        if source is None:
+            source = self.dev.hierarchy()
+        for key, desc in LOW_STAT_DIALOGS.items():
+            hit = self.see(key, None, source)
+            if not hit:
+                continue
+            log(f'检测到"{desc}"弹窗，回主页面护理一次后重试当前任务')
+            # 弹窗可能盖住主页面元素（main_sign 在弹窗下层仍可能被 xpath 命中，
+            # 直接 ensure_main_page 会误判已在主页面），先点一次 back 关掉弹窗
+            back = self.see('back', None, source)
+            if back:
+                self.click(back[0], back[1])
+                time.sleep(CLICK_INTERVAL)
+            self.ensure_main_page()
+            self.care_once()
+            raise StatBlocked()
+
+    def care_once(self) -> None:
+        """主页面执行一次护理检查（同调度器的护理：体力/清洁不足则喂食/洗澡，
+        或一键护理），护理完成停在主页面。"""
+        from scenarios.care import CareScenario
+
+        CareScenario(self.dev).check_and_care()
 
     def reset_select_boxes(self, drags: int = 2, source=None) -> None:
         """学习/工作三栏选择框归位：从第一框中心拖到第三框中心 drags 次。
@@ -562,6 +624,43 @@ class DeviceScenario:
             return 'adventure'
         return None
 
+    def dismiss_career_popup(self, screen=None) -> bool:
+        """检测并处理"职业升级/获得新职业"弹窗（出门页/打工面板加载时可能弹出，
+        会挡住底层页面）：先连点三次弹窗识别到的坐标（展开/交互），
+        再重新截图找对应按钮点击进职业树（职业树无原生返回键），
+        连续按系统返回键逐层退出。处理过返回 True（后续导航由调用方决定），
+        没有弹窗返回 False。screen 为 None 时重新截图。
+        """
+        if screen is None:
+            screen = self.screen()
+        # "你将进阶成为..."（职业升级）或 "神秘人/快去职业树里看看吧"（获得新职业）
+        career_upgrading = self.see('career_upgrade', screen)
+        career_new_hit = self.see('career_new', screen)
+        if not (career_upgrading or career_new_hit):
+            return False
+        popup_hit = career_upgrading or career_new_hit
+        for _tap in range(3):
+            self.click(popup_hit[0], popup_hit[1])
+            time.sleep(CLICK_INTERVAL)
+        # 点三次后界面可能已变化：找按钮必须重新截图（不能复用旧 screen 的 OCR 缓存）。
+        # 职业升级按钮是"查看"，获得新职业按钮是"去看看"
+        if career_upgrading:
+            view = self.see('career_upgrade_view')
+            btn_name = '查看'
+        else:
+            view = self.see('career_new_view')
+            btn_name = '去看看'
+        if view:
+            log(f'检测到{"职业升级" if career_upgrading else "获得新职业"}弹窗，点击"{btn_name}" ({view[0]}, {view[1]})')
+            self.click(view[0], view[1])
+            time.sleep(CLICK_INTERVAL)
+        for _back in range(4):
+            self.dev.d.press('back')
+            time.sleep(CLICK_INTERVAL)
+            if not self.see('career_tree'):
+                break
+        return True
+
     def wait_busy_end(self, check_interval: float | None = None,
                       attempts: int = BUSY_GATE_ATTEMPTS) -> str | None:
         """出门后检测是否正在上课/工作/冒险/被雇佣中，是则等待结束并退出；
@@ -581,35 +680,9 @@ class DeviceScenario:
         # 有几秒加载延迟，未匹配到任何状态时重试几次再下结论。
         for attempt in range(1, attempts + 1):
             screen = self.screen()
-            # 职业升级 / 获得新职业弹窗（"你将进阶成为..." 或 "神秘人/快去职业树里看看吧"
-            # + "查看/去看看"按钮，出门页新弹窗）：先连点三次弹窗识别到的坐标（展开/交互），
-            # 再重新截图找对应按钮点击进职业树（职业树无原生返回键），连续按系统返回键逐层退出，
-            # 再回主页面重新开始本轮，避免挡住进行中状态检测
-            career_upgrading = self.see('career_upgrade', screen)
-            career_new_hit = self.see('career_new', screen)
-            if career_upgrading or career_new_hit:
-                popup_hit = career_upgrading or career_new_hit
-                for _tap in range(3):
-                    self.click(popup_hit[0], popup_hit[1])
-                    time.sleep(CLICK_INTERVAL)
-                # 点三次后界面可能已变化：找按钮必须重新截图（不能复用旧 screen 的 OCR 缓存）。
-                # 职业升级按钮是"查看"，获得新职业按钮是"去看看"
-                if career_upgrading:
-                    view = self.see('career_upgrade_view')
-                    btn_name = '查看'
-                else:
-                    view = self.see('career_new_view')
-                    btn_name = '去看看'
-                if view:
-                    log(f'检测到{"职业升级" if career_upgrading else "获得新职业"}弹窗，点击"{btn_name}" ({view[0]}, {view[1]})')
-                    self.click(view[0], view[1])
-                    time.sleep(CLICK_INTERVAL)
-                for _back in range(4):
-                    self.dev.d.press('back')
-                    time.sleep(CLICK_INTERVAL)
-                    if not self.see('career_tree'):
-                        break
-                # 回主页面重新开始本轮（重新出门，走正常流程）
+            # 职业升级 / 获得新职业弹窗：处理后回主页面重新出门，
+            # 重新开始本轮检测，避免挡住进行中状态检测
+            if self.dismiss_career_popup(screen):
                 self.ensure_main_page()
                 self.leave_home()
                 continue

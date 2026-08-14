@@ -28,6 +28,7 @@ DEFAULTS = {
     'schedule.work_factor': 45,
     'schedule.daily_point_limit': 480,
     'schedule.check_interval': 8,
+    'schedule.main_page_checks': 1,
     'schedule.encourage_times': 10,
     'adventure.times_per_day': 1,
     'adventure.start_time': '08:00',
@@ -54,6 +55,7 @@ DEFAULTS = {
     'care.clean_threshold': 60,
     'care.method': '一键护理',
     'care.interval_seconds': 60,
+    'work.duration': '45分钟',
     'employed.enabled': False,
     'employed.time_range': '19:31-23:59',
     'employed.interval_seconds': 60,
@@ -78,6 +80,8 @@ def validate_field(key: str, value):
         return (True, value) if str(value).strip() else (False, default)
     if key == 'school.attribute':
         return (True, value) if value in ('力量', '智力', '魅力') else (False, default)
+    if key == 'work.duration':
+        return (True, value) if value in ('10分钟', '45分钟', '2小时') else (False, default)
     if key == 'care.method' or key == 'friend_care.method':
         return (True, value) if value in ('ocr检测', '一键护理') else (False, default)
     if key in ('friend_care.time_range', 'employed.time_range', 'hire_friend.time_range'):
@@ -113,8 +117,8 @@ def validate_field(key: str, value):
         return False, default
     if key in ('care.energy_threshold', 'care.clean_threshold'):
         return (True, value) if 0 <= int(value) <= 100 else (False, default)
-    if key == 'schedule.check_interval':
-        # 检查间隔至少 1 秒（0 会变成无间隔死循环）
+    if key in ('schedule.check_interval', 'schedule.main_page_checks'):
+        # 检查间隔至少 1 秒 / 检测次数至少 1 次（0 会变成无间隔死循环或不设防点 back）
         try:
             return (True, value) if int(value) >= 1 else (False, default)
         except (TypeError, ValueError):

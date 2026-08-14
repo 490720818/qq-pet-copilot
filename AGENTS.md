@@ -39,13 +39,14 @@ $PY build.py --emulator          # 模拟器版（内置 hook JS + frida-server 
 
 | 路径 | 职责 |
 | --- | --- |
-| `main.py` | PyQt6 GUI：scrcpy 窗口嵌入（SetParent）、选项卡（日志/调度/统计/任务/设置；调度页 = 每任务 开关/执行间隔（每日时间）/启用时段/下次执行 只读表格，数据 = config.yaml + `runs/queue_status.json` 的 tasks 段；任务页 = 任务队列顺序 + 场景任务设置，设置页 = 连接/调度引擎/全局规则/告警）、调度器子进程控制、scrcpy 看门狗（设备重启后自动重拉重嵌入） |
+| `main.py` | PyQt6 GUI：scrcpy 窗口嵌入（SetParent）、选项卡（日志/调度/统计/任务/设置；调度页 = 每任务 开关/执行间隔（每日时间）/启用时段/下次执行 只读表格，数据 = config.yaml + `runs/queue_status.json` 的 tasks 段；任务页 = 任务队列顺序 + 场景任务设置，设置页 = 连接/调度引擎/全局规则/告警）、调度器子进程控制、scrcpy 看门狗（设备重启后自动重拉重嵌入）、右上角"手动重启"按钮
+（按 `recover.method` 执行一次异常恢复 `reenter_pet`，调度器在跑先停，恢复期间开始/停止按钮禁用，恢复完成自动启动调度器） |
 | `src/stats_chart.py` | 统计页：各任务近 N 天次数的平滑折线图（QPainter 自绘 + Catmull-Rom 平滑，数据来自 `runs/*_progress.json` 的 history） |
 | `scenarios/runner.py` | 统一调度器，两种引擎（`runner.engine`）：`task_queue`（默认，`TaskQueueRunner`：执行顺序由 `tasks.order` 配置，> 分隔越靠前越优先，不在 order 里不调度；每任务独立 enabled / trigger（interval 间隔 / daily 每日时间点窗口）/ enabled_time_range / success_interval / failure_interval，见 `tasks` 段）/ `legacy`（`Runner.run` 老主循环，顺序写死：护理 → 冒险 → 踩踩 → PK → 好友雇佣 → 好友护理 → 学习/打工）。共通：场景异常分级重试（回主页面重进 → `recover()` 重启恢复）；都失败时主任务（学习/打工）发告警通知（`src/notify.py`）并退出，支线任务延后重试（legacy 用 `SIDE_TASK_RETRY_DELAY`，队列用各任务 `failure_interval`） |
 | `scenarios/school.py` `work.py` `adventure.py` `care.py` `visit.py` `pk.py` `friend_care.py` `hire_friend.py` `employed.py` | 各场景，均继承 `DeviceScenario`（`pk.py`/`friend_care.py` 继承 `visit.py` 复用好友导航；`hire_friend.py` 继承 `friend_care.py` 复用指定好友导航；`employed.py` 只做被雇佣检测，召回复用基类） |
 | `src/scenario.py` | 场景基类：截图/u2+OCR 定位点击/回主页面/等待结束（阻塞 `wait_end` / 非阻塞延时收尾 `defer_busy_end`+`finish_pending`，OCR 剩余时间登记 `pending`）/被雇佣召回/四种进行中状态检测 |
-| `src/recover.py` | 异常恢复链路：adb reboot → 等开机 → 启动 QQ → 点 `Q宠-*` 入口（descriptionStartsWith 前缀匹配，后缀数字不固定）回宠物页，返回新 U2Device；模拟器模式"重启设备"改为重启模拟器整机（MuMu 不支持 adb reboot，会把 adb 服务卡死），优先级：配置的 `recover.emulator_restart_cmd` > 留空自动探测模拟器实例分步停/启（`src/emulator.py`，serial 匹配多个实例时用 `emulator.type/name/path` 消歧）> 回退 adb reboot，随后 kill/start-server → connect → 等开机 |
-| `src/emulator.py` | 多模拟器实例自动探测（参考 ALAS module/device/platform）：MuMu 12/6/X、雷电 3/4/9、夜神、蓝叠 4/5、逍遥；exe→类型靠 `path_to_type`（exe 名+上级目录名），安装目录来源 = 卸载项注册表（子键名精确匹配）+ MuiCache/UserAssist（ROT13）+ 雷电 InstallDir 注册表；serial 算法 = vbox/nemu/memu 的 hostport→5555 转发正则（MuMu12 兜底 16384+32*index、雷电 5555+2*index、蓝叠4 固定 5555、蓝叠5 读 bluestacks.conf）；`scan_serials()`（GUI 设备下拉合并）、`find_instance(serial, type/name/path 消歧)`、`get_serial_pair()`（127.0.0.1:5555+X ↔ emulator-5554+X）、`restart_instance()` 按类型分步停/启（有控制台 exe 走控制台：MuMuManager/ldconsole/bsconsole/memuc，蓝叠5/MuMu6/X 杀进程再用主 exe 拉起） |
+| `src/recover.py` | 异常恢复链路：adb reboot → 等开机 → 启动 QQ → 点 `Q宠-*` 入口（descriptionStartsWith 前缀匹配，后缀数字不固定）回宠物页，返回新 U2Device；模拟器模式"重启设备"改为重启模拟器整机（MuMu 不支持 adb reboot，会把 adb 服务卡死），优先级：配置的 `recover.emulator_restart_cmd` > 留空自动探测模拟器实例分步停/启（`src/emulator.py`，serial 匹配多个实例时依次用 `emulator.type/name/path`、端口实际监听进程命令行消歧）> 回退 adb reboot，随后 kill/start-server → connect → 等开机 |
+| `src/emulator.py` | 多模拟器实例自动探测（参考 ALAS module/device/platform）：MuMu 12/6/X、雷电 3/4/9、夜神、蓝叠 4/5、逍遥；exe→类型靠 `path_to_type`（exe 名+上级目录名），安装目录来源 = 卸载项注册表（子键名精确匹配）+ MuiCache/UserAssist（ROT13）+ 雷电 InstallDir 注册表；serial 算法 = vbox/nemu/memu 的 hostport→5555 转发正则（MuMu12 兜底 16384+32*index、雷电 5555+2*index、蓝叠4 固定 5555、蓝叠5 读 bluestacks.conf）；`scan_serials()`（GUI 设备下拉合并）、`find_instance(serial, type/name/path 消歧)`、`get_serial_pair()`（127.0.0.1:5555+X ↔ emulator-5554+X）、`restart_instance()` 按类型分步停/启（有控制台 exe 走控制台：MuMuManager/ldconsole/bsconsole/memuc，蓝叠5/MuMu6/X 杀进程再用主 exe 拉起）；serial 命中多个实例且配置消歧不够时，按端口实际监听进程命令行反查（`_match_by_listener`：MuMu12 每个实例的 .nemu 都转发 7555，MuMuVMMHeadless.exe 的 --comment 即实例名，0.0.0.0 通配与 127.0.0.1 精确绑定并存时精确绑定优先） |
 | `src/u2dev.py` | uiautomator2 封装：连接（含 atx-agent 首装）、截图、`rel()` 参考坐标换算、`d.touch` 持续按压 |
 | `src/locators.py` | UI 定位注册表 `LOCATORS`：名字 → u2 选择器 / OCR 候选文案 / rel 兜底坐标；`see()` / `see_all()` |
 | `src/adb/device.py` | adb 封装：设备在线管理（start-server）、屏幕尺寸读取（scrcpy 嵌入比例用）、`reboot_and_wait()` / `launch_app()`（异常恢复用） |
@@ -89,6 +90,8 @@ $PY build.py --emulator          # 模拟器版（内置 hook JS + frida-server 
   按压失效（模拟器 minitouch 会话静默中断，touch_move 全丢），自动抬手重按肥皂自愈。
 - **一轮语义**：场景的 `run(max_times, max_rounds)` 中一轮 = 一节课 / 一次打工 / 一次冒险，
   结束后回主页面；执行器以 `max_rounds=1` 调用，每轮后重新判断金币/点数。
+  学习场景的毕业处理（"去找同学玩"面板）不算一轮：关闭后立即重新进学校选下一阶段
+  课程（不等 success_interval），连续毕业由 `goto_school` 的 `_graduated_once` 抛异常防循环。
 - **出门处理**：`goto_*` 出门后必须调 `wait_busy_end()` 检测四种进行中状态
   （school/work/adventure/employed）；等完的活动计入对应进度后**本轮直接结束**，
   由执行器重新判断限制条件，不得继续原定任务。出门后也可能直接出现**结算页**
@@ -99,8 +102,10 @@ $PY build.py --emulator          # 模拟器版（内置 hook JS + frida-server 
   计数语同等完活动。
 - **计数时机**：检测到 `xxx_end` 点完 `quit` 就计数（`save_progress`），再回主页面；
   被雇佣在召回点 quit 时由基类 `count_cross('employed')` 计数，场景 `run()` 不得重复计。
-- **主页面点 back 会退出游戏**：`ensure_main_page` 必须保留 `BACK_GRACE_ATTEMPTS`
-  宽限（连续多次识别不到 `main_sign`（"出门"）才允许点 back）。
+- **主页面点 back 会退出游戏**：`ensure_main_page` 必须保留宽限——连续
+  `schedule.main_page_checks` 次（默认 1，即识别不到立即点 back）识别不到
+  `main_sign`（金币胶囊）才允许点 back，总尝试上限随检测次数放大
+  （`MAIN_PAGE_ATTEMPTS * checks`）。
 - **OCR 置信度**：命中下限 `src/locators.py` 的 `OCR_MIN_SCORE`（默认 0.5）。
 - **异常分级重试**：场景抛异常 → 先回主页面重进场景重试一次（页面错乱多半能
   自愈，不必重启）→ 仍失败才走 `Runner.recover()`（`src/recover.py`：adb reboot →
@@ -130,7 +135,9 @@ $PY build.py --emulator          # 模拟器版（内置 hook JS + frida-server 
   睡到最近等待点（上限 `QUEUE_POLL_INTERVAL` 轮询热加载配置）；冒险/学习/打工/雇佣好友
   互斥（不能同时做），作为**主任务组**统一调度（`_main_choice`）：组内优先级由
   `tasks.main_order` 配置（默认 `school>hire_friend>adventure>work`，> 分隔越靠前越优先，
-  没列出的按默认顺序兜底；`MAIN_TASK_KEYS` 在 `src/config.py`），按配置顺序逐个判定——
+  没列出的按默认顺序兜底；`MAIN_TASK_KEYS` 在 `src/config.py`），先过 `_eligible`
+  （退避/时间窗未到点的任务跳过，否则幻影命中会把排它后面的主任务卡住——如雇佣好友
+  CD 复测退避 60 秒但 hire_friend_due 的调度间隔只有几秒），再按配置顺序逐个判定——
   冒险（到点且当天次数未满）/ 学习（点数未超限且金币 >= 阈值，或打工不可继续时回退）/
   雇佣好友（到点且次数未满）/ 打工（兜底，当天可继续就可执行），
   不受 `tasks.order` 里四者相对位置影响，金币/点数每轮循环只读一次（ctx 缓存）；
@@ -159,6 +166,15 @@ $PY build.py --emulator          # 模拟器版（内置 hook JS + frida-server 
   `care.interval_seconds`（默认 60 秒，距上次检查起算，`care_due()`）节流，
   两种引擎共用（legacy 主循环每轮开头、队列引擎 care 任务）；场景上次检查时间
   记在 `CareScenario.last_care_at`。
+- **体力/清洁不足弹窗**：点 `*_start`（上课/打工/冒险/PK，含雇佣好友复用的
+  work_start）开始任务时，识别 `_start` 的同时同帧检测
+  `//*[@content-desc="你的宠物体力不足，请回家补充体力"]` /
+  `//*[@content-desc="你的宠物清洁值不足，请回家洗澡"]`（`src/locators.py` 的
+  `pet_low_energy` / `pet_low_clean`）；命中则点 back 关弹窗 -> 回主页面 ->
+  护理一次（`care_once`，同调度器护理检查）-> 抛 `StatBlocked`
+  （`src/scenario.py`），调度器 `run_one` 立即重试当前任务一次（不算失败/不重启，
+  主任务/支线共用），护理后重试仍被拦截则按常规失败分流（主任务告警退出、
+  支线 `ScenarioFailed` 退避）。
 - **好友护理调度**：`friend_care.enabled` 开启且配置了 `friend_name` 时，主循环按
   `friend_care.time_range`（HH:MM-HH:MM，支持跨零点）+ `friend_care.interval_seconds`
   调度间隔（`friend_care_due()`，距上次巡检完成时间起算）调度；每次调度只做一次
@@ -181,8 +197,10 @@ $PY build.py --emulator          # 模拟器版（内置 hook JS + frida-server 
   引擎记 `retry_after['雇佣好友']`，都不算失败，先调度其他任务；场景内进指定好友家，OCR `hire` 控件上的
   雇佣剩余 CD（如 28:05），有 CD 同样抛 `TaskDeferred` 延后 `HIRE_CD_POLL_SECONDS`
   （60 秒）复测——不原地等待（CD 可能提前结束）；没有 CD 才点 hire 进打工面板（面板加载固定等 3 秒，
+  期间可能弹职业升级/获得新职业弹窗，先 `dismiss_career_popup()` 处理再检测，
   未进面板重试点击），按打工流程 select_place 确认/重选打工地点（已是配置地点直接用，
-  不是则 back 重置重选）后选 select_box_2、点 work_start 打工一轮；打工结束点 quit
+  不是则 back 重置重选）后按 `work.duration` 选工作选择框（10分钟/45分钟/2小时 ->
+  select_box_1/2/3，打工与雇佣好友共用）、点 work_start 打工一轮；打工结束点 quit
   后才计数（雇佣好友 + 打工各计一次，不做打工流程里的雇佣部分）。
 - **被雇佣检查调度**：`employed.enabled` 开启时，被雇佣时间段（`employed.time_range`，
   HH:MM-HH:MM 支持跨零点）内按 `employed.interval_seconds`（默认 60 秒）间隔出门
@@ -205,8 +223,12 @@ $PY build.py --emulator          # 模拟器版（内置 hook JS + frida-server 
   `_wrap_java_bridge` 把 frida-tools 的 `frida-java-bridge` 暴露为全局 `Java` 再拼 hook；
   frida-tools 版本随 frida 一起锁定（`requirements.txt`），普通版打包时排除 frida_tools。
   模拟器模式下启动与 `recover()` 都走 opener 打开宠物主页（`src/recover.py` 的 `use_opener` 分支），
-  不再依赖 `Q宠-*` 入口；打包的模拟器版 exe（`build.py --emulator`）内置
+  不再依赖 `Q宠-*` 入口；GUI 手动重启恢复成功后再拉起调度器会传 `--skip-opener`
+  跳过启动时的 opener 打开（宠物主页已由恢复流程打开，避免一次手动重启开两次宠物主页）；
+  打包的模拟器版 exe（`build.py --emulator`）内置
   `emulator_mode.txt` 标记，启动默认开启模拟器模式（`src/config.py` 的 `is_emulator_build()`）。
+  模拟器没有物理屏幕：模拟器模式下 scrcpy 不带 `--turn-screen-off`（`start_scrcpy`
+  的 `emulator` 参数），关镜像时也不再拉无头关屏 scrcpy（`start_scrcpy_screen_off` 直接跳过）。
 - 不再修改手机分辨率/密度（wm size/density）：定位分辨率无关，无此需求。
 
 ## 打包

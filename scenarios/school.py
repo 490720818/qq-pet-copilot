@@ -235,10 +235,10 @@ class SchoolScenario(DeviceScenario):
             finished = self.goto_school()
             if finished:
                 if finished == 'graduated':
-                    # 毕业面板已关闭并回主页面：不计数，重新进学校选下一阶段课程；
-                    # 防循环由 goto_school 的 _graduated_once 保证
-                    if max_rounds and round_no >= max_rounds:
-                        return True
+                    # 毕业面板已关闭并回主页面：不计数也不算一轮（毕业不是上课），
+                    # 立即重新进学校选下一阶段课程，不等下一轮调度（否则要等
+                    # success_interval 才重试）；防循环由 goto_school 的
+                    # _graduated_once 保证（连续毕业抛异常走重试链）
                     log('毕业处理完成，重新进学校')
                     continue
                 if self.pending is not None:

@@ -9,9 +9,11 @@
    （如 28:05）：有则抛 TaskDeferred 延后 HIRE_CD_POLL_SECONDS 秒复测（不原地等待，
    CD 可能提前结束；延后期间调度器先跑其他任务），没有倒计时才点 hire
 4. 点击 hire 雇佣 -> 跳转到打工面板（面板加载需要时间：点击后固定等
-   HIRE_PANEL_WAIT 秒再检测，未出现则重试点击）
+   HIRE_PANEL_WAIT 秒再检测，未出现则重试点击；等待期间可能弹职业升级/
+   获得新职业弹窗，先 dismiss_career_popup 处理再检测）
 5. 后面跟打工流程一样：select_place 确认/重选打工地点（当前面板已是配置地点就直接用，
-   不是则 back 重置 -> OCR 找配置地点重进），归位选择框后点 select_box_2
+   不是则 back 重置 -> OCR 找配置地点重进），归位选择框后按 work.duration 点
+   对应工作选择框（10分钟/45分钟/2小时 -> select_box_1/2/3）
    （不做打工流程里的雇佣部分 work.hire_friend），点 work_start（去打工）开始打工
 6. 等待打工结束（work_end -> quit）后计数：当天雇佣好友次数 +1 持久化到
    runs/hire_friend_progress.json，同时计入一次打工（runs/work_progress.json）
@@ -44,7 +46,7 @@ from src.progress import (
 )
 from src.scenario import CLICK_INTERVAL, DeviceScenario, TaskDeferred
 from scenarios.friend_care import FriendCareScenario
-from scenarios.work import WorkScenario
+from scenarios.work import DURATION_BOXES, WorkScenario
 
 PROGRESS_FILE = HIRE_FRIEND_PROGRESS_FILE
 
@@ -99,7 +101,8 @@ class FriendHireScenario(FriendCareScenario):
 
     def _enter_work_panel(self) -> None:
         """点 hire 进打工面板：面板加载需要时间，点击后固定等 HIRE_PANEL_WAIT 秒
-        再检测选择框是否出现；未出现重试点击，多次失败抛异常走重试链路。"""
+        再检测选择框是否出现；等待期间可能弹职业升级/获得新职业弹窗（挡住面板），
+        先处理弹窗再检测；未出现重试点击，多次失败抛异常走重试链路。"""
         for attempt in range(1, HIRE_PANEL_ATTEMPTS + 1):
             hit = self.see('hire', source=self.dev.hierarchy())
             if hit:
@@ -109,6 +112,10 @@ class FriendHireScenario(FriendCareScenario):
             log(f'点击 hire，等待 {HIRE_PANEL_WAIT:.0f} 秒让打工面板加载')
             time.sleep(HIRE_PANEL_WAIT)
             for _check in range(HIRE_PANEL_CHECKS):
+                # 职业升级/获得新职业弹窗会挡住打工面板：处理后继续检测
+                if self.dismiss_career_popup():
+                    time.sleep(CLICK_INTERVAL)
+                    continue
                 if self.see('select_box_1'):
                     return
                 time.sleep(CLICK_INTERVAL)
@@ -116,17 +123,19 @@ class FriendHireScenario(FriendCareScenario):
         raise RuntimeError('多次点击 hire 仍未进入打工面板')
 
     def _select_job(self) -> None:
-        """选择第二个工作（最高收益）：归位选择框后点 select_box_2，
-        不做打工流程里的雇佣部分（不进 work_outworker 雇佣面板）。"""
+        """按配置 work.duration 选工作（10分钟/45分钟/2小时 -> select_box_1/2/3）：
+        归位选择框后点对应选择框，不做打工流程里的雇佣部分（不进 work_outworker 雇佣面板）。"""
         self.reset_select_boxes()
-        box = self.see('select_box_2')
-        if not box:
-            raise RuntimeError('未定位到工作选择框: select_box_2')
+        box = DURATION_BOXES.get(self.cfg.work.duration, 'select_box_2')
+        hit = self.see(box)
+        if not hit:
+            raise RuntimeError(f'未定位到工作选择框: {box}')
         time.sleep(CLICK_INTERVAL)
-        self.click(box[0], box[1])
+        self.click(hit[0], hit[1])
 
     def _hire_and_work(self) -> None:
-        """点 hire 进打工面板 -> 确认/重选打工地点 -> 选 select_box_2 -> work_start 开工 ->
+        """点 hire 进打工面板 -> 确认/重选打工地点 -> 按 work.duration 选工作选择框 ->
+        work_start 开工 ->
         等打工结束点 quit（不做打工流程里的雇佣部分，由调用方计数）。"""
         self._enter_work_panel()
         work = WorkScenario(self.dev)

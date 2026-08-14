@@ -35,7 +35,8 @@
   （hire_friend.times_per_day）时访问该好友家，OCR hire 按钮上的
   雇佣剩余 CD，有 CD 抛 TaskDeferred 延后 60 秒复测（不原地等待），
   没有 CD 点 hire 进打工面板（固定等 3 秒加载，重试点击），
-  按打工流程 select_place 确认/重选打工地点后选 select_box_2 点 work_start
+  按打工流程 select_place 确认/重选打工地点后按 work.duration 选工作选择框
+  （10分钟/45分钟/2小时 -> select_box_1/2/3）点 work_start
   打工一轮；打工结束后计数（雇佣好友 + 打工各一次）（scenarios/hire_friend.py）
 - 异常分级重试：场景执行抛异常 -> 先回主页面重进场景重试一次（页面状态
   错乱多半能自愈，不必重启）-> 仍失败才 adb reboot 重启设备 -> 启动 QQ ->
@@ -94,7 +95,7 @@ from src.progress import (
 )
 from src.queue_status import save_queue_status
 from src.recover import reenter_pet
-from src.scenario import TaskDeferred
+from src.scenario import StatBlocked, TaskDeferred
 from src.status_cache import update_status
 from src.u2dev import U2Device
 from PIL import Image
@@ -134,13 +135,19 @@ def parse_hhmm(value, field: str):
 
 
 class Runner:
-    def __init__(self, use_opener: bool = False, opener_serial: str | None = None):
+    def __init__(self, use_opener: bool = False, opener_serial: str | None = None,
+                 skip_opener: bool = False):
         '''use_opener: 模拟器模式，用 qqpet-module-opener（frida 注入）打开宠物主页；
-        opener_serial: 模拟器 ADB 地址（如 127.0.0.1:7555），默认用 config 的 adb.device_serial。'''
+        opener_serial: 模拟器 ADB 地址（如 127.0.0.1:7555），默认用 config 的 adb.device_serial；
+        skip_opener: 宠物主页已打开（如 GUI 手动重启刚恢复完），启动时跳过 opener 打开。'''
         self.use_opener = use_opener
         self.opener_serial = opener_serial
-        log(('模拟器模式已开启，启动时用 opener 打开宠物主页' if use_opener
-             else '未开启模拟器模式（源码运行需加 --emulator；打包的模拟器版默认开启）'))
+        self.skip_opener = skip_opener
+        if use_opener:
+            log('模拟器模式已开启，启动时用 opener 打开宠物主页' if not skip_opener
+                else '模拟器模式已开启，宠物主页已就绪，启动跳过 opener 打开')
+        else:
+            log('未开启模拟器模式（源码运行需加 --emulator；打包的模拟器版默认开启）')
         # 启动时就加载 OCR 引擎（模型加载要几秒，避免第一轮调度才卡）
         log('加载 OCR 引擎...')
         get_engine()
@@ -353,6 +360,19 @@ class Runner:
         """
         try:
             return self._run_round(scen)
+        except StatBlocked:
+            # 开始任务时体力/清洁不足弹窗：handle_low_stat_dialog 已回主页面护理
+            # 一次，立即重试当前任务一次（不截图/不重启/不算失败）；再被拦截则
+            # 按常规失败分流（护理一次没解决，交给失败退避/告警）
+            log(f'{name}: 体力/清洁不足已护理，重试当前任务')
+            try:
+                return self._run_round(scen)
+            except StatBlocked:
+                last = f'{name} 护理后重试仍被体力/清洁不足拦截'
+                log(last)
+                if fatal:
+                    self._alert_and_exit(last)
+                raise ScenarioFailed(last)
         except (PKDeferred, TaskDeferred):
             raise  # 场景主动要求临时推迟（如 PK 连续超时 / 雇佣好友发现活动进行中），不做重试/恢复
         except Exception as e:
@@ -546,7 +566,7 @@ class Runner:
             self._alert_and_exit(f'模拟器模式打开宠物主页失败: {e}')
 
     def run(self) -> None:
-        if self.use_opener:
+        if self.use_opener and not self.skip_opener:
             self._open_pet_page_or_exit()
         school_dead = False  # 学习今天不再可用（达上限/没有课程/执行失败）
         work_dead = False    # 打工今天不再可用
@@ -854,7 +874,7 @@ class TaskQueueRunner(Runner):
         self._current_task: str | None = None  # 正在执行的任务名（队列状态展示用）
 
     def run(self) -> None:
-        if self.use_opener:
+        if self.use_opener and not self.skip_opener:
             self._open_pet_page_or_exit()
         tasks: dict[str, _QueueTask] = {}
         order: list[str] = []
@@ -1041,8 +1061,13 @@ class TaskQueueRunner(Runner):
             # 收尾完成（已计数），本轮继续选择下一个主任务
         if self.employed_window_active():
             return None  # 被雇佣时间段内主任务不触发
+        now = datetime.now()
         for key in self._main_order:
-            if self._dead(tasks, key):
+            task = tasks.get(key)
+            # 跳过不可执行的任务（不在 order / 当天不可继续 / 退避未到点）：
+            # 否则幻影命中（如雇佣好友 CD 复测退避 60 秒，但 hire_friend_due 的
+            # 调度间隔只有几秒）会把排它后面的主任务（冒险/打工）全部卡住
+            if task is None or not self._eligible(task, now):
                 continue
             if key == 'adventure':
                 if self.adventure_due():
@@ -1370,7 +1395,8 @@ def run_test(name: str) -> None:
     log(f'{name} 返回: {result}')
 
 
-def run_scheduler(use_opener: bool, opener_serial: str | None = None) -> None:
+def run_scheduler(use_opener: bool, opener_serial: str | None = None,
+                  skip_opener: bool = False) -> None:
     """按 config.yaml 的 runner.engine 选择调度引擎运行（控制台与 GUI 打包后的
     --runner 子进程共用，保证两边引擎一致）。"""
     engine = str(getattr(load_config().runner, 'engine', 'task_queue')).strip()
@@ -1379,7 +1405,8 @@ def run_scheduler(use_opener: bool, opener_serial: str | None = None) -> None:
         engine = 'task_queue'
     log(f'调度引擎: {engine}')
     runner_cls = TaskQueueRunner if engine == 'task_queue' else Runner
-    runner_cls(use_opener=use_opener, opener_serial=opener_serial).run()
+    runner_cls(use_opener=use_opener, opener_serial=opener_serial,
+               skip_opener=skip_opener).run()
 
 
 if __name__ == '__main__':
@@ -1394,6 +1421,8 @@ if __name__ == '__main__':
                     help='强制关闭模拟器模式（打包的模拟器版默认开启时用）')
     ap.add_argument('--emulator-device', metavar='SERIAL',
                     help='模拟器 ADB 地址（如 127.0.0.1:7555），默认用 config 的 adb.device_serial')
+    ap.add_argument('--skip-opener', action='store_true',
+                    help='宠物主页已打开（如 GUI 手动重启刚恢复完），启动时跳过 opener 打开')
     args = ap.parse_args()
 
     if args.test:
@@ -1406,6 +1435,6 @@ if __name__ == '__main__':
         else:
             use_opener = is_emulator_build()  # 打包的模拟器版默认开启
         try:
-            run_scheduler(use_opener, args.emulator_device)
+            run_scheduler(use_opener, args.emulator_device, skip_opener=args.skip_opener)
         except KeyboardInterrupt:
             log('手动停止')

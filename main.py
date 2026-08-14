@@ -127,6 +127,12 @@ class _TestSignals(QObject):
     finished = pyqtSignal(bool)  # True=测试结束，恢复按钮可用
 
 
+class _RecoverSignals(QObject):
+    """手动重启按钮：后台线程 -> GUI 主线程 的信号（跨线程安全）。"""
+
+    finished = pyqtSignal(bool)  # True=恢复成功（宠物主页已打开），拉起调度器时跳过 opener
+
+
 class _FocusOutPlainTextEdit(QPlainTextEdit):
     """失焦时触发保存回调的多行文本框（QPlainTextEdit 没有 editingFinished）。"""
 
@@ -165,6 +171,7 @@ SETTING_FIELDS = [
     ('schedule.work_factor', '打工点数系数', 'int'),
     ('schedule.daily_point_limit', '每日点数上限', 'int'),
     ('schedule.check_interval', '状态检查间隔（秒）', 'int'),
+    ('schedule.main_page_checks', '主页面检测次数', 'int'),
     ('recover.method', '异常处理方式', ['重启设备', '重启游戏']),
     ('recover.emulator_restart_cmd', '模拟器重启命令（留空自动探测）', 'str'),
     ('notify.win_toast', '失败告警 Windows 通知', 'bool'),
@@ -184,6 +191,7 @@ TASK_SETTING_FIELDS = [
     ('school.times_per_day', '每天学习次数（0 不限）', 'int'),
     ('schedule.encourage_times', '鼓励次数（进行中页面快速点击）', 'int'),
     ('work.location', '打工地点', 'str'),
+    ('work.duration', '打工时长选择', ['10分钟', '45分钟', '2小时']),
     ('work.times_per_day', '每天打工次数（0 不限）', 'int'),
     ('work.employ_scroll_limit', '雇佣拖动上限', 'int'),
     ('adventure.times_per_day', '每天冒险次数（0 不冒险）', 'int'),
@@ -276,8 +284,8 @@ def kill_previous_scrcpy() -> None:
         log('清理本设备遗留 scrcpy 失败（可忽略）')
 
 
-def start_scrcpy() -> subprocess.Popen | None:
-    """以无边框、关屏、固定标题启动 scrcpy，返回进程。"""
+def start_scrcpy(emulator: bool = False) -> subprocess.Popen | None:
+    """以无边框、关屏（模拟器除外）、固定标题启动 scrcpy，返回进程。"""
     if not SCRCPY.is_file():
         log(f'未找到 {SCRCPY}，跳过 scrcpy 启动')
         return None
@@ -285,12 +293,16 @@ def start_scrcpy() -> subprocess.Popen | None:
     serial = load_config().adb.device_serial
     if serial:  # 指定设备序列号
         cmd += ['-s', serial]
-    cmd += ['--no-audio',  # 只要画面，不要音频（镜像/自动化用不到声音）
-            '--turn-screen-off', '--window-borderless', '--stay-awake',
+    cmd += ['--no-audio']  # 只要画面，不要音频（镜像/自动化用不到声音）
+    if not emulator:
+        # 模拟器没有物理屏幕可关，--turn-screen-off 无效且可能报错
+        cmd.append('--turn-screen-off')
+    cmd += ['--window-borderless', '--stay-awake',
             f'--window-title={_scrcpy_title()}',
             # 先放到屏幕外，嵌入容器时再移回来，避免窗口先弹出再嵌入的闪烁
             '--window-x=-2000', '--window-y=-2000']
-    log(f'启动 scrcpy（--no-audio --turn-screen-off --window-borderless'
+    flags = '--no-audio' + ('' if emulator else ' --turn-screen-off') + ' --window-borderless'
+    log(f'启动 scrcpy（{flags}'
         + (f'，设备 {serial}）...' if serial else '）...'))
     proc = subprocess.Popen(
         cmd,
@@ -306,13 +318,17 @@ def start_scrcpy() -> subprocess.Popen | None:
     return proc
 
 
-def start_scrcpy_screen_off() -> subprocess.Popen | None:
+def start_scrcpy_screen_off(emulator: bool = False) -> subprocess.Popen | None:
     """无头 scrcpy 关闭设备屏幕：--turn-screen-off + 保持唤醒，不传画面/音频/不开窗口。
 
     画面镜像关闭后用它把设备屏幕真正关掉（比亮度 0 更彻底）；
     --stay-awake 让设备保持唤醒（渲染管线不断，OCR/自动化照常），
     --no-window 不显示任何窗口。返回进程；失败返回 None（屏幕保持原状）。
+    模拟器没有物理屏幕可关：emulator=True 时记日志直接返回 None。
     """
+    if emulator:
+        log('模拟器模式：跳过关屏（模拟器无物理屏幕可关）')
+        return None
     if not SCRCPY.is_file():
         log(f'未找到 {SCRCPY}，跳过屏幕关闭')
         return None
@@ -481,6 +497,10 @@ class MainWindow(QMainWindow):
         self._btn_connect_test = QPushButton('连接测试')
         self._btn_connect_test.clicked.connect(self._test_connect)
         right_btns.addWidget(self._btn_connect_test)
+        # 手动重启：按 recover.method 配置执行一次异常恢复（重启设备/重启游戏回宠物页）
+        self._btn_manual_recover = QPushButton('手动重启')
+        self._btn_manual_recover.clicked.connect(self._manual_recover)
+        right_btns.addWidget(self._btn_manual_recover)
         btn_row.addLayout(right_btns)
 
         # 日志页：顶部账号状态条 + 当日统计条 + 日志区
@@ -530,6 +550,7 @@ class MainWindow(QMainWindow):
         self._scrcpy_proc: subprocess.Popen | None = None
         self._runner_proc: subprocess.Popen | None = None
         self._runner_started_at: float | None = None  # 调度器启动时刻（monotonic），日志页显示运行时间用
+        self._recovering = False  # 手动重启进行中：期间开始/停止按钮联动禁用
 
         # 日志：本进程监听器 + 调度子进程 stdout -> 队列 -> 定时器刷到界面
         self._log_queue: queue.Queue = queue.Queue()
@@ -562,6 +583,9 @@ class MainWindow(QMainWindow):
         # 用信号跨线程投递）
         self._test_signals = _TestSignals()
         self._test_signals.finished.connect(self._set_test_btn_enabled)
+        # 手动重启完成 -> 主线程恢复按钮/拉回调度器（同连接测试的信号模式）
+        self._recover_signals = _RecoverSignals()
+        self._recover_signals.finished.connect(self._on_recover_finished)
 
         QTimer.singleShot(0, self._start_all)
 
@@ -573,10 +597,10 @@ class MainWindow(QMainWindow):
         try:
             kill_previous_scrcpy()
             if self.btn_scrcpy.isChecked():
-                self._scrcpy_proc = start_scrcpy()
+                self._scrcpy_proc = start_scrcpy(self.emulator_mode)
             else:
                 log('画面镜像开关关闭，跳过启动')
-                self._screen_off_proc = start_scrcpy_screen_off()
+                self._screen_off_proc = start_scrcpy_screen_off(self.emulator_mode)
         except Exception:
             import traceback
 
@@ -614,7 +638,7 @@ class MainWindow(QMainWindow):
             return
         had_proc = self._scrcpy_proc is not None
         self.scrcpy_view.set_hwnd(None)
-        self._scrcpy_proc = start_scrcpy()
+        self._scrcpy_proc = start_scrcpy(self.emulator_mode)
         if self._scrcpy_proc:
             log('scrcpy 已重连' if had_proc else 'scrcpy 已启动')
             self._embed_tries = 0
@@ -934,22 +958,21 @@ class MainWindow(QMainWindow):
             from src.emulator import find_instance
 
             serial = load_config().adb.device_serial
-            if not serial:
-                return
-            inst = find_instance(serial)
-            if inst is None:
-                return
-            for key, value in (('emulator.name', inst.name),
-                               ('emulator.path', str(inst.path))):
+            inst = find_instance(serial) if serial else None
+            hint = f'自动探测：{inst.name}' if inst else '自动探测：未找到匹配实例'
+            for key, value in (('emulator.name', inst.name if inst else ''),
+                               ('emulator.path', str(inst.path) if inst else '')):
                 item = self._setting_widgets.get(key)
-                if item and value:
-                    item[0].setPlaceholderText(f'自动探测：{value}')
+                if not item:
+                    continue
+                item[0].setPlaceholderText(
+                    f'自动探测：{value}' if value else hint)
         except Exception:
             pass  # 占位符只是提示，探测失败不影响设置页
 
     def _on_tab_changed(self, index: int) -> None:
-        """切到任务页（第 3 个）或设置页（第 4 个）时加载当前配置。"""
-        if index in (2, 3):
+        """切到任务页（第 4 个）或设置页（第 5 个）时加载当前配置。"""
+        if index in (3, 4):
             self.load_settings()
 
     def _on_care_method_changed(self, method: str) -> None:
@@ -1054,6 +1077,65 @@ class MainWindow(QMainWindow):
 
         threading.Thread(target=work, daemon=True).start()
 
+    def _manual_recover(self) -> None:
+        """顶部"手动重启"按钮：按 recover.method 配置执行一次异常恢复
+        （重启设备/重启游戏 -> 回宠物主页），后台线程执行。
+
+        调度器在跑会先停掉：恢复要重启设备/强停 QQ，调度器的 u2 连接必然失效，
+        让它自己撞异常恢复不如先停干净；恢复完成自动启动调度器
+        （_on_recover_finished），与"开始/停止"按钮联动——恢复期间两个按钮都
+        禁用（避免中途误点"开始"撞上正在重启的设备），恢复完成调度器跑起来后
+        "停止"自然可用。
+        """
+        self._btn_manual_recover.setEnabled(False)
+        self._recovering = True
+        self.btn_start.setEnabled(False)
+        self.btn_stop.setEnabled(False)
+        if self._runner_proc and self._runner_proc.poll() is None:
+            log('手动重启：先停止调度器')
+            self.stop_runner()
+
+        def work() -> None:
+            ok = False
+            try:
+                from src.recover import reenter_pet
+
+                cfg = load_config()
+                log(f'手动重启：按配置执行异常恢复（recover.method={cfg.recover.method}）...')
+                reenter_pet(
+                    self._get_adb_dev(),
+                    method=cfg.recover.method,
+                    use_opener=self.emulator_mode,
+                    opener_serial=self.emulator_device,
+                    emulator_restart_cmd=cfg.recover.emulator_restart_cmd,
+                    emulator_cfg=cfg.emulator)
+                ok = True
+                log('手动重启完成，已回宠物主页')
+            except Exception as e:
+                log(f'手动重启失败: {e}')
+            finally:
+                try:  # 窗口可能已关闭（信号对象已销毁）
+                    self._recover_signals.finished.emit(ok)
+                except RuntimeError:
+                    pass
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _on_recover_finished(self, recovered: bool) -> None:
+        """手动重启结束（主线程）：恢复按钮可用；恢复完成后自动启动调度器。
+
+        恢复成功时宠物主页已由恢复流程打开（模拟器模式是 opener 注入打开的），
+        拉起调度器跳过其启动时的 opener 打开，避免一次手动重启开两次宠物主页；
+        恢复失败则照常让调度器自己用 opener 尝试。
+        """
+        try:
+            self._btn_manual_recover.setEnabled(True)
+        except RuntimeError:  # 窗口已关闭，控件已销毁
+            return
+        self._recovering = False
+        log('手动重启结束，启动调度器')
+        self.start_runner(skip_opener=recovered)
+
     def load_settings(self) -> None:
         try:
             data = settings_io.load_raw()
@@ -1084,6 +1166,9 @@ class MainWindow(QMainWindow):
         method_w, _ = self._setting_widgets.get('care.method', (None, None))
         if method_w is not None:
             self._on_care_method_changed(method_w.currentText())
+        # 模拟器字段的"自动探测"占位符按当前设备序列号刷新（改了序列号再进设置页能看到）
+        if self.emulator_mode:
+            self._fill_emulator_placeholders()
 
     def _fill_devices(self, combo: QComboBox, current: str) -> None:
         """枚举在线 adb 设备填充序列号下拉（可编辑，支持手动输入），
@@ -1170,6 +1255,9 @@ class MainWindow(QMainWindow):
         log(f'配置已保存: {key} = {fixed}')
         if key in ('adb.device_serial', 'adb.path'):
             # adb 连接相关：重拉 scrcpy，调度器也需要重启重建连接
+            if key == 'adb.device_serial' and self.emulator_mode:
+                # 序列号变更立即重新探测实例，刷新实例名称/安装路径的占位提示
+                self._fill_emulator_placeholders()
             self._restart_scrcpy()
             if self._runner_proc and self._runner_proc.poll() is None:
                 self._restart_timer.start()  # 防抖：连续修改多个字段只重启一次
@@ -1199,7 +1287,7 @@ class MainWindow(QMainWindow):
         kill_our_scrcpy(self._scrcpy_proc)
         self.scrcpy_view.set_hwnd(None)
         self._connect_emulator_adb()
-        self._scrcpy_proc = start_scrcpy()
+        self._scrcpy_proc = start_scrcpy(self.emulator_mode)
         if self._scrcpy_proc:
             self._embed_tries = 0
             self._embed_timer.start(500)
@@ -1227,7 +1315,7 @@ class MainWindow(QMainWindow):
             return  # 已在运行
         self.scrcpy_view.set_hwnd(None)
         self._connect_emulator_adb()
-        self._scrcpy_proc = start_scrcpy()
+        self._scrcpy_proc = start_scrcpy(self.emulator_mode)
         if self._scrcpy_proc:
             self._embed_tries = 0
             self._embed_timer.start(500)
@@ -1238,8 +1326,9 @@ class MainWindow(QMainWindow):
         kill_our_scrcpy(self._scrcpy_proc)
         self._scrcpy_proc = None
         self.scrcpy_view.set_hwnd(None)
-        # 镜像关闭：用无头 scrcpy 真正关掉设备屏幕（保持自动化可用）
-        self._screen_off_proc = start_scrcpy_screen_off()
+        # 镜像关闭：用无头 scrcpy 真正关掉设备屏幕（保持自动化可用）；
+        # 模拟器模式 start_scrcpy_screen_off 内部直接跳过
+        self._screen_off_proc = start_scrcpy_screen_off(self.emulator_mode)
 
     def _restart_runner(self) -> None:
         if self._runner_proc and self._runner_proc.poll() is None:
@@ -1249,7 +1338,9 @@ class MainWindow(QMainWindow):
 
     # ---- 调度器控制：开始 = 启动子进程，停止 = 结束子进程 ----
 
-    def start_runner(self) -> None:
+    def start_runner(self, skip_opener: bool = False) -> None:
+        """启动调度器子进程；skip_opener=True 时（手动重启刚恢复完，宠物主页已
+        打开）给 runner 传 --skip-opener，跳过模拟器模式启动时的 opener 打开。"""
         if self._runner_proc and self._runner_proc.poll() is None:
             return
         log('启动调度器...')
@@ -1268,6 +1359,10 @@ class MainWindow(QMainWindow):
             cmd.append('--no-emulator')
         if self.emulator_device:
             cmd += ['--emulator-device', self.emulator_device]
+        # --skip-opener 只对模拟器模式有意义（跳过启动时 opener 打开）；
+        # 非模拟器模式 use_opener=False 本就不开 opener，不传避免无意义参数
+        if skip_opener and self.emulator_mode:
+            cmd.append('--skip-opener')
         self._runner_proc = subprocess.Popen(
             cmd,
             cwd=str(PROJECT_ROOT),
@@ -1312,12 +1407,17 @@ class MainWindow(QMainWindow):
             added = True
         if added and was_at_bottom:
             bar.setValue(bar.maximum())
-        # 按调度器进程状态同步按钮
+        # 按调度器进程状态同步按钮；手动重启进行中保持两个按钮禁用
+        # （_manual_recover 里已禁用，_drain_logs 每 100ms 刷新时不能按进程状态放开）
         running = bool(self._runner_proc and self._runner_proc.poll() is None)
         if not running:
             self._runner_started_at = None
-        self.btn_start.setEnabled(not running)
-        self.btn_stop.setEnabled(running)
+        if self._recovering:
+            self.btn_start.setEnabled(False)
+            self.btn_stop.setEnabled(False)
+        else:
+            self.btn_start.setEnabled(not running)
+            self.btn_stop.setEnabled(running)
 
     # ---- 退出 ----
 
@@ -1421,7 +1521,7 @@ def _strip_emulator_args(argv: list[str]) -> list[str]:
     i = 1
     while i < len(argv):
         arg = argv[i]
-        if arg in ('--emulator', '--no-emulator'):
+        if arg in ('--emulator', '--no-emulator', '--skip-opener'):
             i += 1
             continue
         if arg == '--emulator-device':
@@ -1434,6 +1534,7 @@ def _strip_emulator_args(argv: list[str]) -> list[str]:
 
 def main() -> None:
     emulator, emulator_device = _parse_emulator_args()
+    skip_opener = '--skip-opener' in sys.argv
     if '--runner' in sys.argv:
         # 调度器子进程模式（打包后由 GUI 以 --runner 参数拉起）
         # windowed 打包的程序 stdout 用本地编码(GBK)，强制改 UTF-8，否则 GUI 日志乱码
@@ -1447,7 +1548,8 @@ def main() -> None:
 
         # 与控制台入口一致：按 config.yaml 的 runner.engine 选调度引擎
         # （之前这里写死 legacy Runner，导致打包版不写 runs/queue_status.json）
-        run_scheduler(use_opener=emulator, opener_serial=emulator_device)
+        run_scheduler(use_opener=emulator, opener_serial=emulator_device,
+                      skip_opener=skip_opener)
         return
     _ensure_runtime_resources(emulator)
     app = QApplication(_strip_emulator_args(sys.argv))

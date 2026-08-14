@@ -243,6 +243,12 @@ LOCATORS: dict[str, dict] = {
     # 范围内带雇佣剩余 CD 倒计时（如 28:05），hire_friend.py 裁这块 OCR 判倒计时
     'hire': {'xpath': ['//*[@content-desc="hire"]']},
 
+    # ---- 体力/清洁不足弹窗 ----
+    # 点开始上课/打工/冒险/PK 时，体力/清洁不足会弹整句 content-desc 提示：
+    # 命中后回主页面护理一次再重试当前任务（src/scenario.py handle_low_stat_dialog）
+    'pet_low_energy': {'xpath': ['//*[@content-desc="你的宠物体力不足，请回家补充体力"]']},
+    'pet_low_clean': {'xpath': ['//*[@content-desc="你的宠物清洁值不足，请回家洗澡"]']},
+
     # ---- 照顾 ----
     # 宠物状态面板区域：care.read_status 只裁这块做 OCR（整屏/半屏太慢）；
     # 位置固定，cache 命中一次后 see_bounds() 直接复用 bounds。

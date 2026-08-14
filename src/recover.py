@@ -141,12 +141,26 @@ def _restart_emulator_auto(adb: Device,
 
 def _adb_back_online(adb: Device) -> None:
     """模拟器重启后恢复 adb：重启 adb 服务（之前的 adb reboot 可能已把服务卡死）、
-    重新 connect 远程端口、轮询等开机完成。"""
+    重新 connect 远程端口、轮询等开机完成。
+
+    adb connect 在模拟器还在开机/adb 服务刚重启时可能整次挂起（超过
+    connect_remote 内置的 10s 超时直接抛 TimeoutExpired）：在开机超时窗口内
+    重试 connect，连不上再等到点报错。"""
     subprocess.run([adb.adb, 'kill-server'], capture_output=True, timeout=30,
                    creationflags=_NO_WINDOW, check=False)
     subprocess.run([adb.adb, 'start-server'], capture_output=True, timeout=30,
                    creationflags=_NO_WINDOW, check=False)
-    adb.connect_remote()
+    deadline = time.monotonic() + EMULATOR_BOOT_TIMEOUT
+    while True:
+        try:
+            adb.connect_remote()
+            break
+        except subprocess.TimeoutExpired:
+            if time.monotonic() >= deadline:
+                raise RuntimeError(
+                    f'模拟器重启后 adb connect {adb.serial} 持续超时') from None
+            log(f'adb connect {adb.serial} 超时，模拟器可能还在开机，重试')
+            time.sleep(BOOT_POLL_INTERVAL)
     adb.wait_boot_completed(EMULATOR_BOOT_TIMEOUT, BOOT_POLL_INTERVAL)
     log('模拟器重启完成，已开机')
 
