@@ -4,9 +4,10 @@
 按配置 recover.method 二选一：
 - 重启设备（默认）：adb reboot -> 等开机完成 -> 亮屏上滑解锁（仅滑动锁屏）-> 启动 QQ；
 - 重启游戏：只强停 QQ 再重开（设备不重启，快），适合游戏界面卡死；
-之后统一：等待并紧凑双击 Q宠-* 入口进宠物页面（间隔 0.05s，真机验证 0.3s
-会被识别成两次单击）-> 返回新的 U2Device 连接（旧连接随重启失效），
-由调用方刷新各场景的 dev 后继续后续任务。
+之后统一：等待并紧凑双击 Q宠-* 入口进宠物页面（minitouch 两连击，间隔
+~0.03s；真机验证 0.3s 会被识别成两次单击，d.click 走 JSON-RPC 单次往返就
+可能超窗，必须用 minitouch 压间隔）-> 返回新的 U2Device 连接（旧连接随
+重启失效），由调用方刷新各场景的 dev 后继续后续任务。
 
 QQ 宠物入口的 content-desc 形如 "Q宠-1000004"，后缀数字随账号/宠物不固定，
 按 descriptionStartsWith 前缀匹配。
@@ -40,6 +41,10 @@ U2_CONNECT_INTERVAL = 5.0
 PET_ENTRY_TIMEOUT = 120.0   # 启动 QQ 后等 Q宠-* 入口出现的超时（秒）
 PET_ENTRY_POLL_INTERVAL = 3.0
 PET_ENTRY_CLICK_TRIES = 3   # 点入口后宠物页没出来时的重试点击次数
+PET_ENTRY_SETTLE_SECONDS = 0.5  # 找到入口后等页面稳定再点的时间（原 2s，太慢；
+                                # 点不进主页有 back 退回重试兜底，不用等那么久）
+PET_ENTRY_DOUBLE_CLICK_INTERVAL = 0.03  # 紧凑双击两击间隔（秒）：minitouch 事件
+                                        # 本地直发，0.03s 足够压进应用双击窗口
 PET_PAGE_TIMEOUT = 15.0    # 每次点击后等宠物主页加载的超时（秒，冷启动可能要十几秒）
 PET_PAGE_POLL_INTERVAL = 3.0
 
@@ -93,6 +98,15 @@ def reenter_pet(adb: Device, method: str = "重启设备",
         if _wait_main_page(dev):
             return dev
         log(f'点击入口后宠物主页未出现，重试点击 ({attempt}/{PET_ENTRY_CLICK_TRIES})')
+        # 双击可能落在"单击页"（入口已不在当前页）：back 退回 QQ 入口页再重试，
+        # 避免在错误页面空等入口出现直到超时；入口还在（点击被吞）则直接重试
+        try:
+            if not dev.d(descriptionStartsWith=PET_ENTRY_DESC_PREFIX).exists:
+                log('未检测到宠物入口（可能进了单击页），按 back 退回')
+                dev.d.press('back')
+                time.sleep(PET_ENTRY_POLL_INTERVAL)
+        except Exception as e:
+            log(f'退回单击页失败: {e}')
     raise RuntimeError(f'点击 {PET_ENTRY_CLICK_TRIES} 次宠物入口仍未进入宠物页面')
 
 
@@ -168,8 +182,10 @@ def _adb_back_online(adb: Device) -> None:
 def _click_pet_entry(dev: U2Device) -> None:
     """等 Q宠-* 入口出现并紧凑双击进入。
 
-    真机调试结论：单击只选中不跳转；双击间隔 0.3s 会被识别成两次单击，
-    间隔必须压到 0.05s（应用的双击判定窗口很短）。
+    真机调试结论：单击只选中不跳转；双击间隔 0.3s 会被识别成两次单击（进单击页），
+    间隔必须压进应用很短的双击判定窗口。d.click 走 JSON-RPC（单次往返几十~几百
+    ms），两次 click 的物理间隔不可控；改用 minitouch 两连击（本地直发，间隔
+    ~0.03s）。点完若主页没出，外层 reenter_pet 会 back 退回入口页重试。
     """
     log(f'等待 QQ 宠物入口（{PET_ENTRY_DESC_PREFIX}*）出现...')
     deadline = time.monotonic() + PET_ENTRY_TIMEOUT
@@ -177,17 +193,29 @@ def _click_pet_entry(dev: U2Device) -> None:
         ui = dev.d(descriptionStartsWith=PET_ENTRY_DESC_PREFIX)
         if ui.exists:
             x, y = ui.center()
-            log(f'找到 QQ 宠物入口 ({int(x)}, {int(y)})，2s 后紧凑双击进入宠物页面')
-            time.sleep(2)  # 入口刚渲染出来时点击无效，等页面稳定再点
-            dev.click(int(x), int(y))
-            time.sleep(0.05)
-            dev.click(int(x), int(y))
+            log(f'找到 QQ 宠物入口 ({int(x)}, {int(y)})，紧凑双击进入宠物页面')
+            time.sleep(PET_ENTRY_SETTLE_SECONDS)  # 入口刚渲染出来时点击无效，短等页面稳定
+            _compact_double_click(dev, int(x), int(y))
             return
         if time.monotonic() >= deadline:
             raise RuntimeError(
                 f'启动 QQ 后 {PET_ENTRY_TIMEOUT:.0f}s 内未出现宠物入口'
                 f'（{PET_ENTRY_DESC_PREFIX}*）')
         time.sleep(PET_ENTRY_POLL_INTERVAL)
+
+
+def _compact_double_click(dev: U2Device, x: int, y: int) -> None:
+    """minitouch 两连击进入宠物入口（间隔 ~0.03s，压进应用双击窗口）。
+
+    用 minitouch 事件（d.touch.down/up）而不是 d.click：d.click 是 JSON-RPC 调用，
+    单次往返几十~几百 ms，两次 click 的物理间隔容易超 0.3s，被应用识别成
+    两次单击，落在"单击页"而不是宠物主页。
+    """
+    dev.touch_down(x, y)
+    dev.touch_up(x, y)
+    time.sleep(PET_ENTRY_DOUBLE_CLICK_INTERVAL)
+    dev.touch_down(x, y)
+    dev.touch_up(x, y)
 
 
 def _wait_main_page(dev: U2Device) -> bool:
