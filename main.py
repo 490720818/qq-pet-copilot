@@ -207,6 +207,7 @@ TASK_SETTING_FIELDS = [
     ('care.method', '护理方式', ['一键护理', 'ocr检测']),
     ('care.energy_threshold', '体力阈值', 'int'),
     ('care.clean_threshold', '清洁阈值', 'int'),
+    ('care.interval_seconds', '护理间隔（秒）', 'int'),
     ('employed.action', '被雇佣后处理', ['等到25/75（小于45min）', '等到25/75', '立刻召回']),
     ('employed.enabled', '被雇佣开关', 'bool'),
     ('employed.time_range', '被雇佣时间段（HH:MM-HH:MM）', 'str'),

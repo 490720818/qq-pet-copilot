@@ -18,6 +18,7 @@ import os
 import re
 import sys
 import time
+from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -143,6 +144,7 @@ def nearest_item_count(results: list[tuple[str, int, int, float]],
 class CareScenario(DeviceScenario):
     def __init__(self, dev=None):
         super().__init__(dev)
+        self.last_care_at: datetime | None = None  # 上次护理检查时间（护理间隔用）
         self.energy_threshold = self.cfg.care.energy_threshold
         self.clean_threshold = self.cfg.care.clean_threshold
         self.method = self.cfg.care.method

@@ -122,7 +122,9 @@ $PY build.py --emulator          # 模拟器版（内置 hook JS + frida-server 
 - **任务队列调度**（默认引擎 `task_queue`）：`TaskQueueRunner` 每轮按 `tasks.order`
   顺序扫描，执行第一个"可执行"的任务（`_eligible`：enabled / enabled_time_range /
   trigger 窗口 / 退避间隔 → `_task_due`：任务自身配额与场景时间窗），跑完一个回顶部
-  重扫；成功按 `success_interval`（interval 触发再叠加 `interval_seconds` 最小间隔）、
+  重扫；成功按 `success_interval`（interval 触发再叠加 `interval_seconds` 最小间隔；
+  登记了 pending 的延时收尾任务除外——节奏由 `pending.until` 控制，`next_at`
+  立即到期，结算完成的同一轮调度即可接力，避免短活动时凭空多等）、
   失败按 `failure_interval` 退避；daily 触发到点打开执行窗口（窗口内可反复执行直到
   任务返回 False，下一个时间点重开窗口并清除当天不可继续标记）；没有任务可执行时
   睡到最近等待点（上限 `QUEUE_POLL_INTERVAL` 轮询热加载配置）；冒险/学习/打工/雇佣好友
@@ -139,6 +141,9 @@ $PY build.py --emulator          # 模拟器版（内置 hook JS + frida-server 
   收尾：回主页面**出门后**才出现结算页（学习"教师评语"/打工"打工总结"（含雇佣
   好友名称），即 `end_name` 的"分享"按钮），见结算页点 quit（落在出门页面）、
   `on_finish()` 计数，还在进行中（计时误差）则 OCR 剩余时间重估 `until` 下轮再来；
+  多轮检测既没结算页也没进行中状态则直接丢弃该 pending（不计数，不重估时间——
+  识别不到剩余时间会按 60 秒兜底永远卡在重估循环；结算页若稍后真出现，后续主任务
+  出门时会被 wait_busy_end 的结算检测兜底计数）；
   **鼓励宠物**：按钮只在学习/打工进行中页面常驻（结算页实测没有），非阻塞调度在
   登记 pending 离开进行中页面前就地按 `schedule.encourage_times` 快速点够
   （`_encourage_burst()`，0 为不鼓励），finish_pending 重估时还在进行中也会就地再点，
@@ -150,6 +155,10 @@ $PY build.py --emulator          # 模拟器版（内置 hook JS + frida-server 
 - **踩踩/PK 调度**：执行器主循环在主页面按各自 `start_time` / 当天次数 / 失败延后期调度
   （`visit_due()` / `pk_due()`），跑对应场景 `run()` 完整流程；不做长等待插空
   （好友入口只在主页面，上课/打工/冒险等待页没有）。
+- **护理调度**：每次护理检查（`check_and_care`，体力/清洁不足则喂食/洗澡）按
+  `care.interval_seconds`（默认 60 秒，距上次检查起算，`care_due()`）节流，
+  两种引擎共用（legacy 主循环每轮开头、队列引擎 care 任务）；场景上次检查时间
+  记在 `CareScenario.last_care_at`。
 - **好友护理调度**：`friend_care.enabled` 开启且配置了 `friend_name` 时，主循环按
   `friend_care.time_range`（HH:MM-HH:MM，支持跨零点）+ `friend_care.interval_seconds`
   调度间隔（`friend_care_due()`，距上次巡检完成时间起算）调度；每次调度只做一次
@@ -161,7 +170,9 @@ $PY build.py --emulator          # 模拟器版（内置 hook JS + frida-server 
   仍失败才抛给调度器走恢复链路。
 - **好友雇佣调度**：`hire_friend.enabled` 开启且配置了 `friend_name` 时，主循环在
   `hire_friend.time_range`（HH:MM-HH:MM，支持跨零点）时间段内按
-  `hire_friend.interval_seconds`（默认 5 秒，距上次调度触发起算）/ 当天次数
+  `hire_friend.interval_seconds`（默认 5 秒，距上次执行起算，`last_hire_at` 在执行处记录，
+  `hire_friend_due()` 保持纯查询无副作用——`_main_choice` 每轮被主任务组内多个任务的
+  扫描重复评估，判定里记时间会把雇佣卡死）/ 当天次数
   （`times_per_day`，进度存 `runs/hire_friend_progress.json`）/ 失败延后期调度
   （`hire_friend_due()`）；**雇佣前预检**：场景先出门检测宠物是否正在打工/学习/冒险/
   被雇佣中（基类 `detect_busy_remaining()`，OCR 剩余时间，识别不到兜底 60 秒），

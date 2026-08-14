@@ -236,6 +236,12 @@ class Runner:
             return False
         return datetime.now().time() >= self.pk_start
 
+    def care_due(self) -> bool:
+        """是否该做护理检查了：距上次检查已过 care.interval_seconds（默认 60 秒）。"""
+        last = getattr(self.care, 'last_care_at', None)
+        interval = max(1, int(getattr(self.care.cfg.care, 'interval_seconds', 60) or 60))
+        return last is None or datetime.now() >= last + timedelta(seconds=interval)
+
     def friend_care_due(self) -> bool:
         """是否该好友护理了：已启用、配置了好友名称、当前时间在时间段内、
         距上次巡检已过 friend_care.interval_seconds 且不在失败延后期。"""
@@ -258,7 +264,9 @@ class Runner:
 
     def hire_friend_due(self) -> bool:
         """是否该雇佣好友了：已启用、配置了好友名称、当前在雇佣时间段内、
-        距上次调度已过 hire_friend.interval_seconds、当天次数未满且不在失败延后期。"""
+        距上次执行已过 hire_friend.interval_seconds、当天次数未满且不在失败延后期。
+        纯查询无副作用：last_hire_at 由执行处记录——本方法每轮会被主任务组内
+        多个任务的扫描重复调用（_main_choice），在判定里记时间会把雇佣卡死。"""
         hf = self.hire_friend.cfg.hire_friend
         if (not hf.enabled or not hf.times_per_day or not hf.friend_name.strip()
                 or self._deferred('雇佣好友')):
@@ -280,8 +288,6 @@ class Runner:
         self._hf_bad_time_logged = False
         if not in_time_range(datetime.now().time(), start, end):
             return False
-        # 通过判定即视为一次调度触发（间隔从触发时刻起算，收尾逻辑同打工 pending）
-        self.hire_friend.last_hire_at = datetime.now()
         return True
 
     def employed_due(self) -> bool:
@@ -550,9 +556,11 @@ class Runner:
                 # 热修改：每轮调度前重读配置，设置页存盘最迟下一轮生效
                 self.reload_config()
 
-                # 所有任务开始之前：检查一次体力/清洁，不足则喂食/洗澡；
+                # 所有任务开始之前：按护理间隔检查一次体力/清洁，不足则喂食/洗澡；
                 # 失败直接抛给外层：走 adb reboot 恢复链路（src/recover.py）
-                self.care.check_and_care()
+                if self.care_due():
+                    self.care.check_and_care()
+                    self.care.last_care_at = datetime.now()
 
                 # 被雇佣时间段内主任务（冒险/学习/打工/雇佣好友）不触发
                 suppress_main = self.employed_window_active()
@@ -632,6 +640,7 @@ class Runner:
                 # TaskDeferred 延后 60 秒复测，不原地等待）
                 if not suppress_main and not self.hire_friend_dead and self.hire_friend_due():
                     log('到达雇佣好友调度时间，处理好友雇佣')
+                    self.hire_friend.last_hire_at = datetime.now()  # 调度间隔从实际执行起算
                     try:
                         done = self.run_one(self.hire_friend, '雇佣好友', fatal=False)
                     except TaskDeferred as d:
@@ -1054,7 +1063,7 @@ class TaskQueueRunner(Runner):
             # 主任务组互斥：组内统一决定本轮执行谁，order 里谁先扫到不影响结果
             return self._main_choice(tasks, ctx) == key
         if key == 'care':
-            return True
+            return self.care_due()
         if key == 'visit':
             return self.visit_due()
         if key == 'pk':
@@ -1118,11 +1127,16 @@ class TaskQueueRunner(Runner):
         if task.key == 'care':
             # 护理检查异常直接抛给外层走重启恢复（同 legacy）
             self.care.check_and_care()
+            self.care.last_care_at = datetime.now()
             task.next_at = self._success_at(cfg, now)
             return
         scen = {'adventure': self.adventure, 'visit': self.visit, 'pk': self.pk,
                 'hire_friend': self.hire_friend, 'friend_care': self.friend_care,
                 'school': self.school, 'work': self.work}[task.key]
+        if task.key == 'hire_friend':
+            # 调度间隔从实际执行起算（不在 hire_friend_due 判定里记：_main_choice
+            # 每轮会被同组任务的扫描重复评估，查询副作用会把雇佣好友卡死）
+            self.hire_friend.last_hire_at = datetime.now()
         try:
             produced = self.run_one(scen, task.name, fatal=task.key in ('school', 'work'))
         except PKDeferred:
@@ -1143,7 +1157,13 @@ class TaskQueueRunner(Runner):
                 self._back_to_main(f'{task.name} 失败后')
             return
         if produced:
-            task.next_at = self._success_at(cfg, now)
+            if getattr(scen, 'pending', None) is not None:
+                # 延时收尾（pending）的任务节奏由 pending.until 控制：next_at 立即到期，
+                # 结算完成的同一轮调度就能接力下一个主任务；若按 success_interval
+                # 从出发起算，活动短于 success_interval 时结算后会凭空多等
+                task.next_at = now
+            else:
+                task.next_at = self._success_at(cfg, now)
         else:
             task.dead = True
             log(f'{task.name} 当天不可继续')

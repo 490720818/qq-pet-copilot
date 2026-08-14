@@ -64,6 +64,8 @@ care:
   energy_threshold: 60
   # 清洁阈值：调度任务前检查，低于该值则洗澡到达标
   clean_threshold: 60
+  # 护理间隔（秒）：距上次护理检查至少间隔这么久才再次检查
+  interval_seconds: 60
 
 visit:
   # 每天踩踩次数，0 为不踩；进度按天持久化
@@ -123,9 +125,9 @@ tasks:
   care:
     enabled: true
     trigger: interval
-    interval_seconds: 300
+    interval_seconds: 60
     enabled_time_range: 00:00:00-23:59:59
-    success_interval: 300
+    success_interval: 60
     failure_interval: 600
   adventure:
     enabled: true

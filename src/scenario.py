@@ -465,7 +465,11 @@ class DeviceScenario:
         （落在出门页面，由后续任务继续）、on_finish() 计数，返回 True；
         活动还在进行中（计时误差）时 pend['encourage'] 则先在进行中页面就地鼓励
         （结算页没有鼓励按钮，鼓励主要靠登记 pending 时的就地点击），重新 OCR 剩余时间
-        更新 until 并回主页面，返回 False。无 pending 时直接返回 True。"""
+        更新 until 并回主页面，返回 False；
+        多轮检测既没结算页也没进行中状态时直接丢弃该 pending（不计数）并返回 True——
+        不重估时间（识别不到剩余时间会按 60 秒兜底永远卡在重估循环）；结算页若稍后
+        真出现，后续主任务出门时会被 wait_busy_end 的结算检测兜底计数。
+        无 pending 时直接返回 True。"""
         pend = self.pending
         if pend is None:
             return True
@@ -494,9 +498,16 @@ class DeviceScenario:
                 in_progress = True
                 break  # 还在进行中（计时误差）：跳出检测，重估收尾时间
             time.sleep(CLICK_INTERVAL)
-        else:
-            log(f"{pend['desc']}: 出门后未检测到结算页或进行中状态，重估收尾时间")
-        if in_progress and pend.get('encourage'):
+        if not in_progress:
+            # 结算页和进行中状态都没检测到：pending 已陈旧（结算页可能已被其他任务
+            # 的出门检测 wait_busy_end/_detect_settlement 顺手收尾计数，或状态丢失）。
+            # 丢弃该收尾任务（不计数，避免重复计），继续正常调度
+            log(f"{pend['desc']}: 出门后未检测到结算页或进行中状态，"
+                f'丢弃该收尾任务（不计数），继续正常调度')
+            self.pending = None
+            self.ensure_main_page()
+            return True
+        if pend.get('encourage'):
             # 还在进行中：鼓励按钮在进行中页面常驻，离开前就地点击
             self._encourage_burst()
         secs = self.read_remaining_seconds()

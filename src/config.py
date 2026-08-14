@@ -131,6 +131,8 @@ class CareConfig:
     energy_threshold: int = 60
     # 清洁阈值：低于则洗澡到达标
     clean_threshold: int = 60
+    # 护理间隔（秒）：距上次护理检查至少间隔这么久才再次检查
+    interval_seconds: int = 60
 
 
 @dataclass

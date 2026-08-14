@@ -53,6 +53,7 @@ DEFAULTS = {
     'care.energy_threshold': 60,
     'care.clean_threshold': 60,
     'care.method': '一键护理',
+    'care.interval_seconds': 60,
     'employed.enabled': False,
     'employed.time_range': '19:31-23:59',
     'employed.interval_seconds': 60,
@@ -118,7 +119,8 @@ def validate_field(key: str, value):
             return (True, value) if int(value) >= 1 else (False, default)
         except (TypeError, ValueError):
             return False, default
-    if key in ('employed.interval_seconds', 'hire_friend.interval_seconds'):
+    if key in ('employed.interval_seconds', 'hire_friend.interval_seconds',
+               'care.interval_seconds'):
         # 调度间隔至少 1 秒（0 会变成无间隔连续调度）
         try:
             return (True, value) if int(value) >= 1 else (False, default)
