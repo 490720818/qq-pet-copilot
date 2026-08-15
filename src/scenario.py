@@ -22,6 +22,7 @@ CLICK_INTERVAL = 1.0       # 连续点击/重试间隔（秒）
 NAV_TIMEOUT = 10           # 单个阶段最多重试次数，超过认为卡死抛异常
 MAIN_PAGE_ATTEMPTS = 10    # 回主页面最多尝试次数（识别 main_sign / 点 back）
 BUSY_GATE_ATTEMPTS = 2     # 出门后进行中状态的检测次数（活动面板加载有几秒延迟）
+LEAVE_HOME_ATTEMPTS = 3    # 点击出门失败（点完 main_sign 仍在主页面）时的重试次数
 WAIT_LOG_INTERVAL = 300.0  # 长等待期间的心跳日志间隔（秒），避免每轮检测刷屏
 ENCOURAGE_LOG_INTERVAL = 300.0  # "鼓励宠物"点击日志节流间隔（秒）：按钮每 ~12s 出现，避免刷屏
 EMPLOYED_MAX_WAIT_MINUTES = 45  # 被雇佣"等到25/75（小于45min）"：面板剩余时间超过该值立即召回
@@ -264,13 +265,27 @@ class DeviceScenario:
                 time.sleep(0.3)
 
     def leave_home(self) -> None:
-        """主页面点击出门（OCR 定位"出门"，识别不到由注册表用参考坐标兜底）。"""
-        hit = self.see('leave_home')
-        if hit:
-            self.click(hit[0], hit[1])
-        else:
-            log('未定位到"出门"按钮')
-        time.sleep(CLICK_INTERVAL)
+        """主页面点击出门（OCR 定位"出门"，识别不到由注册表用参考坐标兜底）。
+
+        点完检测一次 main_sign（金币胶囊，只有主页面有）：仍识别到 = 还在主页面 =
+        点击失败/没生效，重试点击；最多 LEAVE_HOME_ATTEMPTS 次仍失败抛异常，
+        由调用方走回主页面重试/恢复链路。"""
+        for attempt in range(1, LEAVE_HOME_ATTEMPTS + 1):
+            hit = self.see('leave_home')
+            if hit:
+                self.click(hit[0], hit[1])
+            else:
+                log(f'未定位到"出门"按钮（{attempt}/{LEAVE_HOME_ATTEMPTS}）')
+            time.sleep(CLICK_INTERVAL)
+            # 出门成功 = 主页面标志消失；还在主页面说明没点中/没生效
+            if not self.see('main_sign'):
+                return
+            # 页面切换动画可能让 main_sign 短暂残留，多等一轮再判定
+            time.sleep(CLICK_INTERVAL)
+            if not self.see('main_sign'):
+                return
+            log(f'点击出门后仍在主页面，重试点击出门（{attempt}/{LEAVE_HOME_ATTEMPTS}）')
+        raise RuntimeError(f'点击出门 {LEAVE_HOME_ATTEMPTS} 次后仍停留在主页面')
 
     def wait_end(self, in_name: str, end_name: str, check_interval: float | None = None,
                  encourage: bool = False) -> None:
@@ -551,6 +566,9 @@ class DeviceScenario:
                 if quit_hit:
                     self.click(quit_hit[0], quit_hit[1])
                     time.sleep(CLICK_INTERVAL)
+                    # 点完 quit 已落在"出门"页面：打时间戳标记，同场景下一轮
+                    # 可以直接点活动入口，省一次 back + 出门（见 adventure.run）
+                    self._after_pending_go_out_at = time.monotonic()
                 else:
                     log(f"{pend['desc']}: 未找到 quit 按钮，直接返回")
                 self.pending = None

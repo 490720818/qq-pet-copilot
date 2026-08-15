@@ -78,27 +78,30 @@ class AdventureScenario(DeviceScenario):
             raise
         return None
 
-    def do_adventure(self) -> None:
+    def do_adventure(self) -> bool:
         """准备页面 -> 开始冒险 -> 等待 adventure_end -> 点 quit 退出。
         开关开启时开始后先检测"天色不对"：命中则召回并确认，不再等冒险结束
         （调用方照常计入一次冒险）。
         延时收尾模式（defer_wait）：进行中登记 pending 后回主页面，到点由
-        调度器 finish_pending 收尾计数；召回同步完成则立即 count_cross 计数。"""
+        调度器 finish_pending 收尾计数；召回同步完成则立即 count_cross 计数。
+        返回 True 表示走了"天色不对"召回（召回成功后回到主页面，不是"出门"页，
+        调用方应回主页面重进而不是直接点冒险入口）。"""
         self.click_until_gone_or_see('adventure_start', 'adventure_in', '开始冒险')
         if self.skip_bad_weather and self.recall_bad_weather():
             if self.defer_wait:
                 # 召回即同步完成：立即计数（计数统一走 count_cross，
                 # 由 run() 刷新本地计数判断上限）
                 count_cross('adventure')
-            return
+            return True
         log('已开始冒险，等待结束...')
         if self.defer_wait:
             # 延时收尾：登记 pending（到点由调度器 finish_pending 收尾计数）后回主页面
             self.defer_busy_end('adventure_in', 'adventure_end',
                                 lambda: count_cross('adventure'), '冒险')
             self.ensure_main_page()
-            return
+            return False
         self.wait_end('adventure_in', 'adventure_end')
+        return False
 
     def recall_bad_weather(self) -> bool:
         """开始冒险 BAD_WEATHER_WAIT 秒后 OCR 冒险详情框：
@@ -131,7 +134,18 @@ class AdventureScenario(DeviceScenario):
             if confirm:
                 self.click(confirm[0], confirm[1])
                 time.sleep(CLICK_INTERVAL)
-                return True
+                # 点完验证：确认弹窗已关 且 不再"正在冒险"才算成功；
+                # 弹窗还在/仍在冒险说明没点中或没生效，重新点召回再试
+                if (not self.see('adventure_recall_confirm')
+                        and not self.see('adventure_in')):
+                    log('确认召回成功，已离开冒险')
+                    return True
+                log(f'点击确认召回后仍在冒险/弹窗未关，重新点击召回 '
+                    f'({x1 + recall[0]}, {y1 + recall[1]}) '
+                    f'({attempt}/{RECALL_CONFIRM_TRIES})')
+                self.click(x1 + recall[0], y1 + recall[1])
+                time.sleep(CLICK_INTERVAL)
+                continue
             if self.see('adventure_in'):
                 log(f'仍处于"正在冒险"，重新点击召回 '
                     f'({x1 + recall[0]}, {y1 + recall[1]})')
@@ -181,8 +195,25 @@ class AdventureScenario(DeviceScenario):
         while True:
             round_no += 1
             log(f'===== 第 {round_no} 轮（连跑 {batch} 次冒险）=====')
-            self.ensure_main_page()
-            finished = self.goto_adventure()
+            # 刚收尾完（finish_pending 点 quit 已落在"出门"页）且中间没跑过别的
+            # 任务（时间窗内）：直接点冒险入口，省一次 back + 出门；
+            # 标记只消费一次，过期（>10s，中间跑过其他任务已回主页面）则忽略
+            skip_home = (getattr(self, '_after_pending_go_out_at', 0)
+                         and time.monotonic() - self._after_pending_go_out_at < 10)
+            self._after_pending_go_out_at = 0
+            if skip_home:
+                log('收尾点完 quit 已在出门页面，直接点冒险入口')
+                try:
+                    self.click_until_gone_or_see(
+                        'adventure', 'adventure_start', '前往冒险')
+                    finished = None
+                except RuntimeError:
+                    log('收尾后直接点冒险入口失败，回主页面重进')
+                    self.ensure_main_page()
+                    finished = self.goto_adventure()
+            else:
+                self.ensure_main_page()
+                finished = self.goto_adventure()
             if finished:
                 if self.pending is not None:
                     # 延时收尾模式：出门检测到的进行中活动已登记 pending，计数由
@@ -197,7 +228,7 @@ class AdventureScenario(DeviceScenario):
                 continue
             # 连跑 batch 次冒险，期间不回主页面
             for i in range(batch):
-                self.do_adventure()
+                recalled = self.do_adventure()
                 if self.defer_wait:
                     if self.pending is not None:
                         # 冒险进行中已登记 pending，计数由 finish_pending 收尾时
@@ -219,6 +250,31 @@ class AdventureScenario(DeviceScenario):
                     log('达到当天冒险次数，结束')
                     return True
                 if i < batch - 1:
+                    if recalled:
+                        # 召回成功后实测停在"出门"页（main_sign 识别不到），不是主页面：
+                        # 出门页直接点冒险入口，省一次 back + 出门；只有真的在主页面
+                        # （家里）才回家重进
+                        if self.see('main_sign'):
+                            log('召回后已在主页面，回主页面重新进入冒险')
+                            self.ensure_main_page()
+                            finished = self.goto_adventure()
+                        else:
+                            log('召回后已在出门页面，直接点冒险入口')
+                            try:
+                                self.click_until_gone_or_see(
+                                    'adventure', 'adventure_start', '前往冒险')
+                                finished = None
+                            except RuntimeError:
+                                log('召回后直接点冒险入口失败，回主页面重进')
+                                self.ensure_main_page()
+                                finished = self.goto_adventure()
+                        if finished and self.pending is not None:
+                            return True  # 延时收尾：pending 已登记，本轮直接结束
+                        if finished and count_finished(finished):
+                            return True
+                        if finished:
+                            break  # 重进时又等完别的活动：本批提前结束，交给下一轮
+                        continue
                     # 上一把 quit 后落在"出门"页面：直接点冒险入口进准备页开下一把。
                     # 点不到=被弹回主页面/处于进行中状态，回主页面重进
                     try:

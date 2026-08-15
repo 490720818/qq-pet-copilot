@@ -35,6 +35,9 @@ PET_ENTRY_DESC_PREFIX = 'Q宠-'
 BOOT_TIMEOUT = 180.0        # adb reboot 后等开机完成的超时（秒）
 BOOT_POLL_INTERVAL = 5.0
 EMULATOR_CMD_TIMEOUT = 180.0   # 模拟器重启命令的执行超时（秒）
+# adb connect 单次超时（connect_remote 内置 10s）连续多少次才判定 adb server 卡死：
+# 模拟器开机慢时偶发超时是正常的，连续多次才需要 kill-server 兜底
+CONNECT_TIMEOUT_KILL_AFTER = 3
 EMULATOR_BOOT_TIMEOUT = 300.0  # 模拟器重启后等开机完成的超时（秒，冷启动比手机慢）
 U2_CONNECT_TIMEOUT = 60.0   # 开机后等 atx-agent 就绪、u2 可连的超时（秒）
 U2_CONNECT_INTERVAL = 5.0
@@ -87,7 +90,16 @@ def reenter_pet(adb: Device, method: str = "重启设备",
         try:
             open_pet_page(serial=opener_serial or adb.serial, adb_path=adb.adb)
         except OpenPetPageError as e:
-            raise RuntimeError(f'opener 打开宠物主页失败: {e}') from e
+            # 设备在线但 QQ 没起来（冷启动首启失败等）：先试一次"重启 QQ"（强停再开），
+            # 比再整机重启快得多；模拟器重启后 adb 会抖动，设备离线先等回线再重试
+            if not _wait_adb_online(adb):
+                raise RuntimeError(f'opener 打开宠物主页失败: {e}') from e
+            log(f'opener 失败（{e}），设备已在线，改试重启 QQ 一次')
+            adb.force_stop_app(QQ_PACKAGE)
+            try:
+                open_pet_page(serial=opener_serial or adb.serial, adb_path=adb.adb)
+            except OpenPetPageError as e2:
+                raise RuntimeError(f'opener 打开宠物主页失败: {e2}') from e2
         if _wait_main_page(dev):
             return dev
         raise RuntimeError('opener 打开宠物主页后未检测到主页标志（"宠物状态"容器）')
@@ -153,18 +165,52 @@ def _restart_emulator_auto(adb: Device,
     return True
 
 
-def _adb_back_online(adb: Device) -> None:
-    """模拟器重启后恢复 adb：重启 adb 服务（之前的 adb reboot 可能已把服务卡死）、
-    重新 connect 远程端口、轮询等开机完成。
+def _wait_adb_online(adb: Device, timeout: float = 45.0) -> bool:
+    """等 adb 设备回线（模拟器重启后 adb 会抖动几秒~几十秒）。
 
-    adb connect 在模拟器还在开机/adb 服务刚重启时可能整次挂起（超过
-    connect_remote 内置的 10s 超时直接抛 TimeoutExpired）：在开机超时窗口内
-    重试 connect，连不上再等到点报错。"""
-    subprocess.run([adb.adb, 'kill-server'], capture_output=True, timeout=30,
-                   creationflags=_NO_WINDOW, check=False)
+    远程串口（host:port）每次轮询前先 adb connect；超时仍未回线返回 False，
+    由调用方决定是否整机重启/判失败。"""
+    try:
+        if adb.serial in adb.online_devices():
+            return True
+    except Exception:
+        pass
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            if ':' in adb.serial:
+                adb.connect_remote()
+            if adb.serial in adb.online_devices():
+                log(f'设备 {adb.serial} 已回线')
+                return True
+        except Exception:  # noqa: BLE001 - 抖动期间 connect/devices 失败很正常
+            pass
+        time.sleep(2)
+    log(f'设备 {adb.serial} 在 {timeout:.0f}s 内未回线')
+    return False
+
+
+def _adb_back_online(adb: Device) -> None:
+    """模拟器重启后恢复 adb：连接远程端口、轮询等开机完成。
+
+    不默认 adb kill-server：kill-server 会把本机 adb server 上的**所有**设备
+    （其它模拟器实例、USB 真机）全部踢下线，而 host:port 是手动 adb connect
+    的条目，server 重启不会自动恢复（只有 emulator-* 别名会）——多开时重启
+    一个实例会把其它实例的 adb 也弄丢。默认 start-server + adb connect 轮询；
+    仅当 adb 服务本身卡死（connect 持续超时）才 kill-server 兜底，且兜底后
+    把之前在线过的所有远程设备全部重新 connect。
+    """
     subprocess.run([adb.adb, 'start-server'], capture_output=True, timeout=30,
                    creationflags=_NO_WINDOW, check=False)
+    # 记录当前在线的远程设备（host:port），kill-server 兜底后要恢复它们
+    try:
+        known_remote = [s for s in adb.online_devices()
+                        if ':' in s and s != adb.serial]
+    except Exception:  # noqa: BLE001 - 记录失败不阻塞恢复
+        known_remote = []
     deadline = time.monotonic() + EMULATOR_BOOT_TIMEOUT
+    killed = False
+    timeouts = 0
     while True:
         try:
             adb.connect_remote()
@@ -173,7 +219,21 @@ def _adb_back_online(adb: Device) -> None:
             if time.monotonic() >= deadline:
                 raise RuntimeError(
                     f'模拟器重启后 adb connect {adb.serial} 持续超时') from None
-            log(f'adb connect {adb.serial} 超时，模拟器可能还在开机，重试')
+            timeouts += 1
+            if not killed and timeouts >= CONNECT_TIMEOUT_KILL_AFTER:
+                # 连续多次超时，疑似 adb server 卡死：kill-server 兜底，并恢复其它远程设备
+                log(f'adb connect 连续 {CONNECT_TIMEOUT_KILL_AFTER} 次超时，'
+                    f'疑似 adb 服务卡死，kill-server 后重试，并恢复其它远程设备连接')
+                subprocess.run([adb.adb, 'kill-server'], capture_output=True, timeout=30,
+                               creationflags=_NO_WINDOW, check=False)
+                subprocess.run([adb.adb, 'start-server'], capture_output=True, timeout=30,
+                               creationflags=_NO_WINDOW, check=False)
+                killed = True
+                for s in known_remote:
+                    subprocess.run([adb.adb, 'connect', s], capture_output=True,
+                                   timeout=10, creationflags=_NO_WINDOW, check=False)
+            log(f'adb connect {adb.serial} 超时（第 {timeouts} 次），'
+                f'模拟器可能还在开机，重试')
             time.sleep(BOOT_POLL_INTERVAL)
     adb.wait_boot_completed(EMULATOR_BOOT_TIMEOUT, BOOT_POLL_INTERVAL)
     log('模拟器重启完成，已开机')

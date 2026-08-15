@@ -41,6 +41,12 @@ ARCH_MAP = {'x86_64': 'x86_64', 'x86': 'x86',
 INJECT_TIMEOUT = 25.0
 # 启动 QQ 后等进程出现的轮询次数（每次 1 秒）
 START_QQ_TRIES = 20
+# 冷启动（模拟器刚开机）时首启可能失败/系统未就绪，am start 最多重试轮数
+START_QQ_ATTEMPTS = 3
+# 注入失败（QQ 冷启动后首次注入偶发闪退/会话断开）时强停 QQ 重试的轮数
+OPEN_PET_ATTEMPTS = 3
+# 判定为"可重试"的错误特征：QQ 进程退出/frida 会话断开/等待 SDK 超时
+OPEN_RETRY_MARKS = ('script is destroyed', 'QQ 进程退出', '会话断开', 'SDK 初始化超时')
 # QQ 冷启动后 SplashActivity 要花较长时间完成初始化；过早注入打开宠物页会被
 # QQ 启动流程顶回主界面（模拟器 + 后台保活下尤其明显），等稳定后再注入。
 # 热启动（焦点已离开 SplashActivity）会提前返回，冷启动最久等 QQ_SETTLE_WAIT 秒。
@@ -182,7 +188,15 @@ def _ensure_frida_server(adb: str, serial: str) -> None:
     remote = f'/data/local/tmp/frida-server-{version}'
     log(f'推送 frida-server 到模拟器...')
     _adb_run(adb, serial, 'push', str(local_binary), remote, timeout=180)
-    _adb_run(adb, serial, 'shell', f"su -c 'chmod 755 {remote}'", timeout=30)
+    # 模拟器刚开机时 su 可能还没就绪（重启后第一次执行偶发失败），重试几次
+    for _chmod_attempt in range(1, 4):
+        proc = _adb_run(adb, serial, 'shell', f"su -c 'chmod 755 {remote}'",
+                        check=False, timeout=30)
+        if proc.returncode == 0:
+            break
+        if _chmod_attempt < 3:
+            log(f'chmod frida-server 失败，重试 ({_chmod_attempt}/3)')
+            time.sleep(3)
     running = _adb_run(adb, serial, 'shell', f"su -c 'pidof frida-server-{version}'",
                        check=False, timeout=30)
     if not running.stdout.strip():
@@ -195,14 +209,22 @@ def _ensure_frida_server(adb: str, serial: str) -> None:
 # ---- QQ 启动与注入 ----
 
 def _start_qq(adb: str, serial: str) -> int:
-    _adb_run(adb, serial, 'shell', 'am', 'start', '-n',
-             f'{QQ_PACKAGE}/.activity.SplashActivity', check=False, timeout=30)
-    for _ in range(START_QQ_TRIES):
-        proc = _adb_run(adb, serial, 'shell', 'pidof', QQ_PACKAGE, check=False, timeout=30)
-        text = proc.stdout.strip()
-        if text:
-            return int(text.split()[0])
-        time.sleep(1)
+    """启动 QQ 并等进程出现；模拟器刚开机时首启可能失败/系统未就绪，
+    重试 am start；每轮内先确认设备在线，避免 adb 抖动把 pidof 失败误判成 QQ 没启动。"""
+    for attempt in range(1, START_QQ_ATTEMPTS + 1):
+        _adb_run(adb, serial, 'shell', 'am', 'start', '-n',
+                 f'{QQ_PACKAGE}/.activity.SplashActivity', check=False, timeout=30)
+        for _ in range(START_QQ_TRIES):
+            proc = _adb_run(adb, serial, 'shell', 'pidof', QQ_PACKAGE, check=False, timeout=30)
+            if proc.stdout.strip():
+                return int(proc.stdout.split()[0])
+            # 设备离线（模拟器重启后 adb 偶发抖动）：重连后继续等，别误判成 QQ 没启动
+            state = _adb_run(adb, serial, 'get-state', check=False, timeout=15)
+            if state.returncode != 0 or 'device' not in state.stdout:
+                if ':' in serial:
+                    _adb_run(adb, None, 'connect', serial, check=False, timeout=10)
+            time.sleep(1)
+        log(f'QQ 进程未出现，重试启动 QQ ({attempt}/{START_QQ_ATTEMPTS})')
     raise OpenPetPageError('手机 QQ 没有成功启动。请先在模拟器里登录 QQ 后重试。')
 
 
@@ -422,6 +444,8 @@ def open_pet_page(serial: str | None = None, adb_path: str | None = None) -> boo
     adb_path / serial 默认取项目 config.yaml 的 adb.path / adb.device_serial
     （与整个项目一致）；显式传入时以传入为准。
     serial 仍为 None 时自动选第一台装了手机 QQ 的在线设备。
+    QQ 冷启动后首次注入偶发闪退（script is destroyed / 会话断开）：强停 QQ
+    重试 OPEN_PET_ATTEMPTS 次，避免一次抖动就判恢复失败。
     """
     try:
         import frida
@@ -444,18 +468,25 @@ def open_pet_page(serial: str | None = None, adb_path: str | None = None) -> boo
         adb = adb_path
     if serial is None:
         serial = cfg.adb.device_serial or None
-    try:
-        serial = _choose_device(adb, serial)
-        log(f'已连接模拟器: {serial}')
-        _require_root(adb, serial)
-        _ensure_frida_server(adb, serial)
-        pid = _start_qq(adb, serial)
-        log(f'已找到手机 QQ 进程: {pid}，等待 QQ 启动稳定再注入...')
-        _wait_qq_settle(adb, serial)
-        _frida_open_module(serial, pid, adb)
-        log('成功：QQ 宠物主页已打开，hook 保持注入中')
-        return True
-    except OpenPetPageError:
-        raise
-    except Exception as e:
-        raise OpenPetPageError(f'打开 QQ 宠物主页失败: {e}') from e
+    for attempt in range(1, OPEN_PET_ATTEMPTS + 1):
+        try:
+            serial = _choose_device(adb, serial)
+            log(f'已连接模拟器: {serial}')
+            _require_root(adb, serial)
+            _ensure_frida_server(adb, serial)
+            pid = _start_qq(adb, serial)
+            log(f'已找到手机 QQ 进程: {pid}，等待 QQ 启动稳定再注入...')
+            _wait_qq_settle(adb, serial)
+            _frida_open_module(serial, pid, adb)
+            log('成功：QQ 宠物主页已打开，hook 保持注入中')
+            return True
+        except OpenPetPageError as e:
+            if attempt >= OPEN_PET_ATTEMPTS or not any(m in str(e) for m in OPEN_RETRY_MARKS):
+                raise
+            log(f'opener 注入失败（{e}），强停 QQ 后重试 ({attempt}/{OPEN_PET_ATTEMPTS})')
+            _adb_run(adb, serial, 'shell', 'am', 'force-stop', QQ_PACKAGE,
+                     check=False, timeout=30)
+            time.sleep(2)
+        except Exception as e:
+            raise OpenPetPageError(f'打开 QQ 宠物主页失败: {e}') from e
+    raise OpenPetPageError('打开 QQ 宠物主页失败')  # 不可达，重试循环内已 raise

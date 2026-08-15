@@ -44,6 +44,9 @@ CLICK_PRESS_SECONDS = 0.05
 # 连接类异常会先重连一次（u2.connect() 会自动重新拉起 u2.jar），不再直接升级到
 # 整机重启。重连冷却（秒）：设备真离线时避免连续操作里反复重连刷屏。
 RECONNECT_COOLDOWN = 5.0
+# 远程模拟器重启后 adb 会抖动几秒~几十秒（设备短暂 not found）：重连前先等它回线，
+# 避免"device not found"被上层误判成需要再整机重启
+DEVICE_ONLINE_WAIT = 45.0
 # minitouch 会话断开后的重建冷却（秒）：socket 断了别在每次事件里反复重建
 MINITOUCH_RECONNECT_COOLDOWN = 5.0
 
@@ -222,6 +225,31 @@ class U2Device:
             'socket',
         ))
 
+    def _wait_device_online(self) -> str:
+        """等 adb 设备回线（远程模拟器重启后 adb 会抖动几秒~几十秒）。
+
+        ensure_connected 失败时，远程串口（host:port，MuMu/雷电等）先 adb connect +
+        轮询等它回来，避免"device not found"被上层误判成需要整机重启；USB 真机
+        掉线不等待，直接抛给上层走恢复链路。
+        """
+        try:
+            return self.adb.ensure_connected()
+        except Exception:
+            if ':' not in self.adb.serial:
+                raise
+        deadline = time.monotonic() + DEVICE_ONLINE_WAIT
+        while time.monotonic() < deadline:
+            try:
+                self.adb.connect_remote()
+                if self.adb.serial in self.adb.online_devices():
+                    log(f'设备 {self.adb.serial} 已回线，继续重连 u2')
+                    return self.adb.serial
+            except Exception:  # noqa: BLE001 - 抖动期间 connect/devices 失败很正常
+                pass
+            time.sleep(2)
+        # 超时仍未回线：抛原始 ensure_connected 的 AdbError
+        return self.adb.ensure_connected()
+
     def _reconnect(self) -> bool:
         """重连 uiautomator2：重新 u2.connect()（会自动重新拉起 u2.jar），
         并重置 minitouch 会话（下次用时重建）。
@@ -236,7 +264,7 @@ class U2Device:
         try:
             import uiautomator2 as u2
             _patch_u2_resource_lookup(u2)  # frozen 下随包资源读取回退同样要生效
-            resolved = self.adb.ensure_connected()
+            resolved = self._wait_device_online()
             log(f'u2 连接异常，尝试重新连接 {resolved}...')
             self.d = u2.connect(resolved)
             self._mt = None  # minitouch 会话下次用时重建
