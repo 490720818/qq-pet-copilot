@@ -14,6 +14,12 @@ datas = [('config.example.yaml', '.')]
 # resources/scrcpy-win64/ 不入库（tools/fetch_scrcpy.py 拉取），存在才随包带上
 if Path('resources/scrcpy-win64/scrcpy.exe').is_file():
     datas.append(('resources/scrcpy-win64', 'resources/scrcpy-win64'))
+# resources/minitouch/（minitouch 控制方案二进制，tools/fetch_minitouch.py 拉取，不入库）
+_minitouch_dir = Path('resources/minitouch')
+if _minitouch_dir.is_dir():
+    for _f in sorted(_minitouch_dir.rglob('*')):
+        if _f.is_file():
+            datas.append((str(_f), str(_f.parent)))
 binaries = []
 hiddenimports = []
 

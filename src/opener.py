@@ -17,6 +17,7 @@ QQ 进程，初始化 QQ 自带宠物 SDK 并直接打开 PetMainFragment，页�
 from __future__ import annotations
 
 import lzma
+import os
 import shutil
 import subprocess
 import sys
@@ -276,21 +277,51 @@ def _prune_dead_sessions() -> None:
     _KEEPALIVE[:] = keep
 
 
-def _frida_device(serial: str):
-    """按序列号取 frida 设备；get_device 找不到时枚举 adb 设备兜底。"""
+def _frida_device(serial: str, adb: str):
+    """按序列号取 frida 设备；frida 的 adb 设备发现不稳（模拟器刚开机）时兜底。
+
+    1) 把项目 adb 目录放进 PATH 最前：frida 枚举 adb 设备用 PATH 里的 adb，
+       保证与项目共用一个 adb server，避免枚举不到/触发 server 重启；
+    2) 每次重试前用项目 adb 确认设备在线（远程模拟器连接易掉，必要时重连）；
+    3) get_device 重试 2 次（每次内部轮询 10s）；
+    4) 仍失败：adb forward 到 frida-server 默认端口 27042，用 frida remote
+       device（绕过 frida 的 adb 枚举，只要 forward 成功就一定能连上）。
+    """
     import frida
+    adb_dir = str(Path(adb).resolve().parent)
+    if adb_dir not in os.environ.get('PATH', ''):
+        os.environ['PATH'] = adb_dir + os.pathsep + os.environ.get('PATH', '')
+    for attempt in range(1, 3):
+        _ensure_adb_online(adb, serial)
+        try:
+            return frida.get_device(serial, timeout=10)
+        except Exception:
+            if attempt < 2:
+                log(f'frida 按 adb 设备发现 {serial} 失败，重试 ({attempt}/2)...')
+    # 兜底：adb forward + remote device（不依赖 frida 的 adb 设备枚举）
     try:
-        return frida.get_device(serial, timeout=10)
-    except Exception:
-        for candidate in frida.enumerate_devices():
-            if candidate.id == serial or candidate.name == serial:
-                return candidate
+        _adb_run(adb, serial, 'forward', 'tcp:27042', 'tcp:27042',
+                 check=False, timeout=15)
+        mgr = frida.get_device_manager()
+        return mgr.add_remote_device('127.0.0.1:27042')
+    except Exception as e:
         raise OpenPetPageError(
-            f'frida 找不到设备 {serial}。请确认模拟器 ADB 已连接、已 Root，'
-            f'且 frida-server 已在模拟器上运行')
+            f'frida 找不到设备 {serial}（adb 设备发现与 adb forward 兜底均失败: {e}）。'
+            f'请确认模拟器 ADB 已连接、已 Root，且 frida-server 已在模拟器上运行') from None
 
 
-def _frida_open_module(serial: str, pid: int) -> None:
+def _ensure_adb_online(adb: str, serial: str) -> None:
+    """frida 设备发现前确认 adb 设备在线（远程模拟器连接易掉），必要时重连。"""
+    for _ in range(3):
+        proc = _adb_run(adb, serial, 'get-state', check=False, timeout=15)
+        if proc.returncode == 0 and 'device' in (proc.stdout or ''):
+            return
+        if ':' in serial:
+            _adb_run(adb, None, 'connect', serial, check=False, timeout=10)
+        time.sleep(1)
+
+
+def _frida_open_module(serial: str, pid: int, adb: str) -> None:
     """用 frida Python API 把 hook 注入 QQ 进程，打开宠物主页后保持注入。
 
     hook JS 通过 send({event, detail}) 回报 account / opened / visited / error 事件，
@@ -299,7 +330,7 @@ def _frida_open_module(serial: str, pid: int) -> None:
     持有引用防 GC；QQ 重启后由下一次 open_pet_page 重新注入。
     """
     import frida
-    device = _frida_device(serial)
+    device = _frida_device(serial, adb)
     session = device.attach(pid)
     try:
         script = session.create_script(_hook_source())
@@ -421,7 +452,7 @@ def open_pet_page(serial: str | None = None, adb_path: str | None = None) -> boo
         pid = _start_qq(adb, serial)
         log(f'已找到手机 QQ 进程: {pid}，等待 QQ 启动稳定再注入...')
         _wait_qq_settle(adb, serial)
-        _frida_open_module(serial, pid)
+        _frida_open_module(serial, pid, adb)
         log('成功：QQ 宠物主页已打开，hook 保持注入中')
         return True
     except OpenPetPageError:

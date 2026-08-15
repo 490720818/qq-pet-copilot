@@ -506,6 +506,9 @@ class Runner:
         for scen in (self.school, self.work, self.adventure, self.care, self.visit, self.pk,
                      self.friend_care, self.hire_friend, self.employed):
             scen.cfg.schedule = sched
+            # 控制方案热加载（各场景共享同一个 dev，同步一次即全部生效；
+            # minitouch 会话懒加载，切换方案后下次点击自动按新方案走）
+            scen.dev.control_method = cfg.control.method
             # 被雇佣配置整体替换（开关/时间段/检查间隔/处理方式下一轮即生效）
             scen.cfg.employed = cfg.employed
             scen.cfg.recover.method = cfg.recover.method

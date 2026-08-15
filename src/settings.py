@@ -15,6 +15,7 @@ _yaml = YAML()  # 默认 round-trip，保留注释
 DEFAULTS = {
     'adb.path': 'resources/scrcpy-win64/adb.exe',
     'adb.device_serial': '',
+    'control.method': 'injectInputEvent',
     'emulator.type': 'auto',
     'emulator.name': '',
     'emulator.path': '',
@@ -99,6 +100,8 @@ def validate_field(key: str, value):
         return (True, value) if isinstance(value, bool) else (False, default)
     if key == 'runner.engine':
         return (True, value) if value in ('task_queue', 'legacy') else (False, default)
+    if key == 'control.method':
+        return (True, value) if value in ('injectInputEvent', 'minitouch') else (False, default)
     if key == 'emulator.type':
         from .emulator import EMULATOR_TYPES
         return (True, value) if value in ('auto', *EMULATOR_TYPES) else (False, default)

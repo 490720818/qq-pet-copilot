@@ -162,6 +162,7 @@ class _NoWheelSpinBox(QSpinBox):
 SETTING_FIELDS = [
     ('adb.path', 'adb 路径', 'str'),
     ('adb.device_serial', '设备序列号', 'devices'),
+    ('control.method', '控制方案', ['injectInputEvent', 'minitouch']),
     ('emulator.type', '模拟器类型', ['auto'] + EMULATOR_TYPES),
     ('emulator.name', '实例名称（留空自动探测）', 'str'),
     ('emulator.path', '模拟器安装路径（留空自动探测）', 'str'),

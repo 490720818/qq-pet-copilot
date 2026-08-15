@@ -7,6 +7,11 @@ adb:
   # 设备序列号；留空则使用第一台在线设备
   device_serial: ""
 
+# 控制方案：injectInputEvent（默认，uiautomator2 d.touch，走 u2 server 事件注入）/
+# minitouch（openstf minitouch socket 本地直发触摸事件，模拟器上 d.click 不可靠时更稳）
+control:
+  method: injectInputEvent
+
 # 模拟器信息（异常恢复"重启设备"时自动探测实例用；serial 匹配到多个实例时用于消歧，
 # 全部留空/auto 则纯自动探测，参考 ALAS EmulatorInfo）
 emulator:

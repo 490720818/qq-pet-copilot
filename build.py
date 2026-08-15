@@ -49,6 +49,11 @@ def fetch_common() -> None:
     fetch_scrcpy = PROJECT_ROOT / 'tools' / 'fetch_scrcpy.py'
     if fetch_scrcpy.exists():
         subprocess.run([sys.executable, str(fetch_scrcpy)], check=False)
+    # minitouch 控制方案二进制（resources/minitouch/，不入库；x86_64 模拟器 + arm64 真机）
+    fetch_minitouch = PROJECT_ROOT / 'tools' / 'fetch_minitouch.py'
+    if fetch_minitouch.exists():
+        subprocess.run([sys.executable, str(fetch_minitouch),
+                        '--arch', 'x86_64', 'arm64-v8a'], check=False)
 
 
 def ensure_frida_server_xz() -> None:

@@ -77,6 +77,13 @@ class EmulatorConfig:
 
 
 @dataclass
+class ControlConfig:
+    # 控制方案：injectInputEvent（uiautomator2 d.touch，走 u2 server 事件注入，默认）/
+    # minitouch（openstf minitouch socket 本地直发触摸事件，模拟器上 d.click 不可靠时更稳）
+    method: str = "injectInputEvent"
+
+
+@dataclass
 class SchoolConfig:
     # 属性点课程：力量 / 智力 / 魅力
     attribute: str = "力量"
@@ -268,6 +275,7 @@ class NotifyConfig:
 @dataclass
 class Config:
     adb: AdbConfig = field(default_factory=AdbConfig)
+    control: ControlConfig = field(default_factory=ControlConfig)
     emulator: EmulatorConfig = field(default_factory=EmulatorConfig)
     school: SchoolConfig = field(default_factory=SchoolConfig)
     work: WorkConfig = field(default_factory=WorkConfig)
