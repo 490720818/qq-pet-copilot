@@ -87,7 +87,9 @@ $PY build.py --emulator          # 模拟器版（内置 hook JS + frida-server 
   `click_rel()` / `swipe()`（内部按当前分辨率换算），不得直接点绝对像素。
   例外：洗澡搓洗点位按分辨率百分比（`care.py` 的 `SCRUB_TOP_PCT` / `SCRUB_BOTTOM_PCT`），
   起点取 `shower_10` 控件中心；搓洗中清洁连续 `SCRUB_STALL_REPRESS` 回合不提升判定
-  按压失效（模拟器 minitouch 会话静默中断，touch_move 全丢），自动抬手重按肥皂自愈。
+  按压失效（模拟器 minitouch 会话静默中断，touch_move 全丢），自动抬手重按肥皂自愈；
+  喂食/洗澡达到尝试上限仍不达阈值时**跳过本次护理**（不抛异常——游戏有概率显示 bug，
+  实际已达标但界面/OCR 没刷新，抛异常会误触发重启恢复/告警退出）。
 - **一轮语义**：场景的 `run(max_times, max_rounds)` 中一轮 = 一节课 / 一次打工 / 一次冒险，
   结束后回主页面；执行器以 `max_rounds=1` 调用，每轮后重新判断金币/点数。
   学习场景的毕业处理（"去找同学玩"面板）不算一轮：关闭后立即重新进学校选下一阶段
@@ -121,6 +123,25 @@ $PY build.py --emulator          # 模拟器版（内置 hook JS + frida-server 
 - **配置改动**：新配置项加到 `config.yaml` + `src/config.py` 的 dataclass +
   `main.py` 的 `SETTING_FIELDS`（设置页表单，全局设置）或 `TASK_SETTING_FIELDS`
   （任务页表单，场景任务相关）+ `src/settings.py` 的 `DEFAULTS`/`validate_field` 四处。
+- **配置热加载**：新增配置项除了上面四处，还必须同步到 `scenarios/runner.py` 的
+  `Runner.reload_config()`（两种引擎每轮调度前都会调用，GUI 设置页保存后下一轮生效）
+  ——否则运行时改了不生效（历史教训：`work.duration` / `care.interval_seconds` /
+  `schedule.encourage_times` / `schedule.main_page_checks` 曾漏同步）。规则：
+  - 场景 `__init__` 里从 `self.cfg.xxx` 拷成 `self.xxx` 的**副本属性**必须逐字段同步
+    （如 `work.duration`、`care.energy_threshold/clean_threshold/method`、
+    `school.attribute/times_per_day`、`adventure.times_per_day/skip_bad_weather/batch`、
+    `visit/pk.times_per_day`）；
+  - 运行时直接读 `scen.cfg.xxx` 的字段也要同步对应场景的 cfg（如 `care_due()` 读
+    `care.cfg.care.interval_seconds`、`hire_friend._select_job()` 读
+    `hire_friend.cfg.work.duration`）；
+  - **优先整体替换**，新增字段放进整体替换对象就不用逐个同步。当前已整体替换：
+    各场景 `cfg.schedule`（`scen.cfg.schedule = sched`）、`cfg.employed`、
+    `cfg.recover.*`、`cfg.emulator`，以及 `friend_care.cfg.friend_care`、
+    `hire_friend.cfg.hire_friend`、`care.cfg.care`、`hire_friend.cfg.work`；
+  - 枚举/取值范围字段先校验、非法回退旧值并记日志（如 `school.attribute`、
+    `work.duration`），不要直接赋值导致运行时 KeyError；
+  - 例外（无需热加载）：`adb.*`（连接层，改完需重启 GUI）、`runner.engine`
+    （切换调度引擎需重启调度器）。
 - **GUI 线程纪律**：调度器是子进程（`scenarios/runner.py`，打包后为 `exe --runner`，
   两种入口都走 `run_scheduler()` 按 `runner.engine` 配置选引擎，不要写死 Runner），
   日志经 stdout → 队列 → QTimer 上屏；worker 线程不直接碰 Qt 控件。

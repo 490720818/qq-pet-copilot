@@ -335,7 +335,10 @@ class CareScenario(DeviceScenario):
                 log(f'体力已达标（>= {self.energy_threshold}）')
                 self.cache_care_items('feed_10', energy=energy)
                 return
-        raise RuntimeError(f'喂食 {MAX_FEED_ATTEMPTS} 次后体力仍未达到 {self.energy_threshold}')
+        # 达到上限仍不达阈值：跳过本次喂食，不再抛异常（游戏有概率显示 bug——
+        # 实际体力已达标但界面/OCR 没刷新，抛异常会让调度器走重启恢复甚至告警退出）
+        log(f'喂食 {MAX_FEED_ATTEMPTS} 次后体力仍未达到 {self.energy_threshold}，'
+            f'跳过本次喂食（可能是游戏显示未刷新，实际已达标）')
 
     def scrub_path(self, x1: int, y1: int, x2: int, y2: int,
                    steps: int = 5, step_sleep: float = 0.05) -> None:
@@ -420,7 +423,10 @@ class CareScenario(DeviceScenario):
                     self.dev.touch_down(soap[0], soap[1])
                     self.scrub_path(soap[0], soap[1], *top)
                     stall = 0
-            raise RuntimeError(f'搓洗 {MAX_SHOWER_ATTEMPTS} 回合后清洁仍未达到 {self.clean_threshold}')
+            # 达到上限仍不达阈值：跳过本次洗澡，不再抛异常（游戏有概率显示 bug——
+            # 实际清洁已达标但界面/OCR 没刷新，抛异常会让调度器走重启恢复甚至告警退出）
+            log(f'搓洗 {MAX_SHOWER_ATTEMPTS} 回合后清洁仍未达到 {self.clean_threshold}，'
+                f'跳过本次洗澡（可能是游戏显示未刷新，实际已达标）')
         finally:
             self.dev.touch_up(*bottom)
 

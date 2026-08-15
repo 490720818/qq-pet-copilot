@@ -354,16 +354,28 @@ def _frida_open_module(serial: str, pid: int) -> None:
     while time.monotonic() < deadline and not opened and not error:
         time.sleep(0.2)
     if error or not opened:
-        # 失败/超时：解除注入
+        # 失败/超时：解除注入。script 可能已随 QQ 进程退出/会话断开而 destroyed，
+        # 对 destroyed script 调 unload() 会抛 "script is destroyed" 掩盖真实原因，
+        # 这里忽略 unload 异常，让下面的具体诊断信息正常上报
         try:
             script.unload()
+        except Exception:
+            pass
         finally:
             try:
                 session.detach()
             except Exception:
                 pass
+        # 清理 keepalive 里已断开的旧会话（QQ 被 force_stop 后旧注入已失效）
+        _prune_dead_sessions()
         if error:
             raise OpenPetPageError(error)
+        if script.is_destroyed or session.is_detached:
+            # 等待期间 QQ 退出/被系统杀掉，或 frida-server 掉线：session 断开后
+            # script 自动进入 destroyed 状态（即日志里常见的 "script is destroyed"）
+            raise OpenPetPageError(
+                '注入后 QQ 进程退出或 frida 会话断开（script is destroyed），'
+                '未等到宠物 SDK 初始化。请确认 QQ 未闪退、frida-server 稳定运行')
         raise OpenPetPageError(
             '等待 QQ 宠物 SDK 初始化超时。请确认 QQ 已登录、版本受支持（当前按 '
             f'QQ9.3.35 验证），并已停留在 QQ 主界面')

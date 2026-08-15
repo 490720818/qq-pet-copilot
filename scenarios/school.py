@@ -46,18 +46,27 @@ ATTRIBUTE_COURSES = {
     '魅力': 'select_box_3',
 }
 
-# 高级学园/进修学院的课程顺序固定为 魅力/力量/智力（与初级/中级不同，
+# 高级学园的课程顺序固定为 魅力/力量/智力（与初级/中级不同，
 # 选课前需 OCR 上半屏识别学园阶段来决定点哪个框）
 ADVANCED_ATTRIBUTE_COURSES = {
     '魅力': 'select_box_1',
     '力量': 'select_box_2',
     '智力': 'select_box_3',
 }
+# 进修学院的课程顺序固定为 力量/魅力/智力（与高级学园不同）
+INSTITUTE_ATTRIBUTE_COURSES = {
+    '力量': 'select_box_1',
+    '魅力': 'select_box_2',
+    '智力': 'select_box_3',
+}
 ADVANCED_STAGES = ('高级学园', '进修学院')
-# 必须带年级后缀（面板标题形如"初级学园 5年级"）：地图上的建筑气泡
-# 也写"XX学园"（没有年级），只匹配阶段名会把气泡误判成面板标题
+# 面板标题识别规则（必须带后缀，防止地图建筑气泡"XX学园"误判）：
+# - 初级/中级/高级学园：形如"初级学园 5年级"
+# - 进修学院：形如"进修学院 研修生12" / "进修学院 研修生Ⅰ"（没有年级，
+#   带"研修生"编号；编号可能是阿拉伯数字/中文数字/罗马数字）
 _STAGE_RE = re.compile(
-    r'(初级学园|中级学园|高级学园|进修学院)\s*[\d一二三四五六七八九十]+\s*年级')
+    r'(初级学园|中级学园|高级学园)\s*[\d一二三四五六七八九十]+\s*年级'
+    r'|(进修学院)\s*研修生\s*[\d一二三四五六七八九十ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩIVX]+')
 
 PROGRESS_FILE = SCHOOL_PROGRESS_FILE
 
@@ -160,11 +169,16 @@ class SchoolScenario(DeviceScenario):
         """OCR 上半屏识别学园阶段，返回该点哪个课程选择框。
 
         初级/中级学园课程顺序固定 力量/智力/魅力 -> 第一/二/三框；
-        高级学园/进修学院固定 魅力/力量/智力。识别不到阶段回退默认顺序。
+        高级学园固定 魅力/力量/智力；进修学院固定 力量/魅力/智力。
+        识别不到阶段回退默认顺序（初级/中级的 力量/智力/魅力）。
         """
         screen = self.screen()
         results = ocr_texts(screen[: screen.shape[0] // 2])
         stage = self._detect_stage(results)
+        if stage == '进修学院':
+            box = INSTITUTE_ATTRIBUTE_COURSES[self.attribute]
+            log(f'学园阶段: {stage}，课程顺序 力量/魅力/智力，{self.attribute} -> {box}')
+            return box
         if stage in ADVANCED_STAGES:
             box = ADVANCED_ATTRIBUTE_COURSES[self.attribute]
             log(f'学园阶段: {stage}，课程顺序 魅力/力量/智力，{self.attribute} -> {box}')
@@ -183,10 +197,10 @@ class SchoolScenario(DeviceScenario):
         for text, *_ in results:
             m = _STAGE_RE.search(text.replace(' ', ''))
             if m:
-                return m.group(1)
+                return m.group(1) or m.group(2)
         merged = ''.join(t.replace(' ', '') for t, *_ in results)
         m = _STAGE_RE.search(merged)
-        return m.group(1) if m else None
+        return (m.group(1) or m.group(2)) if m else None
 
     def wait_class_end(self) -> bool:
         """等待下课并点击 quit。返回 True 表示还能继续学。"""

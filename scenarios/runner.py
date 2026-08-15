@@ -107,7 +107,7 @@ from scenarios.hire_friend import FriendHireScenario
 from scenarios.pk import PKDeferred, PKScenario
 from scenarios.school import ATTRIBUTE_COURSES, SchoolScenario
 from scenarios.visit import VisitScenario
-from scenarios.work import WorkScenario
+from scenarios.work import DURATION_BOXES, WorkScenario
 
 # 连续异常恢复（adb reboot）次数上限，超过认为设备/环境有硬故障，放弃
 RECOVERY_LIMIT = 3
@@ -501,10 +501,11 @@ class Runner:
         self.school_factor = sched.school_factor
         self.work_factor = sched.work_factor
         self.daily_point_limit = sched.daily_point_limit
-        # 统一检查间隔也要同步到各场景实例，设置页热修改后下一轮即生效
+        # schedule 整体替换到各场景实例：check_interval / encourage_times /
+        # main_page_checks / 金币阈值等全部热加载（设置页保存后下一轮即生效）
         for scen in (self.school, self.work, self.adventure, self.care, self.visit, self.pk,
                      self.friend_care, self.hire_friend, self.employed):
-            scen.cfg.schedule.check_interval = sched.check_interval
+            scen.cfg.schedule = sched
             # 被雇佣配置整体替换（开关/时间段/检查间隔/处理方式下一轮即生效）
             scen.cfg.employed = cfg.employed
             scen.cfg.recover.method = cfg.recover.method
@@ -533,12 +534,21 @@ class Runner:
         self.care.energy_threshold = cfg.care.energy_threshold
         self.care.clean_threshold = cfg.care.clean_threshold
         self.care.method = cfg.care.method
+        # care.interval_seconds 热加载（care_due 读 self.care.cfg.care.interval_seconds）
+        self.care.cfg.care = cfg.care
         self.school.times_per_day = cfg.school.times_per_day
         if cfg.school.attribute in ATTRIBUTE_COURSES:
             self.school.attribute = cfg.school.attribute
         else:
             log(f'属性点配置无效 {cfg.school.attribute!r}，沿用 {self.school.attribute}')
         self.work.location = cfg.work.location
+        # work.duration 热加载：work.py 选工作选择框用 self.duration 副本，
+        # hire_friend.py 用 cfg.work.duration，两个都要更新；非法值回退旧值
+        if cfg.work.duration in DURATION_BOXES:
+            self.work.duration = cfg.work.duration
+        else:
+            log(f'打工时长配置无效 {cfg.work.duration!r}，沿用 {self.work.duration}')
+        self.hire_friend.cfg.work = cfg.work
         self.work.times_per_day = cfg.work.times_per_day
         self.work.employ_scroll_limit = cfg.work.employ_scroll_limit
         self.visit.times_per_day = cfg.visit.times_per_day
