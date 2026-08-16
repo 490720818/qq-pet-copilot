@@ -52,6 +52,7 @@ DEFAULTS = {
     'runner.engine': 'task_queue',
     'tasks.order': 'care>school>friend_care>hire_friend>adventure>visit>pk>work',
     'tasks.main_order': 'school>hire_friend>adventure>work',
+    'tasks.failure_interval': 1800,
     'care.energy_threshold': 60,
     'care.clean_threshold': 60,
     'care.method': '一键护理',
@@ -120,6 +121,12 @@ def validate_field(key: str, value):
         return False, default
     if key in ('care.energy_threshold', 'care.clean_threshold'):
         return (True, value) if 0 <= int(value) <= 100 else (False, default)
+    if key == 'tasks.failure_interval':
+        # 失败重试间隔至少 1 秒（0 会变成无间隔连续重试死循环）
+        try:
+            return (True, value) if int(value) >= 1 else (False, default)
+        except (TypeError, ValueError):
+            return False, default
     if key in ('schedule.check_interval', 'schedule.main_page_checks'):
         # 检查间隔至少 1 秒 / 检测次数至少 1 次（0 会变成无间隔死循环或不设防点 back）
         try:

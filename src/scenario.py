@@ -27,7 +27,9 @@ WAIT_LOG_INTERVAL = 300.0  # 长等待期间的心跳日志间隔（秒），避
 ENCOURAGE_LOG_INTERVAL = 300.0  # "鼓励宠物"点击日志节流间隔（秒）：按钮每 ~12s 出现，避免刷屏
 EMPLOYED_MAX_WAIT_MINUTES = 45  # 被雇佣"等到25/75（小于45min）"：面板剩余时间超过该值立即召回
 DEFER_DETECTION_ATTEMPTS = 3    # 延时收尾模式判定进行中/结束状态的检测次数
-DEFER_FALLBACK_SECONDS = 60     # OCR 识别不到剩余时间时的兜底重估间隔（秒）
+DEFER_FALLBACK_SECONDS = 15     # OCR 识别不到剩余时间时的兜底重估间隔（秒）：
+# 原本 60s 会让一开始的收尾预估多等近 1 分钟（用户实测收尾偏晚），
+# 缩短后尽早复查，OCR 通常下一轮就能读到真实剩余并收敛到准确收尾时间
 DEFER_END_MARGIN_SECONDS = 1    # 剩余时间换算收尾时间点时加的余量（秒）
 FINISH_DETECTION_ATTEMPTS = 5   # finish_pending 出门后检测结算页/进行中状态的重试次数
 
@@ -520,19 +522,21 @@ class DeviceScenario:
         if times <= 0:
             return
         clicked = 0
-        misses = 0
-        for _ in range(times * 3):
+        # 先找一次按钮位置（see 是全树 dump ~0.8s，按钮位置固定；找到后单轮连点
+        # 不再重查。找不到短等重试几次仍没有就放弃——按钮可能不在当前页/未渲染）
+        hit = None
+        for _ in range(3):
             hit = self.see('encourage_pet')
             if hit:
-                self.click(hit[0], hit[1])
-                clicked += 1
-                if clicked >= times:
-                    break
-            else:
-                misses += 1
-                # 页面可能根本没有鼓励按钮（如结算页）：一次都没点到时 3 轮不中就不再等
-                if clicked == 0 and misses >= 3:
-                    break
+                break
+            time.sleep(0.1)
+        if not hit:
+            log(f'鼓励宠物: 未找到按钮，跳过（0/{times} 次）')
+            return
+        x, y = hit[0], hit[1]
+        for _ in range(times):
+            self.click(x, y)
+            clicked += 1
             time.sleep(0.1)  # 点击间隔（快速连点）
         log(f'鼓励宠物: 快速点击 {clicked}/{times} 次')
 
@@ -607,6 +611,10 @@ class DeviceScenario:
         secs = self.read_remaining_seconds(screen)
         if secs is None:
             return False
+        # 记录 OCR 读取剩余时间的时刻：**必须在鼓励宠物之前**——鼓励点击耗时
+        # 不能算进收尾余量（否则估算偏晚：冒险无鼓励所以准，上课/打工有鼓励就晚
+        # 鼓励耗时那么多秒）
+        read_at = datetime.now()
         names = {'school': ('school_in', 'school_end', '上课'),
                  'work': ('work_in', 'work_end', '打工'),
                  'adventure': ('adventure_in', 'adventure_end', '冒险')}
@@ -614,7 +622,7 @@ class DeviceScenario:
         if kind in ('school', 'work'):
             # 鼓励按钮只在进行中页面常驻（结算页没有），登记 pending 离开前就地点击
             self._encourage_burst()
-        until = datetime.now() + timedelta(seconds=secs + DEFER_END_MARGIN_SECONDS)
+        until = read_at + timedelta(seconds=secs + DEFER_END_MARGIN_SECONDS)
         self.pending = {'in_name': in_name, 'end_name': end_name, 'until': until,
                         'on_finish': lambda k=kind: count_cross(k), 'desc': desc,
                         'encourage': kind in ('school', 'work')}

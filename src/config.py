@@ -222,6 +222,9 @@ class TasksConfig:
     # 主任务组（冒险/学习/打工/雇佣好友，互斥）组内优先级（> 分隔，越靠前越优先）；
     # 没列出的主任务按默认顺序兜底排最后
     main_order: str = "school>hire_friend>adventure>work"
+    # 所有任务统一的失败重试间隔（秒）：设置页"任务失败重试间隔"，
+    # 覆盖各任务的 failure_interval（只保留这一个入口，避免界面改不到/漏改）
+    failure_interval: int = 1800
     care: TaskItemConfig = field(default_factory=TaskItemConfig)
     adventure: TaskItemConfig = field(default_factory=TaskItemConfig)
     visit: TaskItemConfig = field(default_factory=TaskItemConfig)
@@ -342,8 +345,17 @@ def load_config(config_path: str | Path | None = None) -> Config:
             # 过滤掉未知键，防止 YAML 里多写的键让 dataclass 构造报错
             valid = {k: v for k, v in item.items() if k in TaskItemConfig.__dataclass_fields__}
             setattr(tasks, key, TaskItemConfig(**valid))
+    # 统一失败重试间隔：tasks.failure_interval（设置页"任务失败重试间隔"）覆盖所有任务，
+    # 不再单独配置各任务的 failure_interval
+    if raw_tasks.get("failure_interval") is not None:
+        tasks.failure_interval = int(raw_tasks["failure_interval"])
+    for key in TASK_KEYS:
+        getattr(tasks, key).failure_interval = tasks.failure_interval
     return Config(
         adb=AdbConfig(**raw.get("adb", {})),
+        control=ControlConfig(
+            **{k: v for k, v in (raw.get("control", {}) or {}).items()
+               if k in ControlConfig.__dataclass_fields__}),
         emulator=EmulatorConfig(**{k: v for k, v in (raw.get("emulator", {}) or {}).items()
                                    if k in EmulatorConfig.__dataclass_fields__}),
         school=SchoolConfig(**raw.get("school", {})),

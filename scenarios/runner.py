@@ -803,6 +803,10 @@ SIDE_TASK_KEYS = ('adventure', 'visit', 'pk', 'hire_friend', 'friend_care')
 # 主任务组键定义在 src/config.py 的 MAIN_TASK_KEYS（GUI 设置校验也用）
 # 没有任务可执行且没有明确等待点时的短轮询间隔（秒），顺带热加载配置
 QUEUE_POLL_INTERVAL = 30
+# 主任务 pending 收尾前 PENDING_FINISH_HORIZON 秒内不执行支线任务：
+# 护理/好友护理等一轮可跑 30~40s，若在收尾点前开跑会把 finish_pending 挤后几十秒
+# （冒险短任务实测收尾偏晚 ~30s 就是这个原因），到点前先让出、睡到收尾点先收尾
+PENDING_FINISH_HORIZON = 15
 
 _COINS_UNSET = object()  # 本轮循环还没读过金币
 
@@ -1112,6 +1116,24 @@ class TaskQueueRunner(Runner):
 
     # ---- 执行 ----
 
+    def _pending_finish_first(self) -> str | None:
+        """主任务 pending 收尾优先：已到点立即收尾返回 'finish'；
+        即将到点（<= PENDING_FINISH_HORIZON）返回 'wait'（本轮不执行任务，
+        交给 _sleep_until_next 睡到收尾点，避免护理/好友护理等长支线挤占收尾）；
+        无 pending 或还早返回 None。"""
+        pend = self._main_pending_scen()
+        if pend is None:
+            return None
+        wait = (pend.pending['until'] - datetime.now()).total_seconds()
+        if wait <= 0:
+            log(f"{pend.pending['desc']}: 已到收尾时间，优先收尾")
+            pend.finish_pending()
+            return 'finish'
+        if wait <= PENDING_FINISH_HORIZON:
+            log(f"{pend.pending['desc']}: 即将在 {wait:.0f}s 后收尾，先不执行其他任务")
+            return 'wait'
+        return None
+
     def _run_first_due(self, tasks: dict, order: list) -> bool:
         """按 order 扫描，执行第一个可执行的任务，返回是否执行了任务。
         被雇佣检查不在 tasks.order 里：到点优先于队列任务先检查。"""
@@ -1119,6 +1141,12 @@ class TaskQueueRunner(Runner):
         if self.employed_due():
             self._run_employed_check(tasks, order, now)
             return True
+        # 主任务 pending 到点/即将到点：优先收尾，别让支线把收尾挤后几十秒
+        pend_act = self._pending_finish_first()
+        if pend_act == 'finish':
+            return True
+        if pend_act == 'wait':
+            return False  # 本轮不执行任务 -> _sleep_until_next 睡到收尾点
         ctx: dict = {}  # 本轮循环的 点数/金币 缓存（_main_due 用）
         for key in order:
             task = tasks[key]

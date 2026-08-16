@@ -128,39 +128,39 @@ tasks:
   # 主任务组（冒险/学习/打工/雇佣好友互斥，不能同时做）组内优先级：
   # > 分隔，越靠前越优先；没列出的主任务按默认顺序兜底排最后
   main_order: school>hire_friend>adventure>work
+  # 所有任务统一的失败重试间隔（秒）：设置页"任务失败重试间隔"可改，
+  # 覆盖原来各任务单独的 failure_interval
+  failure_interval: 1800
   # trigger: interval=按间隔秒数（interval_seconds 为最小执行间隔）/
   #   daily=按每日时间点列表（到点打开执行窗口，窗口内可反复执行直到当天任务完成；
   #   下一个时间点重新打开窗口）
   # enabled_time_range: 允许执行的时间窗（HH:MM:SS-HH:MM:SS）
-  # success_interval / failure_interval: 成功/失败后距下次执行的最小间隔（秒）
+  # success_interval: 成功/失败后距下次执行的最小间隔（秒）；
+  # failure_interval 已统一为下面的 failure_interval（设置页"任务失败重试间隔"）
   care:
     enabled: true
     trigger: interval
     interval_seconds: 60
     enabled_time_range: 00:00:00-23:59:59
     success_interval: 60
-    failure_interval: 600
   adventure:
     enabled: true
     trigger: daily
     daily_times: ["09:10"]
     enabled_time_range: 00:00:00-23:59:59
     success_interval: 60
-    failure_interval: 1800
   visit:
     enabled: true
     trigger: daily
     daily_times: ["00:01"]
     enabled_time_range: 00:00:00-23:59:59
     success_interval: 60
-    failure_interval: 1800
   pk:
     enabled: true
     trigger: daily
     daily_times: ["00:01"]
     enabled_time_range: 00:00:00-23:59:59
     success_interval: 60
-    failure_interval: 1800
   # 好友雇佣/好友护理的时间条件由各自配置段决定（hire_friend.time_range /
   # friend_care.time_range），这里用 interval 触发即可
   hire_friend:
@@ -169,28 +169,24 @@ tasks:
     interval_seconds: 60
     enabled_time_range: 00:00:00-23:59:59
     success_interval: 60
-    failure_interval: 1800
   friend_care:
     enabled: true
     trigger: interval
     interval_seconds: 60
     enabled_time_range: 00:00:00-23:59:59
     success_interval: 60
-    failure_interval: 1800
   school:
     enabled: true
     trigger: interval
     interval_seconds: 60
     enabled_time_range: 00:00:00-23:59:59
     success_interval: 60
-    failure_interval: 1800
   work:
     enabled: true
     trigger: interval
     interval_seconds: 60
     enabled_time_range: 00:00:00-23:59:59
     success_interval: 60
-    failure_interval: 1800
 
 recover:
   # 异常恢复方式：重启设备（adb reboot，彻底）/ 重启游戏（只强停并重开 QQ，快）

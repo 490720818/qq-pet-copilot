@@ -146,6 +146,7 @@ $PY build.py --emulator          # 模拟器版（内置 hook JS + frida-server 
     `work.duration`），不要直接赋值导致运行时 KeyError；
   - 例外（无需热加载）：`adb.*`（连接层，改完需重启 GUI）、`runner.engine`
     （切换调度引擎需重启调度器）。
+  - **统一失败重试间隔**：`tasks.failure_interval`（设置页"任务失败重试间隔"，`SETTING_FIELDS` + `DEFAULTS`/`validate_field`）是各任务 `failure_interval` 的**唯一入口**——`load_config` 构造完各 `TaskItemConfig` 后用全局值覆盖，改 config.yaml 里各任务单独的 `failure_interval` 无效（config 文件里已删除这些行）。
 - **GUI 线程纪律**：调度器是子进程（`scenarios/runner.py`，打包后为 `exe --runner`，
   两种入口都走 `run_scheduler()` 按 `runner.engine` 配置选引擎，不要写死 Runner），
   日志经 stdout → 队列 → QTimer 上屏；worker 线程不直接碰 Qt 控件。
@@ -155,7 +156,7 @@ $PY build.py --emulator          # 模拟器版（内置 hook JS + frida-server 
   重扫；成功按 `success_interval`（interval 触发再叠加 `interval_seconds` 最小间隔；
   登记了 pending 的延时收尾任务除外——节奏由 `pending.until` 控制，`next_at`
   立即到期，结算完成的同一轮调度即可接力，避免短活动时凭空多等）、
-  失败按 `failure_interval` 退避；daily 触发到点打开执行窗口（窗口内可反复执行直到
+  失败按统一 `tasks.failure_interval` 退避（**全局唯一入口**：设置页"任务失败重试间隔"，`load_config` 里覆盖所有任务的 `failure_interval`，不再单独配各任务）；daily 触发到点打开执行窗口（窗口内可反复执行直到
   任务返回 False，下一个时间点重开窗口并清除当天不可继续标记）；没有任务可执行时
   睡到最近等待点（上限 `QUEUE_POLL_INTERVAL` 轮询热加载配置）；冒险/学习/打工/雇佣好友
   互斥（不能同时做），作为**主任务组**统一调度（`_main_choice`）：组内优先级由
@@ -168,8 +169,8 @@ $PY build.py --emulator          # 模拟器版（内置 hook JS + frida-server 
   不受 `tasks.order` 里四者相对位置影响，金币/点数每轮循环只读一次（ctx 缓存）；
   主任务组**非阻塞等待（延时收尾）**：`defer_wait=True` 时场景出发后识别到进行中状态
   （"正在学习/打工/冒险"）就 OCR 剩余时间（"剩余00:02:50"，复用
-  `parse_employed_remaining`）登记场景 `pending`（`defer_busy_end()`，OCR 失败兜底
-  60 秒），立即回主页面调度其他任务；`_main_choice` 到点调 `finish_pending()`
+  `parse_employed_remaining`）登记场景 `pending`（`defer_busy_end()`；**`until` 必须按 OCR 读取剩余时间的时刻算**——鼓励宠物点击耗时不能算进余量，否则上课/打工（有鼓励）估算偏晚鼓励耗时那么多秒、冒险（无鼓励）准，历史教训见 `_defer_busy` 的 `read_at`，OCR 失败兜底
+  `DEFER_FALLBACK_SECONDS`=15 秒，避免一开始预估余量太大导致收尾偏晚），立即回主页面调度其他任务；**收尾优先**：`_run_first_due` 每轮先查主任务 pending——已到点先 `finish_pending()` 收尾，`PENDING_FINISH_HORIZON`=15s 内即将到点则不执行支线任务、睡到收尾点（否则护理/好友护理一轮 30~40s 会把收尾挤后几十秒，冒险短任务实测偏晚 ~30s）；到点后由 `_main_choice` 调 `finish_pending()`
   收尾：回主页面**出门后**才出现结算页（学习"教师评语"/打工"打工总结"（含雇佣
   好友名称），即 `end_name` 的"分享"按钮），见结算页点 quit（落在出门页面）、
   `on_finish()` 计数，还在进行中（计时误差）则 OCR 剩余时间重估 `until` 下轮再来；

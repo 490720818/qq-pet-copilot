@@ -167,6 +167,7 @@ SETTING_FIELDS = [
     ('emulator.name', '实例名称（留空自动探测）', 'str'),
     ('emulator.path', '模拟器安装路径（留空自动探测）', 'str'),
     ('runner.engine', '调度引擎', ['task_queue', 'legacy']),
+    ('tasks.failure_interval', '任务失败重试间隔（秒）', 'int'),
     ('schedule.coin_threshold', '金币阈值', 'int'),
     ('schedule.school_factor', '学习点数系数', 'int'),
     ('schedule.work_factor', '打工点数系数', 'int'),
