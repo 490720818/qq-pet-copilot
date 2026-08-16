@@ -78,14 +78,16 @@ def load_progress(progress_file: Path, quiet: bool = False) -> tuple[str, int, d
 
 
 def save_progress(progress_file: Path, today: str, done: int, history: dict) -> None:
-    """持久化当天次数和历史记录 {日期: 次数}。"""
+    """持久化当天次数和历史记录 {日期: 次数}；保留扩展字段（学园/打工时长/累计时长等）。"""
     history[today] = done
+    try:
+        data = json.loads(progress_file.read_text(encoding='utf-8')) or {}
+    except (OSError, ValueError):
+        data = {}
+    data.update({'date': today, 'learned': done, 'history': history})
     progress_file.parent.mkdir(parents=True, exist_ok=True)
     progress_file.write_text(
-        json.dumps(
-            {'date': today, 'learned': done, 'history': history},
-            ensure_ascii=False, indent=2,
-        ),
+        json.dumps(data, ensure_ascii=False, indent=2),
         encoding='utf-8',
     )
 
@@ -176,7 +178,145 @@ CROSS_PROGRESS = {
 
 
 def count_cross(finished: str) -> None:
-    """出门时等完了别的活动，计入对应进度并打日志。"""
+    """出门时等完了别的活动，计入对应进度并打日志；学习/打工顺带累计时长。"""
     file, unit, name = CROSS_PROGRESS[finished]
     n = increment_progress(file)
     log(f'出门时等完了{unit}，已计入{name}次数（{n} 次）')
+    if finished == 'school':
+        record_study_finish()
+    elif finished == 'work':
+        record_work_finish()
+
+
+# ---- 学习/工作时长累计（替代旧"每日点数"规则，按学园/打工时长结算） ----
+# 各学园一节课对应的学习时长（秒）
+SCHOOL_DURATION_SECONDS = {
+    '初级学园': 10 * 60,
+    '中级学园': 20 * 60,
+    '高级学园': 30 * 60,
+    '进修学院': 45 * 60,
+}
+# 打工时长配置 -> 单次打工时长（秒）
+WORK_DURATION_SECONDS = {
+    '10分钟': 10 * 60,
+    '45分钟': 45 * 60,
+    '2小时': 2 * 3600,
+}
+
+
+def _load_raw(progress_file: Path) -> dict:
+    try:
+        return json.loads(progress_file.read_text(encoding='utf-8')) or {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _save_raw(progress_file: Path, data: dict) -> None:
+    progress_file.parent.mkdir(parents=True, exist_ok=True)
+    progress_file.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding='utf-8')
+
+
+def get_current_school() -> str | None:
+    """school_progress.json 里持久化的当前学园（学习开始时写入，跨天视为空）。"""
+    data = _load_raw(SCHOOL_PROGRESS_FILE)
+    if data.get('date') == date.today().isoformat():
+        return data.get('school') or None
+    return None
+
+
+def set_current_school(school: str) -> None:
+    """学习开始时记录当前学园：与已存不一致才更新（一致不写，减少落盘）。"""
+    data = _load_raw(SCHOOL_PROGRESS_FILE)
+    if data.get('date') != date.today().isoformat():
+        data = {'date': date.today().isoformat()}
+    if data.get('school') != school:
+        data['school'] = school
+        _save_raw(SCHOOL_PROGRESS_FILE, data)
+
+
+def get_current_work_duration() -> str | None:
+    """work_progress.json 里持久化的本次打工时长（work.duration）。"""
+    data = _load_raw(WORK_PROGRESS_FILE)
+    if data.get('date') == date.today().isoformat():
+        return data.get('duration') or None
+    return None
+
+
+def set_current_work_duration(duration: str) -> None:
+    """打工开始时记录本次打工时长（work.duration）：不一致才更新。"""
+    data = _load_raw(WORK_PROGRESS_FILE)
+    if data.get('date') != date.today().isoformat():
+        data = {'date': date.today().isoformat()}
+    if data.get('duration') != duration:
+        data['duration'] = duration
+        _save_raw(WORK_PROGRESS_FILE, data)
+
+
+def _today_seconds(progress_file: Path, key: str) -> int:
+    data = _load_raw(progress_file)
+    if data.get('date') == date.today().isoformat():
+        return int(data.get(key, 0) or 0)
+    return 0
+
+
+def _add_seconds(progress_file: Path, key: str, seconds: int) -> int:
+    data = _load_raw(progress_file)
+    if data.get('date') != date.today().isoformat():
+        data = {'date': date.today().isoformat()}
+    total = int(data.get(key, 0) or 0) + seconds
+    data[key] = total
+    _save_raw(progress_file, data)
+    return total
+
+
+def record_study_finish() -> int | None:
+    """一节课结算：按持久化的学园累计学习时长（秒），返回当天累计或 None（学园未知）。"""
+    school = get_current_school()
+    secs = SCHOOL_DURATION_SECONDS.get(school or '')
+    if not secs:
+        return None
+    total = _add_seconds(SCHOOL_PROGRESS_FILE, 'study_secs', secs)
+    log(f'学习结算: {school} +{secs // 60} 分钟，今日已学习 {total // 60} 分钟')
+    return total
+
+
+def record_work_finish() -> int | None:
+    """一次打工结算：按持久化的打工时长累计打工时长（秒）。"""
+    duration = get_current_work_duration()
+    secs = WORK_DURATION_SECONDS.get(duration or '')
+    if not secs:
+        return None
+    total = _add_seconds(WORK_PROGRESS_FILE, 'work_secs', secs)
+    log(f'打工结算: 时长 {duration} +{secs // 60} 分钟，今日已打工 {total // 60} 分钟')
+    return total
+
+
+def _migrate_old_durations(progress_file: Path, key: str, minutes_per: int) -> None:
+    """老版本进度今天只有次数（learned）、没有时长字段时，按
+    次数 x minutes_per 分钟 换算时长并落盘（只迁移一次，之后 study_secs 存在即跳过）。"""
+    if minutes_per <= 0:
+        return
+    data = _load_raw(progress_file)
+    if data.get('date') != date.today().isoformat():
+        return
+    if key in data:
+        return  # 已有新字段（含 0），跳过
+    count = int(data.get('learned', 0) or 0)
+    if count <= 0:
+        return
+    data[key] = count * minutes_per * 60
+    _save_raw(progress_file, data)
+    log(f'迁移老进度: {progress_file.stem} 今天 {count} 次 x {minutes_per} 分钟'
+        f' = {count * minutes_per} 分钟')
+
+
+def load_durations(school_factor: int = 0, work_factor: int = 0) -> tuple[int, int]:
+    """今天已累计 (学习秒, 打工秒)。
+
+    首次运行新版本：老进度今天只有次数没有时长时，按旧版 学习/打工点数系数
+    （即每节/每次的分钟数）自动换算补上，之后正常累计。
+    """
+    _migrate_old_durations(SCHOOL_PROGRESS_FILE, 'study_secs', school_factor)
+    _migrate_old_durations(WORK_PROGRESS_FILE, 'work_secs', work_factor)
+    return (_today_seconds(SCHOOL_PROGRESS_FILE, 'study_secs'),
+            _today_seconds(WORK_PROGRESS_FILE, 'work_secs'))

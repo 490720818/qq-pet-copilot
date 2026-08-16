@@ -109,11 +109,15 @@ class WorkConfig:
 class ScheduleConfig:
     # 金币阈值：金币 >= 该值优先学习，低于则先打工赚够再学习
     coin_threshold: int = 2000
-    # 每日点数规则：学习次数 x school_factor + 打工次数 x work_factor
-    # 超过 daily_point_limit 后今天不再学习，只打工
+    # 学习工作时长上限（小时）：学习/打工按学园/打工时长结算累计，
+    # 累计时长 >= 上限后今天不再学习只打工；0 = 不限
+    daily_hour_limit: int = 8
+    # 旧版字段（仅兼容老 config.yaml + 首次运行迁移用，不再参与调度、不进设置页）：
+    # school_factor / work_factor 按"每节/每次的分钟数"把老进度次数换算成已学习/工作时长；
+    # daily_point_limit 已废弃，仅保留让老配置能正常解析
     school_factor: int = 20
     work_factor: int = 45
-    daily_point_limit: int = 480
+    daily_point_limit: int = 0
     # 进行中状态（上课/打工/冒险/被雇佣）的统一检查间隔（秒）
     check_interval: int = 8
     # 鼓励次数：在学习/打工进行中页面快速点击"鼓励宠物"按钮的次数，0 为不鼓励

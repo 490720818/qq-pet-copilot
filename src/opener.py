@@ -431,7 +431,7 @@ def _frida_open_module(serial: str, pid: int, adb: str) -> None:
                 '未等到宠物 SDK 初始化。请确认 QQ 未闪退、frida-server 稳定运行')
         raise OpenPetPageError(
             '等待 QQ 宠物 SDK 初始化超时。请确认 QQ 已登录、版本受支持（当前按 '
-            f'QQ9.3.35 验证），并已停留在 QQ 主界面')
+            f'QQ9.3.25 验证），并已停留在 QQ 主界面')
     # 成功：保持注入存活（doAction 接管持续生效），持有引用防止被 GC 解除
     _prune_dead_sessions()
     _KEEPALIVE.append((session, script))

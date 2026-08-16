@@ -16,8 +16,9 @@
   低于 care 阈值则喂食/洗澡到达标
 - 冒险优先：当天到达 adventure.start_time 且冒险次数未满（adventure.times_per_day）
   -> 优先处理冒险，每次冒险后回主页面重新判断；当天次数用完后等第二天该时间再冒险
-- 每日点数规则：学习次数 x school_factor + 打工次数 x work_factor
-  超过 daily_point_limit 后，今天不再学习只打工，第二天次数自动清零
+- 学习工作时长规则：学习按学园（初级10/中级20/高级30/进修45 分钟）、
+  打工按所选时长（10分钟/45分钟/2小时）结算累计，累计 >= daily_hour_limit（小时）
+  后今天不再学习只打工，第二天自动清零
 - 每轮先在主页面 OCR 金币数量（顶部状态栏最右侧数值）
 - 金币 >= schedule.coin_threshold -> 优先学习
 - 金币 < 阈值 -> 先打工（每次打工一轮后重新判断），赚够了自然切换去学习
@@ -90,6 +91,7 @@ from src.progress import (
     VISIT_PROGRESS_FILE,
     WORK_PROGRESS_FILE,
     exp_daily_done,
+    load_durations,
     load_progress,
     log,
 )
@@ -184,9 +186,10 @@ class Runner:
         self._employed_last_check = None   # 上次被雇佣检查时间（interval_seconds 起算点）
         sched = self.school.cfg.schedule
         self.threshold = sched.coin_threshold
+        self.daily_hour_limit = sched.daily_hour_limit
+        # 旧版点数系数：仅首次运行把老进度次数换算成时长用（不再参与调度）
         self.school_factor = sched.school_factor
         self.work_factor = sched.work_factor
-        self.daily_point_limit = sched.daily_point_limit
         adv = self.school.cfg.adventure
         self.adventure_times = adv.times_per_day
         start_time = adv.start_time
@@ -199,8 +202,8 @@ class Runner:
             raise ValueError(
                 f'config.yaml 中 adventure.start_time 格式无效: {adv.start_time!r}，应为 HH:MM')
         log(f'金币阈值: {self.threshold}，'
-            f'每日点数上限: 学习x{self.school_factor}+打工x{self.work_factor} '
-            f'> {self.daily_point_limit} 后只打工，'
+            f'学习工作时长上限: {self.daily_hour_limit if self.daily_hour_limit else "不限"} 小时'
+            f'（学习按学园 10/20/30/45 分钟、打工按所选时长结算），'
             f'冒险: 每天 {self.adventure_times} 次 @ {start_time}')
         visit = self.school.cfg.visit
         self.visit_times = visit.times_per_day
@@ -329,11 +332,18 @@ class Runner:
             return False
         return in_time_range(datetime.now().time(), start, end)
 
-    def today_points(self) -> tuple[int, int, int]:
-        """当天 (学习次数, 打工次数, 点数)。"""
-        _, learned, _ = load_progress(SCHOOL_PROGRESS_FILE, quiet=True)
-        _, worked, _ = load_progress(WORK_PROGRESS_FILE, quiet=True)
-        return learned, worked, learned * self.school_factor + worked * self.work_factor
+    def today_durations(self) -> tuple[int, int]:
+        """当天已累计 (学习秒, 打工秒)；首次运行自动迁移老次数。"""
+        return self._load_durations()
+
+    def _load_durations(self) -> tuple[int, int]:
+        """读取今日累计时长（带旧版系数迁移）。"""
+        return load_durations(self.school_factor, self.work_factor)
+
+    def _duration_over(self, study_s: int, work_s: int) -> bool:
+        """学习+工作时长是否已达上限（daily_hour_limit，0=不限）。"""
+        limit = self.daily_hour_limit
+        return limit > 0 and study_s + work_s >= limit * 3600
 
     def read_main_coins(self) -> int | None:
         """回主页面 OCR 金币数量，失败返回 None。识别成功写状态缓存（GUI 状态条）。"""
@@ -498,9 +508,9 @@ class Runner:
         self._last_cfg = cfg
         sched = cfg.schedule
         self.threshold = sched.coin_threshold
+        self.daily_hour_limit = sched.daily_hour_limit
         self.school_factor = sched.school_factor
         self.work_factor = sched.work_factor
-        self.daily_point_limit = sched.daily_point_limit
         # schedule 整体替换到各场景实例：check_interval / encourage_times /
         # main_page_checks / 金币阈值等全部热加载（设置页保存后下一轮即生效）
         for scen in (self.school, self.work, self.adventure, self.care, self.visit, self.pk,
@@ -725,13 +735,14 @@ class Runner:
                     time.sleep(max(1, int(getattr(ec, 'interval_seconds', 60) or 60)))
                     continue
 
-                learned, worked, points = self.today_points()
-                over_limit = points > self.daily_point_limit
-                log(f'今日点数: 学习{learned}次x{self.school_factor}+打工{worked}次x{self.work_factor}'
-                    f' = {points} / {self.daily_point_limit}')
+                study_s, work_s = self._load_durations()
+                over_limit = self._duration_over(study_s, work_s)
+                log(f'今日时长: 已学习 {study_s // 60} 分钟 + 已打工 {work_s // 60} 分钟'
+                    f' = {(study_s + work_s) // 60} 分钟'
+                    f' / 上限 {self.daily_hour_limit if self.daily_hour_limit else "不限"} 小时')
                 if over_limit:
-                    # 每日点数超限：今天不再学习，只打工直到第二天清零
-                    log('点数超限，今天不再学习，只打工')
+                    # 学习+工作时长达上限：今天不再学习，只打工直到第二天清零
+                    log('学习工作时长已达上限，今天不再学习，只打工')
 
                 try:
                     coins = None if over_limit else self.read_main_coins()
@@ -750,7 +761,7 @@ class Runner:
                 first = (self.school, '学习', school_dead) if prefer_school else (self.work, '打工', work_dead)
                 second = (self.work, '打工', work_dead) if prefer_school else (self.school, '学习', school_dead)
                 if over_limit:
-                    # 点数超限时只打工，不回退到学习
+                    # 学习工作时长达上限时只打工，不回退到学习
                     if work_dead:
                         if self._wait_for_deferred(adventure_dead):
                             continue
@@ -1026,21 +1037,23 @@ class TaskQueueRunner(Runner):
         return None
 
     def _school_due(self, tasks: dict, ctx: dict) -> bool:
-        """学习是否可执行（主任务组内）：点数未超限，且金币 >= 阈值
+        """学习是否可执行（主任务组内）：学习工作时长未达上限，且金币 >= 阈值
         （金币识别失败/不足时本来该打工；打工当天不可继续才回退学习）。
 
         点数/金币每轮循环只读一次（ctx 缓存）：金币读取要截图 OCR，不能每个任务读一次。
         """
-        if ctx.get('points') is None:
-            learned, worked, points = self.today_points()
-            ctx['points'] = points
-            log(f'今日点数: 学习{learned}次x{self.school_factor}+打工{worked}次x{self.work_factor}'
-                f' = {points} / {self.daily_point_limit}')
-        over_limit = ctx['points'] > self.daily_point_limit
+        if ctx.get('durations') is None:
+            study_s, work_s = self._load_durations()
+            ctx['durations'] = (study_s, work_s)
+            log(f'今日时长: 已学习 {study_s // 60} 分钟 + 已打工 {work_s // 60} 分钟'
+                f' = {(study_s + work_s) // 60} 分钟'
+                f' / 上限 {self.daily_hour_limit if self.daily_hour_limit else "不限"} 小时')
+        study_s, work_s = ctx['durations']
+        over_limit = self._duration_over(study_s, work_s)
         if over_limit:
             if not ctx.get('over_logged'):
                 ctx['over_logged'] = True
-                log('点数超限，今天不再学习，只打工')
+                log('学习工作时长已达上限，今天不再学习，只打工')
             return False
         if ctx.get('coins', _COINS_UNSET) is _COINS_UNSET:
             try:
@@ -1348,12 +1361,13 @@ class TaskQueueRunner(Runner):
 
     def _main_finished(self, tasks: dict) -> bool:
         """主任务组（冒险/学习/打工/雇佣好友）今天是否已全部结束：
-        学习不可继续或点数超限，打工不可继续，冒险/雇佣好友当天结束，
+        学习不可继续或学习工作时长达上限，打工不可继续，冒险/雇佣好友当天结束，
         且组内没有进行中的 pending（pending 未收尾不能退出，否则丢失计数）。"""
         if self._main_pending_scen() is not None:
             return False
-        _, _, points = self.today_points()
-        school_done = self._dead(tasks, 'school') or points > self.daily_point_limit
+        study_s, work_s = self._load_durations()
+        school_done = (self._dead(tasks, 'school')
+                       or self._duration_over(study_s, work_s))
         return (school_done and self._dead(tasks, 'work')
                 and self._adventure_done(tasks) and self._hire_friend_done(tasks))
 

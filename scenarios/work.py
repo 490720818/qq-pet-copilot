@@ -37,7 +37,9 @@ from src.progress import (
     load_progress,
     log,
     log_history,
+    record_work_finish,
     save_progress,
+    set_current_work_duration,
 )
 from src.scenario import CLICK_INTERVAL, DeviceScenario, NAV_TIMEOUT
 
@@ -173,6 +175,9 @@ class WorkScenario(DeviceScenario):
         # 抓一次控件树快照，与容器推导共用，总共只 dump 一次
         source = None if locate_cached('work_outworker') else self.dev.hierarchy()
         self.reset_select_boxes(source=source)
+        # 打工开始时把本次打工时长（work.duration）持久化到 work_progress.json，
+        # 结算时按它累计打工时长（10分钟/45分钟/2小时）
+        set_current_work_duration(self.duration)
         box = DURATION_BOXES[self.duration]
         hit = self.see(box, source=source)
         if not hit:
@@ -370,9 +375,10 @@ class WorkScenario(DeviceScenario):
                     # 本轮直接结束
                     return True
                 if finished == 'work':
-                    # 出门时等完了一次上次未结束的工作，计入当天次数
+                    # 出门时等完了一次上次未结束的工作，计入当天次数 + 打工时长
                     done += 1
                     save_progress(PROGRESS_FILE, today, done, history)
+                    record_work_finish()
                     log(f'已完成第 {done} 次打工' + (f' / 目标 {max_times} 次' if max_times else ''))
                     if max_times and done >= max_times:
                         log('达到当天打工次数，结束')
@@ -412,6 +418,7 @@ class WorkScenario(DeviceScenario):
             self.wait_work_end()
             done += 1
             save_progress(PROGRESS_FILE, today, done, history)
+            record_work_finish()
             log(f'已完成第 {done} 次打工' + (f' / 目标 {max_times} 次' if max_times else ''))
             if max_times and done >= max_times:
                 log('达到当天打工次数，结束')

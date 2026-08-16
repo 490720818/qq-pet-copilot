@@ -71,6 +71,7 @@ from src.progress import (
     VISIT_PROGRESS_FILE,
     WORK_PROGRESS_FILE,
     add_log_listener,
+    load_durations,
     load_exp_daily,
     load_progress,
     log,
@@ -169,9 +170,6 @@ SETTING_FIELDS = [
     ('runner.engine', '调度引擎', ['task_queue', 'legacy']),
     ('tasks.failure_interval', '任务失败重试间隔（秒）', 'int'),
     ('schedule.coin_threshold', '金币阈值', 'int'),
-    ('schedule.school_factor', '学习点数系数', 'int'),
-    ('schedule.work_factor', '打工点数系数', 'int'),
-    ('schedule.daily_point_limit', '每日点数上限', 'int'),
     ('schedule.check_interval', '状态检查间隔（秒）', 'int'),
     ('schedule.main_page_checks', '主页面检测次数', 'int'),
     ('recover.method', '异常处理方式', ['重启设备', '重启游戏']),
@@ -191,8 +189,9 @@ TASK_SETTING_FIELDS = [
     ('tasks.main_order', '主任务顺序（> 分隔）', 'str'),
     ('school.attribute', '属性点课程', ['力量', '智力', '魅力']),
     ('school.times_per_day', '每天学习次数（0 不限）', 'int'),
+    ('schedule.daily_hour_limit', '学习工作时长上限（小时，0 不限）', 'int'),
     ('schedule.encourage_times', '鼓励次数（进行中页面快速点击）', 'int'),
-    ('work.location', '打工地点', 'str'),
+    ('work.location', '打工地点', list(settings_io.WORK_LOCATIONS)),
     ('work.duration', '打工时长选择', ['10分钟', '45分钟', '2小时']),
     ('work.times_per_day', '每天打工次数（0 不限）', 'int'),
     ('work.employ_scroll_limit', '雇佣拖动上限', 'int'),
@@ -715,6 +714,11 @@ class MainWindow(QMainWindow):
                 ('被雇佣', EMPLOYED_PROGRESS_FILE, 0),  # 无次数上限，只显示当日次数
             ]
             parts = []
+            study_s, work_s = load_durations(
+                cfg.schedule.school_factor, cfg.schedule.work_factor)
+            parts.append(
+                '已学习/工作/总时长（小时）'
+                f'{study_s / 3600:.1f}/{work_s / 3600:.1f}/{(study_s + work_s) / 3600:.1f}')
             for label, progress_file, limit in tasks:
                 _, done, _ = load_progress(progress_file, quiet=True)
                 parts.append(f'{label} {done}/{limit}' if limit else f'{label} {done}')
@@ -1160,7 +1164,12 @@ class MainWindow(QMainWindow):
             elif kind == 'text':
                 w.setPlainText(str(value))
             elif isinstance(kind, list):
-                w.setCurrentText(str(value))
+                idx = w.findText(str(value))
+                if idx >= 0:
+                    w.setCurrentIndex(idx)
+                else:
+                    # 旧配置可能是列表外的值（如下拉收窄后的旧地点）：回退默认
+                    w.setCurrentText(str(settings_io.DEFAULTS.get(key, '')))
             else:
                 w.setText(str(value))
             w.blockSignals(False)

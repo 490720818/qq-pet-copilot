@@ -43,6 +43,7 @@ from src.progress import (
     log,
     log_history,
     save_progress,
+    record_work_finish,
 )
 from src.scenario import CLICK_INTERVAL, DeviceScenario, TaskDeferred
 from scenarios.friend_care import FriendCareScenario
@@ -174,10 +175,11 @@ class FriendHireScenario(FriendCareScenario):
 
     @staticmethod
     def _count_work() -> None:
-        """雇佣打工同时计入一次打工（runs/work_progress.json，影响每日点数规则）。"""
+        """雇佣打工同时计入一次打工（runs/work_progress.json，并累计打工时长）。"""
         today, done, history = load_progress(WORK_PROGRESS_FILE)
         done += 1
         save_progress(WORK_PROGRESS_FILE, today, done, history)
+        record_work_finish()
         log(f'计入打工次数: 今天已打工 {done} 次')
 
     # ---- 入口 ----

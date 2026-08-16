@@ -92,7 +92,7 @@ $PY build.py --emulator          # 模拟器版（内置 hook JS + frida-server 
   喂食/洗澡达到尝试上限仍不达阈值时**跳过本次护理**（不抛异常——游戏有概率显示 bug，
   实际已达标但界面/OCR 没刷新，抛异常会误触发重启恢复/告警退出）。
 - **一轮语义**：场景的 `run(max_times, max_rounds)` 中一轮 = 一节课 / 一次打工 / 一次冒险，
-  结束后回主页面；执行器以 `max_rounds=1` 调用，每轮后重新判断金币/点数。
+  结束后回主页面；执行器以 `max_rounds=1` 调用，每轮后重新判断金币/学习工作时长。
   学习场景的毕业处理（"去找同学玩"面板）不算一轮：关闭后立即重新进学校选下一阶段
   课程（不等 success_interval），连续毕业由 `goto_school` 的 `_graduated_once` 抛异常防循环。
 - **出门处理**：`goto_*` 出门后必须调 `wait_busy_end()` 检测四种进行中状态
@@ -143,7 +143,8 @@ $PY build.py --emulator          # 模拟器版（内置 hook JS + frida-server 
     `scen.dev.control_method = cfg.control.method`，minitouch 会话懒加载，
     切换方案后下次点击自动按新方案走）；
   - 枚举/取值范围字段先校验、非法回退旧值并记日志（如 `school.attribute`、
-    `work.duration`），不要直接赋值导致运行时 KeyError；
+    `work.duration`、`work.location`——地点下拉选项统一在 `src/settings.py` 的 `WORK_LOCATIONS`，
+    main.py 下拉和 validate_field 共用，新增地图时只改这一处），不要直接赋值导致运行时 KeyError；
   - 例外（无需热加载）：`adb.*`（连接层，改完需重启 GUI）、`runner.engine`
     （切换调度引擎需重启调度器）。
   - **统一失败重试间隔**：`tasks.failure_interval`（设置页"任务失败重试间隔"，`SETTING_FIELDS` + `DEFAULTS`/`validate_field`）是各任务 `failure_interval` 的**唯一入口**——`load_config` 构造完各 `TaskItemConfig` 后用全局值覆盖，改 config.yaml 里各任务单独的 `failure_interval` 无效（config 文件里已删除这些行）。
@@ -164,9 +165,9 @@ $PY build.py --emulator          # 模拟器版（内置 hook JS + frida-server 
   没列出的按默认顺序兜底；`MAIN_TASK_KEYS` 在 `src/config.py`），先过 `_eligible`
   （退避/时间窗未到点的任务跳过，否则幻影命中会把排它后面的主任务卡住——如雇佣好友
   CD 复测退避 60 秒但 hire_friend_due 的调度间隔只有几秒），再按配置顺序逐个判定——
-  冒险（到点且当天次数未满）/ 学习（点数未超限且金币 >= 阈值，或打工不可继续时回退）/
+  冒险（到点且当天次数未满）/ 学习（学习工作时长未达上限且金币 >= 阈值，或打工不可继续时回退）/
   雇佣好友（到点且次数未满）/ 打工（兜底，当天可继续就可执行），
-  不受 `tasks.order` 里四者相对位置影响，金币/点数每轮循环只读一次（ctx 缓存）；
+  不受 `tasks.order` 里四者相对位置影响，金币/学习工作时长每轮循环只读一次（ctx 缓存）；
   主任务组**非阻塞等待（延时收尾）**：`defer_wait=True` 时场景出发后识别到进行中状态
   （"正在学习/打工/冒险"）就 OCR 剩余时间（"剩余00:02:50"，复用
   `parse_employed_remaining`）登记场景 `pending`（`defer_busy_end()`；**`until` 必须按 OCR 读取剩余时间的时刻算**——鼓励宠物点击耗时不能算进余量，否则上课/打工（有鼓励）估算偏晚鼓励耗时那么多秒、冒险（无鼓励）准，历史教训见 `_defer_busy` 的 `read_at`，OCR 失败兜底
@@ -236,6 +237,17 @@ $PY build.py --emulator          # 模拟器版（内置 hook JS + frida-server 
   （基类 `wait_employed_back` 仍是阻塞版，供主任务流程 `wait_busy_end` 用）；
   不在 `tasks.order` 里——队列引擎到点优先于队列任务先检查（`_run_employed_check`），
   巡检无论是否检测到都返回 True（同好友护理，False 会被标记当天不可继续）；
+  - **学习/工作时长规则（替代旧“每日点数”）**：学习结算按持久化的学园字段累计
+    （`school_progress.json` 的 `school`：初级10/中级20/高级30/进修45 分钟，学习开始时
+    `set_current_school` 不一致才更新）；打工结算按持久化的 `work.duration` 累计
+    （`work_progress.json` 的 `duration`：10分钟/45分钟/2小时）。累计时长（秒）存
+    `study_secs`/`work_secs`，`load_durations()` 读取（GUI 日志页“今日”显示
+    `已学习/工作/总时长（小时）0.0/0.0/0.0` 1 位小数）；`_duration_over` 判断
+    `schedule.daily_hour_limit`（小时，0=不限）达上限后**今天不再学习只打工**；
+    首次运行新版本时老进度只有次数（learned）没有时长字段，按旧版
+    `schedule.school_factor`/`work_factor`（每节/每次的分钟数）自动迁移补上（只做一次）；
+    旧版 `school_factor`/`work_factor`/`daily_point_limit` 仍留在 config.yaml 仅为
+    迁移/兼容老配置，不在设置页显示、不参与调度。
   **被雇佣时间段内主任务（冒险/学习/打工/雇佣好友）不触发**（队列 `_main_choice`
   返回 None，pending 收尾不受影响；legacy 跳过冒险/雇佣好友/学习打工段睡到下次检查）。
 - 控制台中文乱码是 Windows GBK 终端显示问题，日志文件（UTF-8）里是正常的，不要当 bug 修。

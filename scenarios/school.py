@@ -35,7 +35,9 @@ from src.progress import (
     load_progress,
     log,
     log_history,
+    record_study_finish,
     save_progress,
+    set_current_school,
 )
 from src.scenario import CLICK_INTERVAL, DeviceScenario, NAV_TIMEOUT
 
@@ -175,6 +177,10 @@ class SchoolScenario(DeviceScenario):
         screen = self.screen()
         results = ocr_texts(screen[: screen.shape[0] // 2])
         stage = self._detect_stage(results)
+        if stage:
+            # 学习开始时把当前学园持久化到 school_progress.json（不一致才更新，
+            # 结算时按它累计学习时长：初级10/中级20/高级30/进修45 分钟）
+            set_current_school(stage)
         if stage == '进修学院':
             box = INSTITUTE_ATTRIBUTE_COURSES[self.attribute]
             log(f'学园阶段: {stage}，课程顺序 力量/魅力/智力，{self.attribute} -> {box}')
@@ -261,9 +267,10 @@ class SchoolScenario(DeviceScenario):
                     # 本轮直接结束
                     return True
                 if finished == 'school':
-                    # 出门时等完了一节上次未结束的课，计入当天次数
+                    # 出门时等完了一节上次未结束的课，计入当天次数 + 学习时长
                     learned += 1
                     save_progress(PROGRESS_FILE, today, learned, history)
+                    record_study_finish()
                     log(f'已完成第 {learned} 次学习' + (f' / 目标 {max_times} 次' if max_times else ''))
                     if max_times and learned >= max_times:
                         log('达到当天学习次数，结束')
@@ -284,6 +291,7 @@ class SchoolScenario(DeviceScenario):
                 return True
             learned += 1
             save_progress(PROGRESS_FILE, today, learned, history)
+            record_study_finish()
             log(f'已完成第 {learned} 次学习' + (f' / 目标 {max_times} 次' if max_times else ''))
             if max_times and learned >= max_times:
                 log('达到当天学习次数，结束')

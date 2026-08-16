@@ -11,6 +11,10 @@ from .config import CONFIG_FILE, MAIN_TASK_KEYS, TASK_KEYS
 
 _yaml = YAML()  # 默认 round-trip，保留注释
 
+# 打工地点可选列表（设置页下拉 + 校验共用，新增地图时在这里加）
+WORK_LOCATIONS = ('风铃旅社', '彩虹画室', '迷雾侦探所', '星尘魔法塔',
+                  '咕噜厨房', '竹影武馆', '云朵梦舍', '闪耀星屋')
+
 # 各配置项默认值：设置页校验不通过时恢复
 DEFAULTS = {
     'adb.path': 'resources/scrcpy-win64/adb.exe',
@@ -25,9 +29,7 @@ DEFAULTS = {
     'work.times_per_day': 0,
     'work.employ_scroll_limit': 5,
     'schedule.coin_threshold': 2000,
-    'schedule.school_factor': 20,
-    'schedule.work_factor': 45,
-    'schedule.daily_point_limit': 480,
+    'schedule.daily_hour_limit': 8,
     'schedule.check_interval': 8,
     'schedule.main_page_checks': 1,
     'schedule.encourage_times': 10,
@@ -79,7 +81,7 @@ def validate_field(key: str, value):
         except ValueError:
             return False, DoubleQuotedScalarString(str(default))
     if key == 'work.location':
-        return (True, value) if str(value).strip() else (False, default)
+        return (True, value) if value in WORK_LOCATIONS else (False, default)
     if key == 'school.attribute':
         return (True, value) if value in ('力量', '智力', '魅力') else (False, default)
     if key == 'work.duration':
