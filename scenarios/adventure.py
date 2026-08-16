@@ -196,10 +196,13 @@ class AdventureScenario(DeviceScenario):
             round_no += 1
             log(f'===== 第 {round_no} 轮（连跑 {batch} 次冒险）=====')
             # 刚收尾完（finish_pending 点 quit 已落在"出门"页）且中间没跑过别的
-            # 任务（时间窗内）：直接点冒险入口，省一次 back + 出门；
-            # 标记只消费一次，过期（>10s，中间跑过其他任务已回主页面）则忽略
+            # 任务（时间窗内）：直接点冒险入口，省一次 back + 出门。
+            # 标记只消费一次；**用前必须确认不在主页面**（main_sign 缺失）——
+            # 收尾后调度器可能先跑了护理等需要回主页面的任务，此时直接点冒险
+            # 入口会在主页面空点 10 次（历史教训见 15:07 日志）
             skip_home = (getattr(self, '_after_pending_go_out_at', 0)
-                         and time.monotonic() - self._after_pending_go_out_at < 10)
+                         and time.monotonic() - self._after_pending_go_out_at < 10
+                         and not self.see('main_sign'))
             self._after_pending_go_out_at = 0
             if skip_home:
                 log('收尾点完 quit 已在出门页面，直接点冒险入口')

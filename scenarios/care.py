@@ -47,9 +47,6 @@ MAX_SHOWER_ATTEMPTS = 25  # 搓洗最多回合数，超过认为异常
 # 清洁连续多少回合不提升判定按压失效（minitouch 会话静默中断，touch_move 全丢，
 # 肥皂停在原地）：抬手重按肥皂自愈。正常上涨约每 2 回合 +10，取 4 留余量
 SCRUB_STALL_REPRESS = 4
-# 抬手重按肥皂 SCRUB_STALL_SKIP_LIMIT 次后清洁仍不提升：判定游戏显示未刷新
-# （实际可能早已达标），提前结束洗澡，避免继续搓洗让实际清洁远超预设值
-SCRUB_STALL_SKIP_LIMIT = 2
 STATUS_READ_RETRIES = 4   # 状态面板数值是异步加载的，刚展开可能只有账号/宠物名，重试读
 ONE_CLICK_PAY_RETRIES = 2 # 点击一键护理后确认"支付并护理"弹窗的重试次数（每次等 1 秒）
 
@@ -396,53 +393,36 @@ class CareScenario(DeviceScenario):
             # 从肥皂慢速拖到搓洗上端点进入搓洗
             self.scrub_path(soap[0], soap[1], *top)
             last_clean: int | None = None
-            stall = 0  # 清洁连续不提升的段数
-            represses = 0  # 已抬手重按肥皂的次数
-            total_passes = 0  # 已搓洗段数（一段 = 上/下一次拖拽）
+            stall = 0  # 清洁连续不提升的回合数
             for attempt in range(1, MAX_SHOWER_ATTEMPTS + 1):
-                # 在 (50%, 67%) 和 (50%, 40%) 之间来回拖（截图复测不影响按压）。
-                # 一个回合拆成两段、**每段后都复测**：单段涨幅小，接近阈值时
-                # 少搓一段就能停，避免整回合搓完才检测、直接越过预设值（85 -> 95/100）
-                for pass_no in (1, 2):
-                    if pass_no == 1:
-                        self.scrub_path(*bottom, *top)
-                    else:
-                        self.scrub_path(*top, *bottom)
-                    total_passes += 1
-                    clean = self.read_status(self.screen(), source).get('清洁')
-                    log(f'搓洗 {total_passes} 段后清洁: {clean}')
-                    if clean is not None and clean >= self.clean_threshold:
-                        log(f'清洁已达标（>= {self.clean_threshold}）')
-                        self.cache_care_items('shower_10', clean=clean)
-                        return
-                    # 按压失效检测：清洁连续 SCRUB_STALL_REPRESS 段不提升，
-                    # 说明 minitouch 会话静默中断（touch_move 全丢，肥皂停在原地），
-                    # 抬手重按肥皂自愈；识别不到（None）不计入停滞
-                    if clean is not None and last_clean is not None and clean <= last_clean:
-                        stall += 1
-                    elif clean is not None:
-                        stall = 0
-                    if clean is not None:
-                        last_clean = clean
-                    if stall >= SCRUB_STALL_REPRESS:
-                        represses += 1
-                        if represses > SCRUB_STALL_SKIP_LIMIT:
-                            # 已重按 SCRUB_STALL_SKIP_LIMIT 次仍不提升：判定游戏显示
-                            # 未刷新（实际可能早已达标），提前结束——继续搓洗只会让
-                            # 实际清洁远超预设值
-                            log(f'重按肥皂 {SCRUB_STALL_SKIP_LIMIT} 次后清洁仍不提升'
-                                f'（当前 {clean}），疑似显示未刷新，提前结束洗澡')
-                            return
-                        log(f'清洁连续 {stall} 段未提升，按压可能失效，抬手重按肥皂'
-                            f'（{represses}/{SCRUB_STALL_SKIP_LIMIT}）')
-                        self.dev.touch_up(*bottom)
-                        time.sleep(CLICK_INTERVAL)
-                        soap = self.see('shower_10')
-                        if not soap:
-                            raise RuntimeError('重按肥皂时未找到 shower_10')
-                        self.dev.touch_down(soap[0], soap[1])
-                        self.scrub_path(soap[0], soap[1], *top)
-                        stall = 0
+                # 在 (50%, 67%) 和 (50%, 40%) 之间来回拖（截图复测不影响按压）
+                self.scrub_path(*bottom, *top)
+                self.scrub_path(*top, *bottom)
+                clean = self.read_status(self.screen(), source).get('清洁')
+                log(f'搓洗 {attempt} 回合后清洁: {clean}')
+                if clean is not None and clean >= self.clean_threshold:
+                    log(f'清洁已达标（>= {self.clean_threshold}）')
+                    self.cache_care_items('shower_10', clean=clean)
+                    return
+                # 按压失效检测：清洁连续 SCRUB_STALL_REPRESS 回合不提升，
+                # 说明 minitouch 会话静默中断（touch_move 全丢，肥皂停在原地），
+                # 抬手重按肥皂自愈；识别不到（None）不计入停滞
+                if clean is not None and last_clean is not None and clean <= last_clean:
+                    stall += 1
+                elif clean is not None:
+                    stall = 0
+                if clean is not None:
+                    last_clean = clean
+                if stall >= SCRUB_STALL_REPRESS:
+                    log(f'清洁连续 {stall} 回合未提升，按压可能失效，抬手重按肥皂')
+                    self.dev.touch_up(*bottom)
+                    time.sleep(CLICK_INTERVAL)
+                    soap = self.see('shower_10')
+                    if not soap:
+                        raise RuntimeError('重按肥皂时未找到 shower_10')
+                    self.dev.touch_down(soap[0], soap[1])
+                    self.scrub_path(soap[0], soap[1], *top)
+                    stall = 0
             # 达到上限仍不达阈值：跳过本次洗澡，不再抛异常（游戏有概率显示 bug——
             # 实际清洁已达标但界面/OCR 没刷新，抛异常会让调度器走重启恢复甚至告警退出）
             log(f'搓洗 {MAX_SHOWER_ATTEMPTS} 回合后清洁仍未达到 {self.clean_threshold}，'
