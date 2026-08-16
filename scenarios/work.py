@@ -124,10 +124,8 @@ class WorkScenario(DeviceScenario):
                 finished = self.goto_town()
                 if finished:
                     raise RuntimeError(f'重新进入小镇时检测到进行中状态: {finished}')
-            back = self.see('back', source=self.dev.hierarchy())
-            if not back:
+            if not self.go_back(source=self.dev.hierarchy()):
                 raise RuntimeError('未找到 back 按钮，无法重置打工地点')
-            self.click(back[0], back[1])
             time.sleep(CLICK_INTERVAL)
             results = ocr_fullscreen(self.screen())
             hit = find_text(results, self.location)
@@ -304,10 +302,8 @@ class WorkScenario(DeviceScenario):
                 time.sleep(CLICK_INTERVAL)
         else:
             log('未找到一键护理按钮')
-        back = self.see('back')
-        if back:
-            log(f'点击 back 回工作面板 ({back[0]}, {back[1]})')
-            self.click(back[0], back[1])
+        if self.go_back():
+            log('已返回工作面板')
             time.sleep(CLICK_INTERVAL)
         else:
             log('未找到 back 按钮')

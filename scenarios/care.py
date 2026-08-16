@@ -439,10 +439,8 @@ class CareScenario(DeviceScenario):
             if source is None:
                 source = self.dev.hierarchy()
             if self.see('feed_10', source=source) or self.see('shower_10', source=source):
-                back = self.see('back', source=source)
-                if not back:
+                if not self.go_back(source=source):
                     raise RuntimeError('退出喂食/洗澡状态失败：未找到 back 按钮')
-                self.click(back[0], back[1])
                 time.sleep(CLICK_INTERVAL)
                 source = None
             else:

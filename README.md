@@ -129,6 +129,7 @@ QQ 重启后恢复流程会自动重新注入）。注入前会等 QQ 启动稳�
 | `schedule.coin_threshold` | 金币阈值：>= 优先学习，< 先打工 |
 | `schedule.daily_hour_limit` | 学习工作时长上限（小时，0=不限）：累计学习+打工时长 >= 上限后只打工 |
 | `schedule.check_interval` | 上课/打工/冒险/被雇佣进行中状态的统一检查间隔（秒） |
+| `schedule.back_method` | 返回方式：`系统返回`（Android 返回键，默认）/ `返回图标`（定位 back 按钮点击） |
 | `adventure.times_per_day` / `start_time` / `batch` | 每天冒险次数 / 调度时间（HH:MM）/ 单轮连跑次数 |
 | `adventure.skip_bad_weather` | 遇到"天色不对"自动召回计入一次冒险 |
 | `care.energy_threshold` / `clean_threshold` | 体力 / 清洁阈值，低于则喂食 / 洗澡 |

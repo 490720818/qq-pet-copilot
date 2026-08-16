@@ -81,6 +81,12 @@ from src.status_cache import FIELDS as STATUS_FIELDS
 from src.status_cache import load_accounts
 from src.queue_status import load_queue_status
 
+# 仅类型检查用：U2Device 在方法内懒加载导入，注解里引用它需要类型检查器能解析
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from src.u2dev import U2Device
+
 SCRCPY = resource_path('resources/scrcpy-win64') / 'scrcpy.exe'
 SCRCPY_TITLE_PREFIX = 'QQPetCopilotScrcpy'
 RUNNER_SCRIPT = PROJECT_ROOT / 'scenarios' / 'runner.py'
@@ -172,6 +178,7 @@ SETTING_FIELDS = [
     ('schedule.coin_threshold', '金币阈值', 'int'),
     ('schedule.check_interval', '状态检查间隔（秒）', 'int'),
     ('schedule.main_page_checks', '主页面检测次数', 'int'),
+    ('schedule.back_method', '返回方式', ['系统返回', '返回图标']),
     ('recover.method', '异常处理方式', ['重启设备', '重启游戏']),
     ('recover.emulator_restart_cmd', '模拟器重启命令（留空自动探测）', 'str'),
     ('notify.win_toast', '失败告警 Windows 通知', 'bool'),

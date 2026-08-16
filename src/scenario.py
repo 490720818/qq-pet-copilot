@@ -170,6 +170,23 @@ class DeviceScenario:
             time.sleep(CLICK_INTERVAL)
         raise RuntimeError(f'{stage}: 重试 {max_attempts} 次仍未出现 {wait_name}')
 
+    def go_back(self, screen=None, source=None) -> bool:
+        """按配置的返回方式（schedule.back_method）回退一页，返回是否执行了返回。
+
+        - 系统返回：直接按 Android 返回键（dev.d.press('back')），始终返回 True；
+        - 返回图标（默认）：定位游戏内 back 按钮点击；找不到返回 False，
+          由调用方决定重试/放弃（避免页面不在预期时误按系统返回退过头）。
+        """
+        method = getattr(getattr(self.cfg, 'schedule', None), 'back_method', '系统返回')
+        if method == '系统返回':
+            self.dev.d.press('back')
+            return True
+        hit = self.see('back', screen, source)
+        if not hit:
+            return False
+        self.click(hit[0], hit[1])
+        return True
+
     def ensure_main_page(self):
         """确认在主页面；不在则点 back 直到回来，返回主页面控件树快照。
 
@@ -193,12 +210,10 @@ class DeviceScenario:
                 time.sleep(CLICK_INTERVAL)
                 continue
             misses = 0
-            back = self.see('back', screen, source)
-            if back:
-                log(f'未识别到主页面'
+            if self.go_back(screen, source):
+                log('未识别到主页面'
                     + (f'（连续 {checks} 次）' if checks > 1 else '')
-                    + f'，点击 back ({back[0]}, {back[1]})')
-                self.click(back[0], back[1])
+                    + '，执行返回')
                 continue
             if attempt == 1 or attempt == max_attempts:
                 log(f'未识别到主页面也找不到 back，等待重试 ({attempt}/{max_attempts})')
@@ -221,10 +236,8 @@ class DeviceScenario:
             log(f'检测到"{desc}"弹窗，回主页面护理一次后重试当前任务')
             # 弹窗可能盖住主页面元素（main_sign 在弹窗下层仍可能被 xpath 命中，
             # 直接 ensure_main_page 会误判已在主页面），先点一次 back 关掉弹窗
-            back = self.see('back', None, source)
-            if back:
-                self.click(back[0], back[1])
-                time.sleep(CLICK_INTERVAL)
+            self.go_back(None, source)
+            time.sleep(CLICK_INTERVAL)
             self.ensure_main_page()
             self.care_once()
             raise StatBlocked()

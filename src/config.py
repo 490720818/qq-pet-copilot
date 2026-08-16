@@ -126,6 +126,8 @@ class ScheduleConfig:
     # 主页面检测次数：连续这么多次识别不到主页面标志（金币胶囊）才允许点 back
     # （主页面点 back 会退出游戏；默认 1 = 识别不到立即点 back，即原逻辑）
     main_page_checks: int = 1
+    # 返回方式：系统返回（Android 返回键，默认）/ 返回图标（定位游戏内 back 按钮点击）
+    back_method: str = "系统返回"
 
 
 @dataclass

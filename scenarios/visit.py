@@ -129,10 +129,8 @@ class VisitScenario(DeviceScenario):
                     or self.see('visit', source=source)
                     or self.dev.find_xpath_all(FRIEND_ITEM_XPATH, source=source)):
                 return
-            back = self.see('back', source=source)
-            if not back:
+            if not self.go_back(source=source):
                 break
-            self.click(back[0], back[1])
             time.sleep(CLICK_INTERVAL)
         log('关闭好友页面失败（可能未回到进入前的页面）')
 

@@ -149,10 +149,8 @@ class SchoolScenario(DeviceScenario):
         self.click(close[0], close[1])
         time.sleep(CLICK_INTERVAL)
         for _ in range(2):
-            back = self.see('back')
-            if not back:
+            if not self.go_back():
                 raise RuntimeError('毕业面板关闭后未找到 back 按钮')
-            self.click(back[0], back[1])
             time.sleep(CLICK_INTERVAL)
 
     def select_course(self) -> None:

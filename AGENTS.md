@@ -109,6 +109,9 @@ $PY build.py --emulator          # 模拟器版（内置 hook JS + frida-server 
   `schedule.main_page_checks` 次（默认 1，即识别不到立即点 back）识别不到
   `main_sign`（金币胶囊）才允许点 back，总尝试上限随检测次数放大
   （`MAIN_PAGE_ATTEMPTS * checks`）。
+  **返回方式**（`schedule.back_method`，设置页下拉）：所有“回退”统一走基类
+  `go_back()`——`系统返回`（默认）用 `dev.d.press('back')`；`返回图标` 定位
+  `back` 按钮点击，找不到返回 False 由调用方决定（重试/放弃），避免误按系统返回退过头。
 - **OCR 置信度**：命中下限 `src/locators.py` 的 `OCR_MIN_SCORE`（默认 0.5）。
 - **异常分级重试**：场景抛异常 → 先回主页面重进场景重试一次（页面错乱多半能
   自愈，不必重启）→ 仍失败才走 `Runner.recover()`（`src/recover.py`：adb reboot →

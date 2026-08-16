@@ -98,10 +98,8 @@ class PKScenario(VisitScenario):
             source = self.dev.hierarchy()
             if self.dev.find_xpath_all(FRIEND_ITEM_XPATH, source=source):
                 return
-            back = self.see('back', source=source)
-            if not back:
+            if not self.go_back(source=source):
                 return
-            self.click(back[0], back[1])
             time.sleep(CLICK_INTERVAL)
 
     def _wait_pk_start(self, timeout: float = PK_END_TIMEOUT) -> tuple[int, int, float] | None:

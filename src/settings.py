@@ -32,6 +32,7 @@ DEFAULTS = {
     'schedule.daily_hour_limit': 8,
     'schedule.check_interval': 8,
     'schedule.main_page_checks': 1,
+    'schedule.back_method': '系统返回',
     'schedule.encourage_times': 10,
     'adventure.times_per_day': 1,
     'adventure.start_time': '08:00',
@@ -123,6 +124,8 @@ def validate_field(key: str, value):
         return False, default
     if key in ('care.energy_threshold', 'care.clean_threshold'):
         return (True, value) if 0 <= int(value) <= 100 else (False, default)
+    if key == 'schedule.back_method':
+        return (True, value) if value in ('返回图标', '系统返回') else (False, default)
     if key == 'tasks.failure_interval':
         # 失败重试间隔至少 1 秒（0 会变成无间隔连续重试死循环）
         try:
