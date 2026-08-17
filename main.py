@@ -18,6 +18,7 @@ import subprocess
 import sys
 import threading
 import time
+import zlib
 from datetime import datetime, timedelta
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -303,6 +304,20 @@ def kill_previous_scrcpy() -> None:
         log('清理本设备遗留 scrcpy 失败（可忽略）')
 
 
+def _scrcpy_port(serial: str) -> str:
+    """本实例 scrcpy 客户端监听端口范围（按设备序列号稳定在 28200 起，8 个连续端口）。
+
+    scrcpy 默认端口范围 27183:27199，取第一个能绑定的；但 Windows 下即使别的
+    scrcpy 已占用 27183，绑定也能"成功"（SO_REUSEADDR 语义），结果多个实例的
+    scrcpy 都监听同一端口，各设备经 adb reverse 回连 127.0.0.1:27183 时被
+    投递到错误的进程——双开同时打开镜像时画面串台（两个窗口同一画面）或
+    "Server connection failed"立刻退出；一个个开时后绑定的拿到后到的连接，
+    恰好不错位，所以难复现。按序列号分配固定端口后各实例隧道互不相干。
+    """
+    port = 28200 + zlib.crc32(serial.encode('utf-8')) % 3000
+    return f'{port}:{port + 7}'
+
+
 def start_scrcpy(emulator: bool = False) -> subprocess.Popen | None:
     """以无边框、关屏（模拟器除外）、固定标题启动 scrcpy，返回进程。"""
     if not SCRCPY.is_file():
@@ -317,6 +332,7 @@ def start_scrcpy(emulator: bool = False) -> subprocess.Popen | None:
         # 模拟器没有物理屏幕可关，--turn-screen-off 无效且可能报错
         cmd.append('--turn-screen-off')
     cmd += ['--window-borderless', '--stay-awake',
+            f'--port={_scrcpy_port(serial or "")}',  # 多开防端口撞车串台
             f'--window-title={_scrcpy_title()}',
             # 先放到屏幕外，嵌入容器时再移回来，避免窗口先弹出再嵌入的闪烁
             '--window-x=-2000', '--window-y=-2000']
@@ -356,6 +372,8 @@ def start_scrcpy_screen_off(emulator: bool = False) -> subprocess.Popen | None:
     serial = load_config().adb.device_serial
     if serial:
         cmd += ['-s', serial]
+    # 无头关屏 scrcpy 同样占用监听端口，必须按实例区分（理由见 _scrcpy_port）
+    cmd.append(f'--port={_scrcpy_port(serial or "")}')
     log('启动 scrcpy 关闭屏幕（--turn-screen-off --no-video --no-audio '
         '--stay-awake --no-window）...')
     proc = subprocess.Popen(
@@ -582,6 +600,7 @@ class MainWindow(QMainWindow):
         self._refresh_stats()
 
         self._embed_tries = 0
+        self._embed_fail_logged = False
         self._embed_timer = QTimer(self, timeout=self._try_embed)
         # scrcpy 看门狗：设备重启/掉线后 scrcpy 进程会退出，自动重拉并重嵌入
         self._scrcpy_retry_at = 0.0
@@ -627,6 +646,7 @@ class MainWindow(QMainWindow):
             self._scrcpy_proc = None
         if self._scrcpy_proc:
             self._embed_tries = 0
+            self._embed_fail_logged = False
             self._embed_timer.start(500)
 
     def _try_embed(self) -> None:
@@ -634,23 +654,33 @@ class MainWindow(QMainWindow):
         if hwnd:
             self.scrcpy_view.embed(hwnd, device_aspect())
             self._embed_timer.stop()
+            self._embed_fail_logged = False
             return
         self._embed_tries += 1
         if self._embed_tries >= EMBED_TRIES:
             self._embed_timer.stop()
-            log('未找到 scrcpy 窗口，嵌入失败（调度器仍可正常开始）')
+            # 只报一次：进程还活着时看门狗会周期性补挂嵌入轮询，不重复刷日志
+            if not self._embed_fail_logged:
+                self._embed_fail_logged = True
+                log('未找到 scrcpy 窗口，嵌入失败（调度器仍可正常开始，'
+                    '窗口出现后看门狗会自动补嵌入）')
 
     def _check_scrcpy(self) -> None:
         """看门狗：scrcpy 进程掉了（设备 adb reboot/掉线会断开）就重拉并重嵌入。
 
         重拉失败（设备还没开机完成）退避 SCRCPY_RETRY_INTERVAL 秒再试，
         避免设备重启期间每 5 秒刷一次失败日志。
+        进程活着但没嵌上（多开同时拉起时窗口创建慢、嵌入轮询已超时）也补挂嵌入轮询，
+        否则窗口只会孤零零留在屏幕外，画面一直黑着。
         """
         if not self.btn_scrcpy.isChecked():
             return  # 画面镜像已关闭，不自动拉起
         if not SCRCPY.is_file() or self._embed_timer.isActive():
             return  # 没有 scrcpy 可拉，或启动/重嵌流程正在进行
         if self._scrcpy_proc is not None and self._scrcpy_proc.poll() is None:
+            if self.scrcpy_view._hwnd is None:
+                self._embed_tries = 0
+                self._embed_timer.start(500)
             return  # 活着
         now = time.monotonic()
         if now < self._scrcpy_retry_at:
@@ -661,6 +691,7 @@ class MainWindow(QMainWindow):
         if self._scrcpy_proc:
             log('scrcpy 已重连' if had_proc else 'scrcpy 已启动')
             self._embed_tries = 0
+            self._embed_fail_logged = False
             self._embed_timer.start(500)
         else:
             self._scrcpy_retry_at = now + SCRCPY_RETRY_INTERVAL
@@ -1591,6 +1622,7 @@ class MainWindow(QMainWindow):
         self._scrcpy_proc = start_scrcpy(self.emulator_mode)
         if self._scrcpy_proc:
             self._embed_tries = 0
+            self._embed_fail_logged = False
             self._embed_timer.start(500)
 
     def _update_scrcpy_btn(self) -> None:
@@ -1613,12 +1645,17 @@ class MainWindow(QMainWindow):
             self._screen_off_proc.terminate()
         self._screen_off_proc = None
         if self._scrcpy_proc is not None and self._scrcpy_proc.poll() is None:
-            return  # 已在运行
+            # 已在运行：若之前嵌入超时没嵌上（窗口落在屏幕外），补挂嵌入轮询而不是干等
+            if self.scrcpy_view._hwnd is None and not self._embed_timer.isActive():
+                self._embed_tries = 0
+                self._embed_timer.start(500)
+            return
         self.scrcpy_view.set_hwnd(None)
         self._connect_emulator_adb()
         self._scrcpy_proc = start_scrcpy(self.emulator_mode)
         if self._scrcpy_proc:
             self._embed_tries = 0
+            self._embed_fail_logged = False
             self._embed_timer.start(500)
 
     def _disable_scrcpy(self) -> None:

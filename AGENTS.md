@@ -39,8 +39,8 @@ $PY build.py --emulator          # 模拟器版（内置 hook JS + frida-server 
 
 | 路径 | 职责 |
 | --- | --- |
-| `main.py` | PyQt6 GUI：scrcpy 窗口嵌入（SetParent）、选项卡（日志/调度/统计/任务/设置；调度页 = 每任务 开关/执行间隔（每日时间）/启用时段 可直接编辑（保存 config.yaml 热加载生效），下次执行 = 调度器运行时读 `runs/queue_status.json` 的 tasks 段、未运行时按配置推算的详细时间；任务页 = 任务队列顺序 + 场景任务设置，设置页 = 连接/调度引擎/全局规则/告警）、调度器子进程控制、scrcpy 看门狗（设备重启后自动重拉重嵌入）、右上角"手动重启"按钮
-（按 `recover.method` 执行一次异常恢复 `reenter_pet`，调度器在跑先停，恢复期间开始/停止按钮禁用，恢复完成自动启动调度器） |
+| `main.py` | PyQt6 GUI：scrcpy 窗口嵌入（SetParent）、选项卡（日志/调度/统计/任务/设置；调度页 = 每任务 开关/执行间隔（每日时间）/启用时段 可直接编辑（保存 config.yaml 热加载生效），下次执行 = 调度器运行时读 `runs/queue_status.json` 的 tasks 段、未运行时按配置推算的详细时间；任务页 = 任务队列顺序 + 场景任务设置，设置页 = 连接/调度引擎/全局规则/告警）、调度器子进程控制、scrcpy 看门狗（设备重启后自动重拉重嵌入；进程活着但没嵌上——多开同时拉起窗口创建慢、嵌入轮询已超时——看门狗补挂嵌入轮询，窗口出现即自动嵌入）、右上角"手动重启"按钮
+（按 `recover.method` 执行一次异常恢复 `reenter_pet`，调度器在跑先停，恢复期间开始/停止按钮禁用，恢复完成自动启动调度器）；**scrcpy 必须带 `--port=按序列号分配的固定端口`（`_scrcpy_port`，含无头关屏 scrcpy）**：默认范围 27183:27199 在 Windows 下多个 scrcpy 能同时绑定 27183（SO_REUSEADDR 语义），各设备 adb reverse 回连被投递到错误的 scrcpy 进程——双开同时开镜像画面串台/两窗口同一画面/Server connection failed |
 | `src/stats_chart.py` | 统计页：各任务近 N 天次数的平滑折线图（QPainter 自绘 + Catmull-Rom 平滑，数据来自 `runs/*_progress.json` 的 history） |
 | `scenarios/runner.py` | 统一调度器，两种引擎（`runner.engine`）：`task_queue`（默认，`TaskQueueRunner`：执行顺序由 `tasks.order` 配置，> 分隔越靠前越优先，不在 order 里不调度；每任务独立 enabled / trigger（interval 间隔 / daily 每日时间点窗口）/ enabled_time_range / success_interval / failure_interval，见 `tasks` 段）/ `legacy`（`Runner.run` 老主循环，顺序写死：护理 → 冒险 → 踩踩 → PK → 好友雇佣 → 好友护理 → 学习/打工）。共通：场景异常分级重试（回主页面重进 → `recover()` 重启恢复）；都失败时主任务（学习/打工）发告警通知（`src/notify.py`）并退出，支线任务延后重试（legacy 用 `SIDE_TASK_RETRY_DELAY`，队列用各任务 `failure_interval`） |
 | `scenarios/school.py` `work.py` `adventure.py` `care.py` `visit.py` `pk.py` `friend_care.py` `hire_friend.py` `employed.py` | 各场景，均继承 `DeviceScenario`（`pk.py`/`friend_care.py` 继承 `visit.py` 复用好友导航；`hire_friend.py` 继承 `friend_care.py` 复用指定好友导航；`employed.py` 只做被雇佣检测，召回复用基类） |
