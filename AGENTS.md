@@ -39,7 +39,7 @@ $PY build.py --emulator          # 模拟器版（内置 hook JS + frida-server 
 
 | 路径 | 职责 |
 | --- | --- |
-| `main.py` | PyQt6 GUI：scrcpy 窗口嵌入（SetParent）、选项卡（日志/调度/统计/任务/设置；调度页 = 每任务 开关/执行间隔（每日时间）/启用时段/下次执行 只读表格，数据 = config.yaml + `runs/queue_status.json` 的 tasks 段；任务页 = 任务队列顺序 + 场景任务设置，设置页 = 连接/调度引擎/全局规则/告警）、调度器子进程控制、scrcpy 看门狗（设备重启后自动重拉重嵌入）、右上角"手动重启"按钮
+| `main.py` | PyQt6 GUI：scrcpy 窗口嵌入（SetParent）、选项卡（日志/调度/统计/任务/设置；调度页 = 每任务 开关/执行间隔（每日时间）/启用时段 可直接编辑（保存 config.yaml 热加载生效），下次执行 = 调度器运行时读 `runs/queue_status.json` 的 tasks 段、未运行时按配置推算的详细时间；任务页 = 任务队列顺序 + 场景任务设置，设置页 = 连接/调度引擎/全局规则/告警）、调度器子进程控制、scrcpy 看门狗（设备重启后自动重拉重嵌入）、右上角"手动重启"按钮
 （按 `recover.method` 执行一次异常恢复 `reenter_pet`，调度器在跑先停，恢复期间开始/停止按钮禁用，恢复完成自动启动调度器） |
 | `src/stats_chart.py` | 统计页：各任务近 N 天次数的平滑折线图（QPainter 自绘 + Catmull-Rom 平滑，数据来自 `runs/*_progress.json` 的 history） |
 | `scenarios/runner.py` | 统一调度器，两种引擎（`runner.engine`）：`task_queue`（默认，`TaskQueueRunner`：执行顺序由 `tasks.order` 配置，> 分隔越靠前越优先，不在 order 里不调度；每任务独立 enabled / trigger（interval 间隔 / daily 每日时间点窗口）/ enabled_time_range / success_interval / failure_interval，见 `tasks` 段）/ `legacy`（`Runner.run` 老主循环，顺序写死：护理 → 冒险 → 踩踩 → PK → 好友雇佣 → 好友护理 → 学习/打工）。共通：场景异常分级重试（回主页面重进 → `recover()` 重启恢复）；都失败时主任务（学习/打工）发告警通知（`src/notify.py`）并退出，支线任务延后重试（legacy 用 `SIDE_TASK_RETRY_DELAY`，队列用各任务 `failure_interval`） |
@@ -51,7 +51,8 @@ $PY build.py --emulator          # 模拟器版（内置 hook JS + frida-server 
 | `src/locators.py` | UI 定位注册表 `LOCATORS`：名字 → u2 选择器 / OCR 候选文案 / rel 兜底坐标；`see()` / `see_all()` |
 | `src/adb/device.py` | adb 封装：设备在线管理（start-server）、屏幕尺寸读取（scrcpy 嵌入比例用）、`reboot_and_wait()` / `launch_app()`（异常恢复用） |
 | `src/ocr.py` / `src/coins.py` | RapidOCR 封装；主页金币 = 顶部状态栏最右侧数值（全屏 OCR） |
-| `src/progress.py` | `log()`（控制台+文件+监听器）、每日次数持久化（含 history，跨天归档）、`count_cross` 交叉计数；进度文件固定 `runs/*.json` 单文件（曾按账号重定向到 `runs/accounts/<账号>/`，账号名靠状态面板 OCR 识别不稳定、数据被拆散，已取消多账号区分） |
+| `src/progress_store.py` | 进度文件统一管理（`runs/*_progress.json`）：跨天规整（旧日期次数归档进 history、清掉旧日期的 `study_secs/work_secs`；`school/duration` 作为会话元数据跨天保留供跨零点结算累计）、原子写入（先写 `.tmp` 再 `os.replace`，进程被杀不留损坏文件）、损坏兜底（解析失败备份成 `*.corrupted.bak` 后按空档继续）；全部进度读写走这里，`src/progress.py` 只做兼容层 |
+| `src/progress.py` | 进度持久化对外兼容入口（常量 + 日志 + 各场景函数签名，内部转发 `src/progress_store.py`）：`log()`（控制台+文件+监听器）、`load_progress/save_progress/increment_progress`（含 history 跨天归档）、`count_cross` 交叉计数、学习/工作时长累计与迁移；进度文件固定 `runs/*.json` 单文件（曾按账号重定向到 `runs/accounts/<账号>/`，账号名靠状态面板 OCR 识别不稳定、数据被拆散，已取消多账号区分） |
 | `src/opener.py` | 模拟器模式集成：自实现设备/Root/frida-server/启动 QQ/注入全流程（frida Python API），hook JS 从 `assets/qqpet-module-opener/open_qqpet_module.js` 读取（只保留上游这一个 JS，手动更新）；Frida 17 起 Java 桥不再内置，注入前用 frida-tools 的 `frida-java-bridge`（`frida_tools/bridges/java.js`，打包时随包）包一层暴露全局 `Java` 再拼 hook；打开宠物主页后**保持注入不解除**（`_KEEPALIVE` 持有引用防 GC，好友访问/踩踩/PK 的 doAction 接管持续生效），注入前 `_wait_qq_settle` 等 QQ 启动稳定；`_start_qq` 冷启动会重试 `am start`（`START_QQ_ATTEMPTS`=3），轮询 `pidof` 前先确认设备在线，adb 抖动不误判成"QQ 没启动"；注入失败（script is destroyed/会话断开/SDK 超时）会强停 QQ 重试 `OPEN_PET_ATTEMPTS`=3 次；frida 设备发现加固（`_frida_device`）：项目 adb 目录前置 PATH（frida 枚举 adb 设备用 PATH 里的 adb）+ 每次重试前 `get-state`/重连确认设备在线 + `get_device` 重试 2 次 + 兜底 `adb forward tcp:27042` + frida remote device（模拟器刚开机 frida adb 枚举不稳时） |
 | `src/status_cache.py` | 宠物状态缓存（`runs/status_cache.json`，单 default 条目——曾按账号名称组织兼容多账号，账号 OCR 误识别导致状态条多行，已取消）：体力/清洁/心情（care 状态面板 OCR 后）、金币（主页 OCR 后）、香皂/饼干（喂食/洗澡结束时 OCR 控件附近小图；库存角标无文字，取离 `feed_10`/`shower_10` 控件最近的数字）；一键护理后清空体力/清洁/心情/饼干/香皂；GUI 日志页顶部状态条每秒读一次 |
 | `src/queue_status.py` | 任务队列状态缓存（`runs/queue_status.json`）：TaskQueueRunner 每轮调度后写当前任务/下一任务（含等待点时间，HH:MM:SS + next_ts 时间戳，GUI 显示"xx秒后"倒计时）/待执行数量（在等退避/每日窗口/pending 收尾时间，主任务组 pending 也算一项）/等待中数量（现在就可执行、等调度器轮到），执行中任务在 `_execute` 里先写一次；GUI 状态条加一行每秒读一次（调度器未运行时不读，显示"调度器未运行"）；legacy 引擎不写 |
@@ -251,6 +252,13 @@ $PY build.py --emulator          # 模拟器版（内置 hook JS + frida-server 
     `schedule.school_factor`/`work_factor`（每节/每次的分钟数）自动迁移补上（只做一次）；
     旧版 `school_factor`/`work_factor`/`daily_point_limit` 仍留在 config.yaml 仅为
     迁移/兼容老配置，不在设置页显示、不参与调度。
+    **进度文件读写统一走 `src/progress_store.py`**（`src/progress.py` 只是兼容层）：
+    跨天规整 + 原子写入 + 损坏兜底都在 store。跨天时旧日期当天次数归档进 history、
+    清掉 `learned/study_secs/work_secs`；**`school/duration` 作为会话元数据跨天保留**
+    （昨晚开始的打工/上课今天收尾要拿它累计今天的时长），由 `get_daily_field` 按
+    `date==今天` 门控；`set_current_school`/`set_current_work_duration` 跨天**总是落盘**
+    推进日期（即使值没变，否则同校/同时长第一天结算会拿不到元数据）。
+    禁止整字典替换成 `{date}`（曾因此把 school_progress.json 的 history/learned 全丢）。
   **被雇佣时间段内主任务（冒险/学习/打工/雇佣好友）不触发**（队列 `_main_choice`
   返回 None，pending 收尾不受影响；legacy 跳过冒险/雇佣好友/学习打工段睡到下次检查）。
 - 控制台中文乱码是 Windows GBK 终端显示问题，日志文件（UTF-8）里是正常的，不要当 bug 修。

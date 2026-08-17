@@ -18,11 +18,11 @@ import subprocess
 import sys
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from PyQt6.QtCore import QObject, Qt, QTimer, pyqtSignal
+from PyQt6.QtCore import QObject, Qt, QTime, QTimer, pyqtSignal
 from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (
     QAbstractItemView,
@@ -43,9 +43,12 @@ from PyQt6.QtWidgets import (
     QTableWidget,
     QTableWidgetItem,
     QTabWidget,
+    QTimeEdit,
     QVBoxLayout,
     QWidget,
 )
+
+from ruamel.yaml.scalarstring import DoubleQuotedScalarString
 
 import win32con
 import win32gui
@@ -66,6 +69,7 @@ from src.config import (
 from src.progress import (
     ADVENTURE_PROGRESS_FILE,
     EMPLOYED_PROGRESS_FILE,
+    HIRE_FRIEND_PROGRESS_FILE,
     PK_PROGRESS_FILE,
     SCHOOL_PROGRESS_FILE,
     VISIT_PROGRESS_FILE,
@@ -158,6 +162,13 @@ class _NoWheelSpinBox(QSpinBox):
     仅屏蔽滚轮事件，键盘上下键、直接输入等行为不受影响；
     保存由设置页的 valueChanged 触发（数值真的变化才保存，滚轮不再误触发）。
     """
+
+    def wheelEvent(self, event):
+        event.ignore()
+
+
+class _NoWheelQTimeEdit(QTimeEdit):
+    """时间编辑框：禁用鼠标滚轮改值（同 _NoWheelSpinBox，防手滑）。"""
 
     def wheelEvent(self, event):
         event.ignore()
@@ -744,8 +755,9 @@ class MainWindow(QMainWindow):
     # ---- 调度页面 ----
 
     def _build_schedule_page(self) -> QWidget:
-        """调度选项卡：每个任务的 开关 / 执行间隔 / 启用时段 / 下次执行（只读表格，
-        每秒随 _refresh_stats 刷新；修改在"任务"选项卡的表单里做）。"""
+        """调度选项卡：每任务 开关 / 执行间隔 / 启用时段 可直接在表格里编辑
+        （保存到 config.yaml，调度器下一轮热加载生效），下次执行列每秒刷新
+        ——调度器运行时读 queue_status.json 的精确时间，未运行时按配置推算。"""
         page = QWidget()
         layout = QVBoxLayout(page)
         self.schedule_table = QTableWidget(0, 5)
@@ -754,67 +766,350 @@ class MainWindow(QMainWindow):
         self.schedule_table.horizontalHeader().setSectionResizeMode(
             QHeaderView.ResizeMode.Stretch)
         self.schedule_table.verticalHeader().setVisible(False)
+        self.schedule_table.verticalHeader().setDefaultSectionSize(38)
         self.schedule_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.schedule_table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
         layout.addWidget(self.schedule_table)
-        note = QLabel('每秒自动刷新；开关/间隔/启用时段在"任务"选项卡修改，'
-                      '"下次执行"由调度器（task_queue 引擎）运行时写入，调度器未运行显示 —')
+        note = QLabel('开关/执行间隔/启用时段可直接编辑（保存到 config.yaml，调度器下一轮生效）；'
+                      '"下次执行"每秒刷新：调度器运行时显示精确时间，未运行时按配置推算；'
+                      '学习/打工由主任务组统一调度，无固定间隔，下次执行显示"启动后判定"。')
         note.setStyleSheet('color: #888; padding: 4px 2px;')
         note.setWordWrap(True)
         layout.addWidget(note)
+        self._schedule_sig: tuple | None = None  # 配置签名：变化且不在编辑中时重建编辑器
+        self._schedule_rows: list = []
+        self._schedule_order: list = []
         return page
 
     @staticmethod
-    def _fmt_seconds(seconds: int) -> str:
-        """间隔秒数人类可读：整小时/整分钟换算，否则显示秒。"""
-        seconds = int(seconds)
-        if seconds >= 3600 and seconds % 3600 == 0:
-            return f'{seconds // 3600} 小时'
-        if seconds >= 60 and seconds % 60 == 0:
-            return f'{seconds // 60} 分钟'
-        return f'{seconds} 秒'
-
-    @staticmethod
-    def _fmt_hhmm(value) -> str:
-        """HH:MM 显示：YAML 1.1 会把不带引号的 19:31 解析成分钟数 1171，转回 HH:MM。"""
+    def _clock_to_time(value):
+        """把 HH:MM（或 HH:MM:SS / YAML 1.1 解析出的分钟数）转成 datetime.time；
+        解析失败返回 None。"""
         if isinstance(value, int):
-            return f'{value // 60:02d}:{value % 60:02d}'
-        return str(value)
+            value = f'{value // 60:02d}:{value % 60:02d}'
+        for fmt in ('%H:%M', '%H:%M:%S'):
+            try:
+                return datetime.strptime(str(value), fmt).time()
+            except ValueError:
+                continue
+        return None
 
     @classmethod
-    def _task_schedule_text(cls, key: str, item, cfg) -> str:
-        """调度选项卡"执行间隔"列：场景自带每日时间的任务（冒险/踩踩/PK）
-        显示"每日 HH:MM"（参考 qq-farm-copilot 的每日时间）；好友护理/雇佣好友显示
-        调度间隔；学习/打工由主任务组统一调度没有固定间隔；其余显示 tasks.<key> 的触发设置。"""
-        if key == 'adventure':
-            return f'每日 {cls._fmt_hhmm(cfg.adventure.start_time)}'
-        if key == 'visit':
-            return f'每日 {cls._fmt_hhmm(cfg.visit.start_time)}'
-        if key == 'pk':
-            return f'每日 {cls._fmt_hhmm(cfg.pk.start_time)}'
-        if key == 'hire_friend':
-            return f'每 {cls._fmt_seconds(cfg.hire_friend.interval_seconds)}'
-        if key == 'friend_care':
-            return f'每 {cls._fmt_seconds(cfg.friend_care.interval_seconds)}'
-        if key in ('school', 'work'):
-            return '—'  # 主任务组（冒险/学习/打工/雇佣好友互斥）按需统一调度
-        if item.trigger == 'daily':
-            return '每日 ' + ('/'.join(str(t) for t in item.daily_times) or '（未设时间点）')
-        return f'每 {cls._fmt_seconds(item.interval_seconds)}'
+    def _parse_range_text(cls, value: str) -> bool:
+        """校验启用时段文本：HH:MM-HH:MM 或 HH:MM:SS-HH:MM:SS（允许跨零点）。"""
+        try:
+            start_s, end_s = str(value).split('-', 1)
+        except ValueError:
+            return False
+        return (cls._clock_to_time(start_s.strip()) is not None
+                and cls._clock_to_time(end_s.strip()) is not None)
 
     @staticmethod
-    def _task_range_text(key: str, item, cfg) -> str:
-        """调度选项卡"启用时段"列：好友护理/雇佣好友用场景的 time_range；全天简化为"全天"。"""
-        if key == 'friend_care':
-            return str(cfg.friend_care.time_range)
+    def _qtime_from_value(value) -> 'QTime':
+        """把 HH:MM 字符串 / YAML 1.1 分钟数转成 QTime，非法回退 00:00。"""
+        if isinstance(value, int):
+            return QTime(value // 60, value % 60)
+        t = QTime.fromString(str(value), 'HH:mm')
+        return t if t.isValid() else QTime(0, 0)
+
+    # ---- 表格构建 ----
+
+    def _schedule_sig_value(self, cfg, rows: list, order: list) -> tuple:
+        """调度表格相关配置的签名：变化且不在编辑中时重建编辑器。"""
+        sig = [tuple(order)]
+        for key in rows:
+            item = getattr(cfg.tasks, key)
+            if key in ('adventure', 'visit', 'pk'):
+                interval_v = getattr(cfg, key).start_time
+            elif key in ('care', 'hire_friend', 'friend_care'):
+                interval_v = getattr(cfg, key).interval_seconds
+            else:
+                interval_v = '—'
+            if key in ('hire_friend', 'friend_care'):
+                range_v = str(getattr(cfg, key).time_range)
+            else:
+                range_v = str(item.enabled_time_range)
+            sig.append((key, item.enabled, interval_v, range_v))
+        return tuple(sig)
+
+    def _schedule_table_editing(self) -> bool:
+        """当前焦点是否在调度表格内（编辑中）：是则暂缓重建，避免打断输入。"""
+        w = QApplication.focusWidget()
+        while w is not None:
+            if w is self.schedule_table:
+                return True
+            w = w.parent()
+        return False
+
+    def _rebuild_schedule_table(self, cfg, rows: list, order: list) -> None:
+        """重建调度表格：开关/执行间隔/启用时段用可编辑控件，下次执行列占位。"""
+        table = self.schedule_table
+        table.setRowCount(len(rows))
+        for row, key in enumerate(rows):
+            item = getattr(cfg.tasks, key)
+            in_order = key in order
+            name_item = QTableWidgetItem(SCHEDULE_TASK_NAMES[key])
+            name_item.setFlags(Qt.ItemFlag.ItemIsEnabled)
+            if not in_order:
+                name_item.setToolTip('不在 tasks.order 中，不调度（可在任务选项卡修改顺序）')
+            table.setItem(row, 0, name_item)
+            table.setCellWidget(row, 1, self._make_switch_editor(key, item, in_order))
+            table.setCellWidget(row, 2, self._make_interval_editor(key, item, cfg, in_order))
+            table.setCellWidget(row, 3, self._make_range_editor(key, item, cfg, in_order))
+            cell = QTableWidgetItem('—')
+            cell.setFlags(Qt.ItemFlag.ItemIsEnabled)
+            table.setItem(row, 4, cell)
+
+    @staticmethod
+    def _centered(widget: QWidget) -> QWidget:
+        """把控件包进水平居中容器（表格 cellWidget 默认靠左上）。"""
+        wrap = QWidget()
+        lay = QHBoxLayout(wrap)
+        lay.setContentsMargins(4, 0, 4, 0)
+        lay.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lay.addWidget(widget)
+        return wrap
+
+    def _make_switch_editor(self, key: str, item, in_order: bool) -> QWidget:
+        cb = QCheckBox()
+        cb.setChecked(item.enabled)
+        cb.setEnabled(in_order)
+        cb.setToolTip('启用/停用该任务（保存到 config.yaml，调度器下一轮生效）'
+                      + ('' if in_order else '；不在 tasks.order 中，不调度'))
+        cb.toggled.connect(lambda checked, k=key: self._save_schedule_bool(k, checked))
+        return self._centered(cb)
+
+    def _make_interval_editor(self, key: str, item, cfg, in_order: bool) -> QWidget:
+        if key in ('adventure', 'visit', 'pk'):
+            # 每日调度时间（HH:MM）：场景 start_time，保存时同步队列 daily_times
+            te = _NoWheelQTimeEdit()
+            te.setDisplayFormat('HH:mm')
+            te.setTime(self._qtime_from_value(getattr(cfg, key).start_time))
+            te.setEnabled(in_order)
+            te.setToolTip('每日调度时间（HH:MM）')
+            te.timeChanged.connect(lambda qt, k=key: self._save_schedule_time(k, qt))
+            return te
+        if key in ('care', 'hire_friend', 'friend_care'):
+            # 调度间隔（秒）：护理用 tasks.care.interval_seconds，好友护理/雇佣好友用场景值
+            value = (getattr(cfg.tasks, key).interval_seconds if key == 'care'
+                     else getattr(cfg, key).interval_seconds)
+            spin = _NoWheelSpinBox()
+            spin.setRange(1, 999999)
+            spin.setValue(max(1, int(value)))
+            spin.setSuffix(' 秒')
+            spin.setEnabled(in_order)
+            spin.setToolTip('调度间隔（秒）')
+            spin.valueChanged.connect(lambda v, k=key: self._save_schedule_interval(k, v))
+            return spin
+        # 学习/打工：主任务组统一调度，无固定间隔
+        label = QLabel('—')
+        label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        label.setToolTip('学习/打工由主任务组（冒险/学习/打工/雇佣好友）按需统一调度，无固定间隔')
+        return label
+
+    def _make_range_editor(self, key: str, item, cfg, in_order: bool) -> QWidget:
+        if key in ('hire_friend', 'friend_care'):
+            value = str(getattr(cfg, key).time_range)
+        else:
+            value = str(item.enabled_time_range)
+        edit = QLineEdit(value)
+        edit.setEnabled(in_order)
+        edit.setPlaceholderText('如 00:00-23:59 或 08:00:00-20:00:00')
+        edit.setToolTip('启用时段：HH:MM-HH:MM 或 HH:MM:SS-HH:MM:SS，结束早于开始视为跨零点')
+        edit.editingFinished.connect(
+            lambda _e=edit, k=key: self._save_schedule_range(k, _e.text()))
+        return edit
+
+    # ---- 调度表格保存 ----
+
+    def _save_schedule_values(self, mapping: dict) -> None:
+        """把若干配置点写入 config.yaml（一次落盘），值没变不写不刷日志。"""
+        if not mapping:
+            return
+        try:
+            data = settings_io.load_raw()
+        except Exception as e:
+            log(f'读取配置失败: {e}')
+            return
+        changed = False
+        for key, value in mapping.items():
+            if settings_io.get_value(data, key) == value:
+                continue
+            settings_io.set_value(data, key, value)
+            changed = True
+        if not changed:
+            return
+        try:
+            settings_io.save_raw(data)
+        except Exception as e:
+            log(f'保存配置失败: {e}')
+            return
+        first = next(iter(mapping))
+        log(f'配置已保存: {first} = {mapping[first]}')
+        if self._runner_proc and self._runner_proc.poll() is None:
+            log('调度器每轮自动重读配置，最迟下一轮生效（无需重启）')
+
+    def _save_schedule_bool(self, key: str, checked: bool) -> None:
+        self._save_schedule_values({f'tasks.{key}.enabled': bool(checked)})
+
+    def _save_schedule_interval(self, key: str, seconds: int) -> None:
+        """保存调度间隔：护理/好友护理/雇佣好友同时同步队列与场景两个入口，
+        避免队列退避与场景判定不一致。"""
+        seconds = max(1, int(seconds))
+        if key == 'care':
+            mapping = {'tasks.care.interval_seconds': seconds,
+                       'care.interval_seconds': seconds}
+        elif key in ('hire_friend', 'friend_care'):
+            mapping = {f'tasks.{key}.interval_seconds': seconds,
+                       f'{key}.interval_seconds': seconds}
+        else:
+            mapping = {f'tasks.{key}.interval_seconds': seconds}
+        self._save_schedule_values(mapping)
+
+    def _save_schedule_time(self, key: str, qtime: 'QTime') -> None:
+        """保存每日调度时间：场景 start_time + 队列 daily_times 一起改，保持一致。"""
+        value = qtime.toString('HH:mm')
+        quoted = DoubleQuotedScalarString(value)
+        self._save_schedule_values({f'{key}.start_time': quoted,
+                                    f'tasks.{key}.daily_times': [quoted]})
+
+    def _save_schedule_range(self, key: str, text: str) -> None:
+        """保存启用时段：好友护理/雇佣好友同时写场景 time_range 与队列
+        enabled_time_range；格式非法恢复原值。"""
+        value = text.strip()
+        if not self._parse_range_text(value):
+            log(f'启用时段格式无效: {value!r}，应为 HH:MM-HH:MM 或 HH:MM:SS-HH:MM:SS，已恢复')
+            if self._schedule_rows:
+                try:
+                    self._rebuild_schedule_table(
+                        load_config(), self._schedule_rows, self._schedule_order)
+                except Exception as e:
+                    log(f'恢复调度表格失败: {e}')
+            return
+        quoted = DoubleQuotedScalarString(value)
+        if key in ('hire_friend', 'friend_care'):
+            mapping = {f'{key}.time_range': quoted,
+                       f'tasks.{key}.enabled_time_range': quoted}
+        else:
+            mapping = {f'tasks.{key}.enabled_time_range': quoted}
+        self._save_schedule_values(mapping)
+
+    # ---- 下次执行 ----
+
+    @staticmethod
+    def _parse_dt(value) -> 'datetime | None':
+        try:
+            return datetime.strptime(str(value), '%Y-%m-%d %H:%M:%S')
+        except (TypeError, ValueError):
+            return None
+
+    @classmethod
+    def _fmt_next_dt(cls, dt, now) -> str:
+        """下次执行时间 -> 详细文本：今天/明天/日期 + HH:MM:SS + 剩余倒计时。"""
+        if dt.date() == now.date():
+            base = '今天 ' + dt.strftime('%H:%M:%S')
+        elif dt.date() == (now + timedelta(days=1)).date():
+            base = '明天 ' + dt.strftime('%H:%M:%S')
+        else:
+            base = dt.strftime('%m-%d %H:%M:%S')
+        delta = (dt - now).total_seconds()
+        if 0 <= delta < 86400:
+            base += f'（{_format_remaining(delta)}后）'
+        return base
+
+    @classmethod
+    def _in_time_range(cls, now, value: str) -> bool:
+        """now 是否在 HH:MM-HH:MM 时间段内（结束早于开始视为跨零点）。"""
+        try:
+            start_s, end_s = str(value).split('-', 1)
+        except ValueError:
+            return False
+        start = cls._clock_to_time(start_s.strip())
+        end = cls._clock_to_time(end_s.strip())
+        if start is None or end is None:
+            return False
+        if end > start:
+            return start <= now.time() < end
+        return now.time() >= start or now.time() < end
+
+    def _predict_next(self, key: str, item, cfg, now) -> str:
+        """调度器未运行/无运行时状态时，按配置推算下次执行（展示用途）。"""
+        if key == 'care':
+            return '启动后立即'
+        if key in ('adventure', 'visit', 'pk'):
+            scene = getattr(cfg, key)
+            start_t = self._clock_to_time(getattr(scene, 'start_time', '00:00'))
+            if start_t is None:
+                return '—'
+            start_dt = datetime.combine(now.date(), start_t)
+            times = int(getattr(scene, 'times_per_day', 0) or 0)
+            done = 0
+            if times:
+                file = {'adventure': ADVENTURE_PROGRESS_FILE, 'visit': VISIT_PROGRESS_FILE,
+                        'pk': PK_PROGRESS_FILE}[key]
+                _, done, _ = load_progress(file, quiet=True)
+            if times and done >= times:
+                nxt = start_dt if start_dt > now else start_dt + timedelta(days=1)
+                return self._fmt_next_dt(nxt, now)
+            if start_dt <= now:
+                return '现在可执行'
+            return self._fmt_next_dt(start_dt, now)
         if key == 'hire_friend':
-            return str(cfg.hire_friend.time_range)
-        r = str(item.enabled_time_range)
-        return '全天' if r in ('00:00:00-23:59:59', '00:00-23:59') else r
+            hf = cfg.hire_friend
+            if not hf.enabled or not (hf.friend_name or '').strip() or not hf.times_per_day:
+                return '—'
+            start_t = self._clock_to_time(str(hf.time_range).split('-', 1)[0].strip())
+            if start_t is None:
+                return '—'
+            start_dt = datetime.combine(now.date(), start_t)
+            _, done, _ = load_progress(HIRE_FRIEND_PROGRESS_FILE, quiet=True)
+            if done >= hf.times_per_day:
+                nxt = start_dt if start_dt > now else start_dt + timedelta(days=1)
+                return self._fmt_next_dt(nxt, now)
+            if self._in_time_range(now, hf.time_range):
+                return '现在可执行'
+            nxt = start_dt if start_dt > now else start_dt + timedelta(days=1)
+            return self._fmt_next_dt(nxt, now)
+        if key == 'friend_care':
+            fc = cfg.friend_care
+            if not fc.enabled or not (fc.friend_name or '').strip():
+                return '—'
+            start_t = self._clock_to_time(str(fc.time_range).split('-', 1)[0].strip())
+            if start_t is None:
+                return '—'
+            start_dt = datetime.combine(now.date(), start_t)
+            if self._in_time_range(now, fc.time_range):
+                return '现在可执行'
+            nxt = start_dt if start_dt > now else start_dt + timedelta(days=1)
+            return self._fmt_next_dt(nxt, now)
+        if key in ('school', 'work'):
+            return '启动后判定'
+        return '—'
+
+    def _next_exec_text(self, key: str, item, cfg, state: dict, running: bool,
+                        now, in_order: bool) -> str:
+        """下次执行列文本：调度器运行时优先用 queue_status.json 的精确时间，
+        否则按配置推算。"""
+        if not in_order or not item.enabled:
+            return '—'
+        if running and state:
+            st = state.get('state')
+            if st == 'disabled':
+                return '—'
+            if st == 'ready':
+                return '现在可执行'
+            if st == 'dead':
+                nxt = self._parse_dt(state.get('next'))
+                return '当天已结束' if nxt is None else self._fmt_next_dt(nxt, now)
+            if st == 'waiting':
+                nxt = self._parse_dt(state.get('next'))
+                return '—' if nxt is None else self._fmt_next_dt(nxt, now)
+            return '—'
+        return self._predict_next(key, item, cfg, now)
 
     def _refresh_schedule(self) -> None:
-        """刷新调度选项卡：开关/间隔/时段读 config.yaml，下次执行读
-        runs/queue_status.json 的 tasks 段（调度器每轮写入）。"""
+        """刷新调度选项卡：配置变化（且不在编辑中）重建编辑器；下次执行列每秒更新。
+        调度器运行时读 runs/queue_status.json 的精确时间，未运行按配置推算。"""
         cfg = load_config()
         running = self._runner_proc is not None and self._runner_proc.poll() is None
         states = (load_queue_status() or {}).get('tasks', {}) if running else {}
@@ -822,46 +1117,34 @@ class MainWindow(QMainWindow):
         # 表格顺序 = tasks.order，不在 order 里的任务排最后并标注不调度
         rows = [k for k in order if k in SCHEDULE_TASK_NAMES]
         rows += [k for k in TASK_KEYS if k not in rows]
-        self.schedule_table.setRowCount(len(rows))
+        self._schedule_rows = rows
+        self._schedule_order = order
+        sig = self._schedule_sig_value(cfg, rows, order)
+        if sig != self._schedule_sig:
+            if not self._schedule_table_editing():
+                self._rebuild_schedule_table(cfg, rows, order)
+                self._schedule_sig = sig
         now = datetime.now()
         for row, key in enumerate(rows):
             item = getattr(cfg.tasks, key)
             in_order = key in order
-            if not in_order:
-                enabled_text, next_text = '不调度', '—'
-            elif not item.enabled:
-                enabled_text, next_text = '停用', '—'
-            else:
-                enabled_text = '启用'
-                state = states.get(key, {})
-                st, nxt = state.get('state', ''), state.get('next', '')
-                if not state:
-                    next_text = '—'  # 调度器未运行/legacy 引擎不写状态
-                elif st == 'ready':
-                    next_text = '待执行'
-                elif st == 'dead':
-                    next_text = f'明天 {nxt[11:16]}' if nxt else '当天已结束'
-                elif nxt:
-                    try:
-                        dt = datetime.strptime(nxt, '%Y-%m-%d %H:%M:%S')
-                        next_text = (dt.strftime('%H:%M:%S') if dt.date() == now.date()
-                                     else dt.strftime('%m-%d %H:%M'))
-                    except ValueError:
-                        next_text = nxt
+            text = self._next_exec_text(key, item, cfg, states.get(key, {}),
+                                        running, now, in_order)
+            cell = QTableWidgetItem(text)
+            cell.setFlags(Qt.ItemFlag.ItemIsEnabled)
+            if text == '现在可执行':
+                cell.setForeground(QColor('#7cfc90'))
+            if text != '—':
+                if running and states.get(key):
+                    tip = '调度器运行中（精确时间）'
+                elif running:
+                    tip = '调度器运行中但未写入该任务状态，按配置推算'
                 else:
-                    next_text = '—'
-            values = (SCHEDULE_TASK_NAMES[key], enabled_text,
-                      self._task_schedule_text(key, item, cfg),
-                      self._task_range_text(key, item, cfg), next_text)
-            for col, text in enumerate(values):
-                cell = QTableWidgetItem(str(text))
-                if col == 1:
-                    # 开关列着色：启用绿 / 停用灰 / 不调度黄
-                    color = {'启用': '#7cfc90', '停用': '#999'}.get(text, '#ffd54f')
-                    cell.setForeground(QColor(color))
-                elif col == 4 and text == '待执行':
-                    cell.setForeground(QColor('#7cfc90'))
-                self.schedule_table.setItem(row, col, cell)
+                    tip = '调度器未运行，按当前配置推算'
+            else:
+                tip = ''
+            cell.setToolTip(tip)
+            self.schedule_table.setItem(row, 4, cell)
 
     # ---- 设置/任务页面 ----
 

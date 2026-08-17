@@ -1,12 +1,13 @@
-"""场景公共工具：日志与每日次数持久化（含按日期的历史记录）。
+"""每日次数/时长进度持久化（对外兼容入口，底层统一由 src/progress_store.py 管理）。
 
 进度文件固定为 runs/ 下的单文件（学习/打工/冒险/踩踩/PK/被雇佣/雇佣好友/
-经验日常各一个）。曾经按账号重定向到 runs/accounts/<账号>/，但账号名靠
-状态面板 OCR 识别不稳定（时钟会被误识别成账号），数据被拆散，已取消多账号区分。
+经验日常各一个）。跨天规整、原子写入、损坏兜底都在 src/progress_store.py，
+这里只保留文件常量、日志与各场景/runner/GUI 依赖的函数签名，保证调用方不变。
+测试重定向进度文件仍按老习惯 monkeypatch 本模块的文件常量即可（函数在调用时
+才读模块全局常量，会拿到新值）。
 """
 from __future__ import annotations
 
-import json
 import time
 from datetime import date
 from pathlib import Path
@@ -20,6 +21,7 @@ EMPLOYED_PROGRESS_FILE = PROJECT_ROOT / 'runs' / 'employed_progress.json'
 VISIT_PROGRESS_FILE = PROJECT_ROOT / 'runs' / 'visit_progress.json'
 PK_PROGRESS_FILE = PROJECT_ROOT / 'runs' / 'pk_progress.json'
 HIRE_FRIEND_PROGRESS_FILE = PROJECT_ROOT / 'runs' / 'hire_friend_progress.json'
+EXP_DAILY_PROGRESS_FILE = PROJECT_ROOT / 'runs' / 'exp_daily_progress.json'
 
 
 def log(msg: str) -> None:
@@ -50,46 +52,29 @@ def add_log_listener(fn) -> None:
     _log_listeners.append(fn)
 
 
+from . import progress_store  # noqa: E402  (需要先定义 log 再注册给 store)
+
+progress_store.set_logger(log)
+
+
 def load_progress(progress_file: Path, quiet: bool = False) -> tuple[str, int, dict]:
     """读取持久化进度，返回 (今天日期, 当天已完成次数, 历史记录 {日期: 次数})。
 
-    跨天时把旧日期的次数归档进 history。quiet=True 时不打印续跑日志。
+    跨天时把旧日期的次数归档进 history（内存归档，不落盘）。quiet=True 时不打印续跑日志。
     """
-    today = date.today().isoformat()
-    history: dict[str, int] = {}
-    done = 0
-    try:
-        data = json.loads(progress_file.read_text(encoding='utf-8'))
-        history = {
-            str(day): int(cnt) for day, cnt in (data.get('history') or {}).items()
-        }
-        saved_date = data.get('date')
-        saved_done = int(data.get('learned', 0))
-        if saved_date == today:
-            done = saved_done
-        elif saved_date and saved_done:
-            history[saved_date] = saved_done  # 跨天归档
-    except (OSError, ValueError):
-        pass
-    history[today] = done
+    today, done, history = progress_store.load_daily(progress_file)
     if done and not quiet:
         log(f'读取到今天已完成 {done} 次，继续计数')
     return today, done, history
 
 
 def save_progress(progress_file: Path, today: str, done: int, history: dict) -> None:
-    """持久化当天次数和历史记录 {日期: 次数}；保留扩展字段（学园/打工时长/累计时长等）。"""
-    history[today] = done
-    try:
-        data = json.loads(progress_file.read_text(encoding='utf-8')) or {}
-    except (OSError, ValueError):
-        data = {}
-    data.update({'date': today, 'learned': done, 'history': history})
-    progress_file.parent.mkdir(parents=True, exist_ok=True)
-    progress_file.write_text(
-        json.dumps(data, ensure_ascii=False, indent=2),
-        encoding='utf-8',
-    )
+    """持久化当天次数和历史记录 {日期: 次数}。
+
+    底层 save_daily 会先做跨天规整：旧日期的累计时长（study_secs/work_secs）等
+    会被清掉，根治"昨天的工作时长漏进今天"；写入走原子替换。
+    """
+    progress_store.save_daily(progress_file, today, done, history)
 
 
 def log_history(history: dict, today: str) -> None:
@@ -101,33 +86,15 @@ def log_history(history: dict, today: str) -> None:
 
 def increment_progress(progress_file: Path) -> int:
     """给指定进度文件的当天次数 +1 并保存，返回新次数。"""
-    today, done, history = load_progress(progress_file, quiet=True)
-    done += 1
-    save_progress(progress_file, today, done, history)
-    return done
+    return progress_store.increment_daily(progress_file)
 
 
 # ---- 经验日常（踩踩时顺带做：好友页照顾区域有 exp 就点一键护理） ----
-EXP_DAILY_PROGRESS_FILE = PROJECT_ROOT / 'runs' / 'exp_daily_progress.json'
 
 
 def load_exp_daily(quiet: bool = False) -> tuple[str, bool, dict]:
     """读取经验日常进度，返回 (今天日期, 当日是否完成, 历史记录 {日期: 是否完成})。"""
-    progress_file = EXP_DAILY_PROGRESS_FILE
-    today = date.today().isoformat()
-    history: dict[str, bool] = {}
-    done = False
-    try:
-        data = json.loads(progress_file.read_text(encoding='utf-8'))
-        history = {str(d): bool(v) for d, v in (data.get('history') or {}).items()}
-        saved_date = data.get('date')
-        if saved_date == today:
-            done = bool(data.get('done', False))
-        elif saved_date:
-            history[saved_date] = bool(data.get('done', False))
-    except (OSError, ValueError):
-        pass
-    history[today] = done
+    today, done, history = progress_store.load_exp_daily(EXP_DAILY_PROGRESS_FILE)
     if not quiet:
         log(f'经验日常: ' + ('已完成' if done else '未完成'))
     return today, done, history
@@ -135,20 +102,7 @@ def load_exp_daily(quiet: bool = False) -> tuple[str, bool, dict]:
 
 def save_exp_daily(done: bool, today: str | None = None, history: dict | None = None) -> None:
     """持久化当天经验日常是否完成和历史记录。"""
-    progress_file = EXP_DAILY_PROGRESS_FILE
-    if today is None or history is None:
-        t, d, h = load_exp_daily(quiet=True)
-        if today is None:
-            today = t
-        if history is None:
-            history = h
-    history[today] = done
-    progress_file.parent.mkdir(parents=True, exist_ok=True)
-    progress_file.write_text(
-        json.dumps({'date': today, 'done': done, 'history': history},
-                   ensure_ascii=False, indent=2),
-        encoding='utf-8',
-    )
+    progress_store.save_exp_daily(EXP_DAILY_PROGRESS_FILE, done, today, history)
 
 
 def exp_daily_done() -> bool:
@@ -204,69 +158,32 @@ WORK_DURATION_SECONDS = {
 }
 
 
-def _load_raw(progress_file: Path) -> dict:
-    try:
-        return json.loads(progress_file.read_text(encoding='utf-8')) or {}
-    except (OSError, ValueError):
-        return {}
-
-
-def _save_raw(progress_file: Path, data: dict) -> None:
-    progress_file.parent.mkdir(parents=True, exist_ok=True)
-    progress_file.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding='utf-8')
-
-
 def get_current_school() -> str | None:
     """school_progress.json 里持久化的当前学园（学习开始时写入，跨天视为空）。"""
-    data = _load_raw(SCHOOL_PROGRESS_FILE)
-    if data.get('date') == date.today().isoformat():
-        return data.get('school') or None
-    return None
+    return progress_store.get_daily_field(SCHOOL_PROGRESS_FILE, 'school')
 
 
 def set_current_school(school: str) -> None:
-    """学习开始时记录当前学园：与已存不一致才更新（一致不写，减少落盘）。"""
-    data = _load_raw(SCHOOL_PROGRESS_FILE)
-    if data.get('date') != date.today().isoformat():
-        data = {'date': date.today().isoformat()}
-    if data.get('school') != school:
-        data['school'] = school
-        _save_raw(SCHOOL_PROGRESS_FILE, data)
+    """学习开始时记录当前学园：跨天时总是落盘推进日期，否则值变化才写（减少落盘）。"""
+    progress_store.set_daily_field(SCHOOL_PROGRESS_FILE, 'school', school)
 
 
 def get_current_work_duration() -> str | None:
     """work_progress.json 里持久化的本次打工时长（work.duration）。"""
-    data = _load_raw(WORK_PROGRESS_FILE)
-    if data.get('date') == date.today().isoformat():
-        return data.get('duration') or None
-    return None
+    return progress_store.get_daily_field(WORK_PROGRESS_FILE, 'duration')
 
 
 def set_current_work_duration(duration: str) -> None:
-    """打工开始时记录本次打工时长（work.duration）：不一致才更新。"""
-    data = _load_raw(WORK_PROGRESS_FILE)
-    if data.get('date') != date.today().isoformat():
-        data = {'date': date.today().isoformat()}
-    if data.get('duration') != duration:
-        data['duration'] = duration
-        _save_raw(WORK_PROGRESS_FILE, data)
+    """打工开始时记录本次打工时长（work.duration）：跨天总是落盘，否则值变化才写。"""
+    progress_store.set_daily_field(WORK_PROGRESS_FILE, 'duration', duration)
 
 
 def _today_seconds(progress_file: Path, key: str) -> int:
-    data = _load_raw(progress_file)
-    if data.get('date') == date.today().isoformat():
-        return int(data.get(key, 0) or 0)
-    return 0
+    return progress_store.today_seconds(progress_file, key)
 
 
 def _add_seconds(progress_file: Path, key: str, seconds: int) -> int:
-    data = _load_raw(progress_file)
-    if data.get('date') != date.today().isoformat():
-        data = {'date': date.today().isoformat()}
-    total = int(data.get(key, 0) or 0) + seconds
-    data[key] = total
-    _save_raw(progress_file, data)
-    return total
+    return progress_store.add_seconds(progress_file, key, seconds)
 
 
 def record_study_finish() -> int | None:
@@ -296,16 +213,16 @@ def _migrate_old_durations(progress_file: Path, key: str, minutes_per: int) -> N
     次数 x minutes_per 分钟 换算时长并落盘（只迁移一次，之后 study_secs 存在即跳过）。"""
     if minutes_per <= 0:
         return
-    data = _load_raw(progress_file)
+    data = progress_store.read_raw(progress_file)
     if data.get('date') != date.today().isoformat():
         return
     if key in data:
         return  # 已有新字段（含 0），跳过
-    count = int(data.get('learned', 0) or 0)
+    count = progress_store.to_int(data.get('learned', 0))
     if count <= 0:
         return
     data[key] = count * minutes_per * 60
-    _save_raw(progress_file, data)
+    progress_store.write_raw(progress_file, data)
     log(f'迁移老进度: {progress_file.stem} 今天 {count} 次 x {minutes_per} 分钟'
         f' = {count * minutes_per} 分钟')
 
