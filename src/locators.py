@@ -120,12 +120,10 @@ LOCATORS: dict[str, dict] = {
     # 容器 xpath 命中一次后 cache bounds，select_box_N 由它推导（免各自 dump）
     'select_box_container': {
         'cache': True,
-        # 打工/学园两套层级（差一个 FL[2]/FL[1]），哪个命中用哪个；
-        # 两者都指向同一容器 [65,924][1015,1307]，2:2:1 分割出三槽中心
-        'xpath': [
-            '//*[@resource-id="com.tencent.mobileqq:id/ckj"]/android.widget.FrameLayout[1]/android.widget.FrameLayout[1]/android.widget.FrameLayout[1]/android.widget.FrameLayout[1]/android.widget.FrameLayout[2]/android.widget.FrameLayout[1]/android.widget.FrameLayout[1]/android.widget.FrameLayout[1]/android.widget.FrameLayout[1]/android.widget.FrameLayout[4]/androidx.recyclerview.widget.RecyclerView[1]/android.widget.FrameLayout[1]/android.widget.FrameLayout[1]',
-            '//*[@resource-id="com.tencent.mobileqq:id/ckj"]/android.widget.FrameLayout[1]/android.widget.FrameLayout[1]/android.widget.FrameLayout[1]/android.widget.FrameLayout[1]/android.widget.FrameLayout[1]/android.widget.FrameLayout[1]/android.widget.FrameLayout[1]/android.widget.FrameLayout[1]/android.widget.FrameLayout[1]/android.widget.FrameLayout[4]/androidx.recyclerview.widget.RecyclerView[1]/android.widget.FrameLayout[1]/android.widget.FrameLayout[1]',
-        ],
+        # 锚定"外层 RecyclerView -> FL[1] -> FL[1] -> 内层 RecyclerView[1] -> FL[1]"
+        # 的卡片容器，不依赖 ckj 下会随 QQ 更新漂移的深层绝对路径（实测 2026-08-18
+        # 打工面板实际是 ckj/.../FrameLayout[3]/RecyclerView[7]/...，旧路径全链失效）。
+        'xpath': [SELECT_BOX_XPATH],
     },
     # 2:2:1 分割：左 2/5 中心=1/5 宽，中 2/5 中心=3/5 宽，右 1/5 中心=9/10 宽
     'select_box_1': {'from_bounds': 'select_box_container', 'split': (1, 5)},
@@ -161,15 +159,23 @@ LOCATORS: dict[str, dict] = {
     'work_end': {'xpath': ['//*[@content-desc="分享"]']},
     'work_outworker': {
         'cache': True,
-        'xpath': ['//*[@resource-id="com.tencent.mobileqq:id/ckj"]'
-                  '/android.widget.FrameLayout[1]/android.widget.FrameLayout[1]'
-                  '/android.widget.FrameLayout[1]/android.widget.FrameLayout[1]'
-                  '/android.widget.FrameLayout[2]/android.widget.FrameLayout[1]'
-                  '/android.widget.FrameLayout[1]/android.widget.FrameLayout[1]'
-                  '/android.widget.FrameLayout[1]/android.widget.FrameLayout[4]'
-                  '/androidx.recyclerview.widget.RecyclerView[1]'
-                  '/android.widget.FrameLayout[1]/android.widget.FrameLayout[3]'
-                  '/android.widget.FrameLayout[4]'],
+        # 真正可点的是文案左侧的"+"按钮：从唯一文案"雇佣有额外加成"向上两级
+        # 到文字容器，再取它前一个 FrameLayout 兄弟即可，不用写死 ckj 下十几层；
+        # 文案缺失时回退用户实测的全链路径。
+        'xpath': [
+            '//*[@content-desc="雇佣有额外加成"]'
+            '/../../preceding-sibling::android.widget.FrameLayout[1]',
+            '//*[@resource-id="com.tencent.mobileqq:id/ckj"]'
+            '/android.widget.FrameLayout[1]/android.widget.FrameLayout[1]'
+            '/android.widget.FrameLayout[1]/android.widget.FrameLayout[1]'
+            '/android.widget.FrameLayout[1]/android.widget.FrameLayout[2]'
+            '/android.widget.FrameLayout[1]/android.widget.FrameLayout[1]'
+            '/android.widget.FrameLayout[1]/android.widget.FrameLayout[1]'
+            '/android.widget.FrameLayout[1]/android.widget.FrameLayout[4]'
+            '/androidx.recyclerview.widget.RecyclerView[1]'
+            '/android.widget.FrameLayout[1]/android.widget.FrameLayout[3]'
+            '/android.widget.FrameLayout[4]',
+        ],
     },
     # 雇佣按钮：OCR 文字"雇佣"。面板标题"宠友雇佣加成排行榜（实时刷新）"也含"雇佣"
     # 但在左侧；work._find_employ_button 按 x>=屏宽一半排除标题后取右侧最上面一个。
@@ -276,10 +282,14 @@ LOCATORS: dict[str, dict] = {
     # 只有顶部 917~996）：直接点节点中心（y≈1098 的空白区）点不开弹窗，
     # 改为点其第一个子 ImageView（可见按钮图标中心，实测可点开）
     'exchange_food': {'xpath': ['//*[@content-desc="兑换食物"]/android.widget.ImageView[1]']},
+    # 兑换弹窗里先点选的商品项：点它后再点数量输入框改 99（见 care.py 的 _pay_buy_popup）
+    'cookie_5': {'xpath': ['//*[@content-desc="饼干，5金币"]']},
     # 香皂不足（无 shower_10）时的金币购买洗澡道具：洗澡面板点"购买洗澡道具" ->
     # 购买弹窗数量输入框（//*[@text="10"]，set_text 改 99，见 care.py 的 _buy_soap）
     # -> 点"支付 xx 金币"（与兑换食物弹窗相同，共用 exchange_pay）
     'buy_soap': {'xpath': ['//*[@content-desc="购买洗澡道具"]/android.widget.ImageView[1]']},
+    # 购买弹窗里先点选的商品项：点它后再点数量输入框改 99（同 _pay_buy_popup）
+    'soap_2': {'xpath': ['//*[@content-desc="香皂片，2金币"]']},
     'exchange_pay': {'xpath': ['//*[starts-with(@content-desc, "支付")'
                                ' and contains(@content-desc, "金币")]']},
     'feed_10': {

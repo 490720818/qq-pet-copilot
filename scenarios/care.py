@@ -244,9 +244,9 @@ class CareScenario(DeviceScenario):
 
     # ---- 照顾动作 ----
 
-    def _pay_buy_popup(self, amount_default: str) -> None:
+    def _pay_buy_popup(self, amount_default: str, select_name: str | None = None) -> None:
         """购买弹窗（兑换食物/购买洗澡道具点开后的弹窗）通用流程：
-        数量输入框（默认 amount_default）改为 EXCHANGE_FOOD_COUNT ->
+        数量输入框（默认 amount_default）改为 EXCHANGE_FOOD_COUNT；select_name 传入时先点选商品，随后点输入框 ->
         点"支付 xx 金币"（两个弹窗的支付按钮相同，共用 exchange_pay），
         弹窗关闭后由调用方重新找物品按钮继续护理。"""
         # 数量输入框有默认值，改成 EXCHANGE_FOOD_COUNT。
@@ -259,6 +259,21 @@ class CareScenario(DeviceScenario):
             time.sleep(CLICK_INTERVAL)
         else:
             raise RuntimeError(f'购买弹窗未找到数量输入框（text="{amount_default}"）')
+        if select_name:
+            sel = self.see(select_name)
+            if sel:
+                log(f'选择商品 {select_name}')
+                self.click(sel[0], sel[1])
+                time.sleep(CLICK_INTERVAL)
+            else:
+                log(f'未找到待选择商品 {select_name}，继续改数量')
+        bounds = self.dev.find_xpath_bounds(f'//*[@text="{amount_default}"]')
+        if not bounds:
+            raise RuntimeError(f'购买弹窗未找到数量输入框（text="{amount_default}"）')
+        x1, y1, x2, y2 = bounds
+        log('点击数量输入框')
+        self.click((x1 + x2) // 2, (y1 + y2) // 2)
+        time.sleep(CLICK_INTERVAL)
         amount.set_text(str(EXCHANGE_FOOD_COUNT))
         time.sleep(0.5)  # 等"支付 xx 金币"按钮金额随数量刷新
         pay = self.see('exchange_pay')
@@ -277,7 +292,7 @@ class CareScenario(DeviceScenario):
         log('未找到 feed_10（饼干不足），点击"兑换食物"')
         self.click(hit[0], hit[1])
         time.sleep(CLICK_INTERVAL)
-        self._pay_buy_popup('5')
+        self._pay_buy_popup('5', 'cookie_5')
 
     def _buy_soap(self, source=None) -> None:
         """香皂不足（无 shower_10）时用金币购买洗澡道具：同一控件树里点"购买洗澡道具" ->
@@ -288,7 +303,7 @@ class CareScenario(DeviceScenario):
         log('未找到 shower_10（香皂不足），点击"购买洗澡道具"')
         self.click(hit[0], hit[1])
         time.sleep(CLICK_INTERVAL)
-        self._pay_buy_popup('10')
+        self._pay_buy_popup('10', 'soap_2')
 
     def feed(self, source=None) -> None:
         """喂食：点 feed -> 反复点 feed_10 并复测体力，直到达到阈值。
