@@ -312,12 +312,19 @@ def parse_panel_location(
     """在 OCR 结果中解析当前面板的地点名。
 
     取"力量/智力/魅力"属性面板所在行正下方第一串字符——那是当前打工地点的名字，
-    用于确认当前工作面板是不是配置的打工地点。小镇地图页下方第一串是第一个
-    地点卡片名（通常与配置不符），据此也能区分"在小镇地图 vs 在打工面板"。
+    用于确认当前工作面板是不是配置的打工地点；同一行内多个 OCR 碎片时取
+    离屏幕中心 x 最近的一个（地点名在面板上横向居中，右侧装饰等误识别
+    碎片通常偏在一边）。小镇地图页下方第一行是地点卡片名（通常与配置不符），
+    据此也能区分"在小镇地图 vs 在打工面板"。
+    跳过不含中文的 OCR 误识别碎片（如属性面板下方的装饰元素）
+    避免把这类短串当地点名导致打工面板确认失败。
     返回去空格后的文字；属性面板没识别到返回 None。
     """
     def norm(t: str) -> str:
         return t.replace(' ', '')
+
+    def has_cjk(t: str, min_chars: int = 2) -> bool:
+        return sum('\u4e00' <= ch <= '\u9fff' for ch in t) >= min_chars
 
     stats_y = None
     for text, x, y, score in results:
@@ -327,14 +334,23 @@ def parse_panel_location(
     if stats_y is None:
         return None
 
-    best: tuple[str, int, int] | None = None
+    candidates: list[tuple[str, int, int, float]] = []
     for text, x, y, score in results:
         t = norm(text)
-        if not t or y <= stats_y:
+        if not t or y <= stats_y or not has_cjk(t):
             continue
-        if best is None or y < best[1] or (y == best[1] and x < best[2]):
-            best = (t, y, x)
-    return best[0] if best else None
+        candidates.append((t, x, y, score))
+    if not candidates:
+        return None
+
+    candidates.sort(key=lambda c: (c[2], c[1]))
+    center_x = max(x for _, x, _, _ in results) / 2
+    first_y = candidates[0][2]
+    best = min(
+        (c for c in candidates if abs(c[2] - first_y) <= 30),
+        key=lambda c: (abs(c[1] - center_x), c[1]),
+    )
+    return best[0]
 
 
 def parse_employed_remaining(
