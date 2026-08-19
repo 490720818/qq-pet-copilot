@@ -65,7 +65,7 @@
 import os
 import sys
 import time
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -594,10 +594,26 @@ class Runner:
         school_dead = False  # 学习今天不再可用（达上限/没有课程/执行失败）
         work_dead = False    # 打工今天不再可用
         adventure_dead = False  # 冒险今天不再可用（执行失败）
+        sched_day = datetime.now().date()  # 调度日期：跨天时清除"当天不可继续"标记
         while True:
             try:
                 # 热修改：每轮调度前重读配置，设置页存盘最迟下一轮生效
                 self.reload_config()
+                # 跨天（进度按天持久化、第二天清零）：清除各任务"当天不可继续"标记，
+                # 否则学习在 23:59 学到当天上限后，第二天会一直不调度（只能打工/退出）
+                today = datetime.now().date()
+                if today != sched_day:
+                    sched_day = today
+                    reset = [name for name, flag in
+                             (('学习', school_dead), ('打工', work_dead), ('冒险', adventure_dead),
+                              ('踩踩', self.visit_dead), ('PK', self.pk_dead),
+                              ('好友护理', self.friend_care_dead), ('雇佣好友', self.hire_friend_dead))
+                             if flag]
+                    school_dead = work_dead = adventure_dead = False
+                    self.visit_dead = self.pk_dead = False
+                    self.friend_care_dead = self.hire_friend_dead = False
+                    if reset:
+                        log(f'跨天 {today}：清除任务"当天不可继续"标记: {"、".join(reset)}')
 
                 # 所有任务开始之前：按护理间隔检查一次体力/清洁，不足则喂食/洗澡；
                 # 失败直接抛给外层：走 adb reboot 恢复链路（src/recover.py）
@@ -900,6 +916,7 @@ class TaskQueueRunner(Runner):
             scen.defer_wait = True
         self._main_order: list[str] = list(MAIN_TASK_KEYS)
         self._current_task: str | None = None  # 正在执行的任务名（队列状态展示用）
+        self._sched_day: date | None = None  # 调度日期：跨天时清除任务"当天不可继续"标记
 
     def run(self) -> None:
         if self.use_opener and not self.skip_opener:
@@ -907,12 +924,15 @@ class TaskQueueRunner(Runner):
         tasks: dict[str, _QueueTask] = {}
         order: list[str] = []
         self._apply_tasks_config(tasks, order)
+        self._sched_day = datetime.now().date()  # 调度日期：跨天时清除任务"当天不可继续"标记
         log(f'任务队列调度已启用，执行顺序: {" > ".join(TASK_NAMES[k] for k in order)}')
         while True:
             try:
                 # 热修改：每轮调度前重读配置（含 tasks.order 与各任务调度设置）
                 self.reload_config()
                 self._apply_tasks_config(tasks, order)
+                # 跨天（进度按天持久化、第二天清零）：清除各任务"当天不可继续"标记
+                self._rollover_dead_flags(tasks)
                 executed = self._run_first_due(tasks, order)
                 # 队列状态写 runs/queue_status.json，供 GUI 状态条显示
                 # （在睡前写，睡眠期间 GUI 读到的是最新状态）
@@ -970,6 +990,31 @@ class TaskQueueRunner(Runner):
             if key not in main_order:
                 main_order.append(key)
         self._main_order = main_order
+
+    def _rollover_dead_flags(self, tasks: dict) -> None:
+        """跨天（日期变化）时清除各任务"当天不可继续"标记。
+
+        队列任务的 dead 表示"当天配额用尽/当天不可继续"，进度按天持久化、
+        第二天自动清零，dead 也应随之失效。但 interval 触发任务（学习/打工/
+        雇佣好友等）的 dead 没有自动重开机制（daily 触发任务会在下一个每日
+        时间点由 _eligible 重开窗口并清 dead），一旦在 23:59 学到当天上限被
+        标记 dead，第二天会一直不可调度——主任务组只剩打工兜底，整晚/整天
+        只打工，直到重启调度器。这里每轮调度前检测日期变化，统一清除所有
+        任务的 dead（daily 任务即使清了 dead 仍受每日时间点窗口约束）。
+        """
+        today = datetime.now().date()
+        if self._sched_day is None:
+            self._sched_day = today
+            return
+        if self._sched_day == today:
+            return
+        self._sched_day = today
+        cleared = [t.name for t in tasks.values() if t.dead]
+        if not cleared:
+            return
+        for task in tasks.values():
+            task.dead = False
+        log(f'跨天 {today}：清除任务"当天不可继续"标记: {"、".join(cleared)}')
 
     # ---- 可执行判定 ----
 
