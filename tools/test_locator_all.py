@@ -45,7 +45,7 @@ UNVERIFIED_NAMES = {
     'school_in', 'school_end', 'work_in', 'work_end', 'adventure_in', 'adventure_end',
     'pk_in', 'pk_end', 'pk_again', 'employed_in', 'employed_come_back',
     'employed_come_back_confirm', 'employed_end', 'encourage_pet',
-    'adventure_detail', 'adventure_recall_confirm', 'pet_low_energy', 'pet_low_clean',
+    'adventure_recall_confirm', 'pet_low_energy', 'pet_low_clean',
     'one_click_pay', 'go_care',
 }
 

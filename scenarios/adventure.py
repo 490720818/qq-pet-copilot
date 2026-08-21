@@ -6,7 +6,7 @@
    -> 等待结束并退出，回主页面结束本轮
 3. 点击 adventure 进入准备页面，直到出现 adventure_start 按钮
 4. 点击 adventure_start 开始冒险，直到出现 adventure_in 标志；
-   配置 adventure.skip_bad_weather 开启时，开始 5 秒后 OCR 冒险详情框：
+   配置 adventure.skip_bad_weather 开启时，开始 5 秒后 OCR 下半屏（冒险详情框）：
    含"天色不对"则点"召回"->"确认召回"，计入一次冒险，不再等冒险结束
 5. 冒险中按配置的检查间隔（schedule.check_interval）检查，直到出现 adventure_end 标志
 6. 一轮连跑 ADVENTURE_BATCH（默认 12）次冒险，期间不回主页面；
@@ -22,7 +22,6 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.locators import see_bounds
 from src.ocr import find_text, ocr_texts
 from src.progress import (
     ADVENTURE_PROGRESS_FILE,
@@ -104,27 +103,28 @@ class AdventureScenario(DeviceScenario):
         return False
 
     def recall_bad_weather(self) -> bool:
-        """开始冒险 BAD_WEATHER_WAIT 秒后 OCR 冒险详情框：
-        含"天色不对"则按区域内"召回"文字的坐标点击，再点"确认召回"，返回 True；
-        不含返回 False（照常冒险）。"""
+        """开始冒险 BAD_WEATHER_WAIT 秒后 OCR 下半屏（冒险详情框在其中）：
+        含"天色不对"则按"召回"文字的坐标点击，再点"确认召回"，返回 True；
+        不含返回 False（照常冒险）。
+
+        曾用 adventure_detail xpath 裁剪详情框再 OCR：游戏更新会改控件层级
+        （2026-08 更新后多层一级 FrameLayout，旧 xpath 失效），且实测下半屏
+        整体 OCR 比"xpath 查 bounds + 裁剪 OCR"更快（720×1280 下 ~190ms vs
+        ~270ms+一次层级 dump），故改为直接 OCR 下半屏，不再依赖该 xpath。"""
         time.sleep(BAD_WEATHER_WAIT)
-        bounds = see_bounds(self.dev, 'adventure_detail')
-        if not bounds:
-            log('未定位到冒险详情框，跳过天色检测')
-            return False
-        x1, y1, x2, y2 = bounds
         screen = self.screen()
-        results = ocr_texts(screen[y1:y2, x1:x2])
+        half_y = screen.shape[0] // 2
+        results = ocr_texts(screen[half_y:, :])
         log('冒险详情框 OCR: '
             + (', '.join(f'{t!r}@({x},{y})' for t, x, y, _ in results) or '无'))
         if not any(BAD_WEATHER_KEYWORD in text for text, *_ in results):
             return False
-        # OCR 坐标是裁剪图内的，点击要加回区域左上角偏移
+        # OCR 坐标是下半屏裁剪图内的，点击要加回纵偏移
         recall = find_text(results, RECALL_KEYWORD)
         if not recall:
             raise RuntimeError('检测到"天色不对"但未找到召回按钮')
-        log(f'检测到"天色不对"，点击召回 ({x1 + recall[0]}, {y1 + recall[1]})')
-        self.click(x1 + recall[0], y1 + recall[1])
+        log(f'检测到"天色不对"，点击召回 ({recall[0]}, {half_y + recall[1]})')
+        self.click(recall[0], half_y + recall[1])
         time.sleep(CLICK_INTERVAL)
         # 点召回后确认弹窗可能延迟弹出，最多重试 RECALL_CONFIRM_TRIES 次；
         # 每轮同时看是否还在"正在冒险"页——若是说明上次召回没点中/没生效，
@@ -141,15 +141,15 @@ class AdventureScenario(DeviceScenario):
                     log('确认召回成功，已离开冒险')
                     return True
                 log(f'点击确认召回后仍在冒险/弹窗未关，重新点击召回 '
-                    f'({x1 + recall[0]}, {y1 + recall[1]}) '
+                    f'({recall[0]}, {half_y + recall[1]}) '
                     f'({attempt}/{RECALL_CONFIRM_TRIES})')
-                self.click(x1 + recall[0], y1 + recall[1])
+                self.click(recall[0], half_y + recall[1])
                 time.sleep(CLICK_INTERVAL)
                 continue
             if self.see('adventure_in'):
                 log(f'仍处于"正在冒险"，重新点击召回 '
-                    f'({x1 + recall[0]}, {y1 + recall[1]})')
-                self.click(x1 + recall[0], y1 + recall[1])
+                    f'({recall[0]}, {half_y + recall[1]})')
+                self.click(recall[0], half_y + recall[1])
                 time.sleep(CLICK_INTERVAL)
                 continue
             log(f'未找到确认召回按钮，等待重试 ({attempt}/{RECALL_CONFIRM_TRIES})')

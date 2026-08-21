@@ -194,14 +194,8 @@ LOCATORS: dict[str, dict] = {
         'xpath': ['//*[@content-desc="开始"]']},
     'adventure_in': {'ocr': ['正在冒险', '冒险中']},
     'adventure_end': {'xpath': ['//*[@content-desc="分享"]']},
-    # 冒险详情框区域：开始冒险后检测"天色不对"用（see_bounds 取范围裁剪 OCR）；
-    # 命中后按区域内"召回"文字的坐标点击，再点"确认召回"，计入一次冒险
-    'adventure_detail': {
-        'xpath': ['//*[@resource-id="com.tencent.mobileqq:id/ckj"]'
-                  '/android.widget.FrameLayout[1]/android.widget.FrameLayout[1]'
-                  '/android.widget.FrameLayout[1]/android.widget.FrameLayout[1]'
-                  '/android.widget.FrameLayout[1]/android.widget.FrameLayout[4]'],
-    },
+    # 冒险详情框（"天色不对"检测）不再用 xpath 裁剪：游戏更新会改控件层级导致
+    # xpath 失效，且实测下半屏整体 OCR 更快——recall_bad_weather 直接 OCR 下半屏
     'adventure_recall_confirm': {
         # 不能加 cache：每次天气不好召回都要真实确认"确认召回"弹窗出现了，
         # 缓存会让 see() 在弹窗没出现时也返回旧坐标去点（点错页面元素、误计数）
