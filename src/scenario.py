@@ -131,10 +131,13 @@ class DeviceScenario:
         for attempt in range(1, max_attempts + 1):
             # 只抓控件树快照，截图按需懒加载（see 内部 OCR 需要时才截）
             source = self.dev.hierarchy()
-            if click_name.endswith('_start'):
-                # 点开始按钮可能触发"体力/清洁不足"弹窗：识别 _start 的同时同帧
-                # 检测弹窗，命中则回主页面护理一次并抛 StatBlocked，由调度器
-                # 重试当前任务（见 handle_low_stat_dialog）
+            if click_name.endswith('_start') or wait_name.endswith('_start'):
+                # 体力/清洁不足时提示条会替换开始按钮：识别/等待 _start 的同时同帧
+                # 检测，命中则回主页面护理一次并抛 StatBlocked，由调度器重试当前
+                # 任务（见 handle_low_stat_dialog）。等待 _start 出现的阶段也要检测
+                # （wait_name 端）：提示条顶掉开始按钮时可能还没点过 _start
+                # （如"前往冒险"阶段等 adventure_start），只查 click_name 会漏判
+                # 直到导航超时
                 self.handle_low_stat_dialog(source)
             target = self.see(click_name, None, source)
             if target and wait_ocr_only:

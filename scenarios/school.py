@@ -111,6 +111,9 @@ class SchoolScenario(DeviceScenario):
             clicked = False
             for attempt in range(1, NAV_TIMEOUT + 1):
                 source = self.dev.hierarchy()
+                # 体力/清洁不足时提示条会顶掉 school_start：面板已开但开始按钮
+                # 不出现时不能干等到超时，同帧检测命中则回主页面护理一次
+                self.handle_low_stat_dialog(source)
                 if self.see('school_start', None, source):
                     self._graduated_once = False
                     return None

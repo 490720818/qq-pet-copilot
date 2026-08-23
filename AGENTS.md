@@ -6,8 +6,7 @@
 
 QQ 宠物自动化托管脚本。技术栈：Python 3 + uiautomator2（画面、输入与控件定位）+
 RapidOCR（文字/数字识别）+ PyQt6（GUI）。UI 定位分辨率无关：
-优先 u2 控件选择器，游戏内 canvas 自绘按钮靠 OCR 文字（`src/locators.py` 注册表），
-少数无文字固定元素用 720×1280 参考坐标按当前分辨率等比换算。
+优先 u2 控件选择器，游戏内 canvas 自绘按钮靠 OCR 文字（`src/locators.py` 注册表）。
 平台：Windows（Git Bash 环境），目标设备：Android 手机（竖屏）。
 
 游戏机制注意：**护理相关勋章如果要拿的话不能一键！！！**（一键护理不计入勋章进度，
@@ -40,17 +39,19 @@ $PY build.py --emulator          # 模拟器版（内置 hook JS + frida-server 
 | 路径 | 职责 |
 | --- | --- |
 | `main.py` | PyQt6 GUI：scrcpy 窗口嵌入（SetParent）、选项卡（日志/调度/统计/任务/设置；调度页 = 每任务 开关/执行间隔（每日时间）/启用时段 可直接编辑（保存 config.yaml 热加载生效），下次执行 = 调度器运行时读 `runs/queue_status.json` 的 tasks 段、未运行时按配置推算的详细时间；任务页 = 任务队列顺序 + 场景任务设置，设置页 = 连接/调度引擎/全局规则/告警）、调度器子进程控制、scrcpy 看门狗（设备重启后自动重拉重嵌入；进程活着但没嵌上——多开同时拉起窗口创建慢、嵌入轮询已超时——看门狗补挂嵌入轮询，窗口出现即自动嵌入）、右上角"手动重启"按钮
-（按 `recover.method` 执行一次异常恢复 `reenter_pet`，调度器在跑先停，恢复期间开始/停止按钮禁用，恢复完成自动启动调度器）；**scrcpy 必须带 `--port=按序列号分配的固定端口`（`_scrcpy_port`，含无头关屏 scrcpy）**：默认范围 27183:27199 在 Windows 下多个 scrcpy 能同时绑定 27183（SO_REUSEADDR 语义），各设备 adb reverse 回连被投递到错误的 scrcpy 进程——双开同时开镜像画面串台/两窗口同一画面/Server connection failed |
+（按 `recover.method` 执行一次异常恢复 `reenter_pet`，调度器在跑先停，恢复期间开始/停止按钮禁用，恢复完成自动启动调度器）；设置页"检查更新"按钮 + 启动自动检查一次/每 6 小时一次（`src/update_checker.py`，
+有更新时设置页显示 Release 链接并打日志）；标题栏带版本号（`src/version.py` 的 `APP_VERSION`）；**scrcpy 必须带 `--port=按序列号分配的固定端口`（`_scrcpy_port`，含无头关屏 scrcpy）**：默认范围 27183:27199 在 Windows 下多个 scrcpy 能同时绑定 27183（SO_REUSEADDR 语义），各设备 adb reverse 回连被投递到错误的 scrcpy 进程——双开同时开镜像画面串台/两窗口同一画面/Server connection failed |
 | `src/stats_chart.py` | 统计页：各任务近 N 天次数的平滑折线图（QPainter 自绘 + Catmull-Rom 平滑，数据来自 `runs/*_progress.json` 的 history） |
 | `scenarios/runner.py` | 统一调度器，两种引擎（`runner.engine`）：`task_queue`（默认，`TaskQueueRunner`：执行顺序由 `tasks.order` 配置，> 分隔越靠前越优先，不在 order 里不调度；每任务独立 enabled / trigger（interval 间隔 / daily 每日时间点窗口）/ enabled_time_range / success_interval / failure_interval，见 `tasks` 段）/ `legacy`（`Runner.run` 老主循环，顺序写死：护理 → 冒险 → 踩踩 → PK → 好友雇佣 → 好友护理 → 学习/打工）。共通：场景异常分级重试（回主页面重进 → `recover()` 重启恢复）；都失败时主任务（学习/打工）发告警通知（`src/notify.py`）并退出，支线任务延后重试（legacy 用 `SIDE_TASK_RETRY_DELAY`，队列用各任务 `failure_interval`） |
 | `scenarios/school.py` `work.py` `adventure.py` `care.py` `visit.py` `pk.py` `friend_care.py` `hire_friend.py` `employed.py` | 各场景，均继承 `DeviceScenario`（`pk.py`/`friend_care.py` 继承 `visit.py` 复用好友导航；`hire_friend.py` 继承 `friend_care.py` 复用指定好友导航；`employed.py` 只做被雇佣检测，召回复用基类） |
 | `src/scenario.py` | 场景基类：截图/u2+OCR 定位点击/回主页面/等待结束（阻塞 `wait_end` / 非阻塞延时收尾 `defer_busy_end`+`finish_pending`，OCR 剩余时间登记 `pending`）/被雇佣召回/四种进行中状态检测 |
 | `src/recover.py` | 异常恢复链路：adb reboot → 等开机 → 启动 QQ → 点 `Q宠-*` 入口（descriptionStartsWith 前缀匹配，后缀数字不固定；入口紧凑双击用 minitouch 两连击——`d.click` JSON-RPC 往返慢，0.3s 间隔会被识别成两次单击进单击页，点不进主页 back 退回重试）回宠物页，返回新 U2Device；模拟器模式"重启设备"改为重启模拟器整机（MuMu 不支持 adb reboot，会把 adb 服务卡死；**opener 失败但设备在线时先强停 QQ 重开一次**——冷启动 QQ 首启失败比整机重启便宜得多），优先级：配置的 `recover.emulator_restart_cmd` > 留空自动探测模拟器实例分步停/启（`src/emulator.py`，serial 匹配多个实例时依次用 `emulator.type/name/path`、端口实际监听进程命令行消歧）> 回退 adb reboot，随后 connect → 等开机（`_adb_back_online` **不默认 kill-server**——kill-server 会把所有设备（其它模拟器实例/USB 真机）踢下线且 host:port 不会自动恢复，只在 connect **连续 `CONNECT_TIMEOUT_KILL_AFTER`=3 次**超时（服务疑似卡死，单次/偶发超时只是开机慢）才 kill-server 兜底并恢复之前在线过的所有远程设备） |
 | `src/emulator.py` | 多模拟器实例自动探测（参考 ALAS module/device/platform）：MuMu 12/6/X、雷电 3/4/9、夜神、蓝叠 4/5、逍遥；exe→类型靠 `path_to_type`（exe 名+上级目录名），安装目录来源 = 卸载项注册表（子键名精确匹配）+ MuiCache/UserAssist（ROT13）+ 雷电 InstallDir 注册表；serial 算法 = vbox/nemu/memu 的 hostport→5555 转发正则（MuMu12 兜底 16384+32*index、雷电 5555+2*index、蓝叠4 固定 5555、蓝叠5 读 bluestacks.conf）；`scan_serials()`（GUI 设备下拉合并）、`find_instance(serial, type/name/path 消歧)`、`get_serial_pair()`（127.0.0.1:5555+X ↔ emulator-5554+X）、`restart_instance()` 按类型分步停/启（有控制台 exe 走控制台：MuMuManager/ldconsole/bsconsole/memuc，蓝叠5/MuMu6/X 杀进程再用主 exe 拉起）；serial 命中多个实例且配置消歧不够时，按端口实际监听进程命令行反查（`_match_by_listener`：MuMu12 每个实例的 .nemu 都转发 7555，MuMuVMMHeadless.exe 的 --comment 即实例名，0.0.0.0 通配与 127.0.0.1 精确绑定并存时精确绑定优先） |
-| `src/u2dev.py` | uiautomator2 封装：连接（含 atx-agent 首装）、截图、`rel()` 参考坐标换算、`d.touch` 持续按压；**控制方案**（`control.method`，设置页下拉）：`injectInputEvent`（默认，`d.touch.down/up`，**不用 `d.click`**——UiDevice.click 走 JSON-RPC 模拟器上偶发失效；down/up 间保持 `CLICK_PRESS_SECONDS`=0.05s）/ `minitouch`（openstf minitouch，`MiniTouchSession`：二进制 `resources/minitouch/minitouch-<abi>` 推送设备 → `adb forward localabstract:minitouch` → socket 直发；forward 学习 ALAS 先 `forward --list` 复用、没有才在 20000-21000 随机高端口新建（低端口 Windows bind 10013）；坐标按握手 `^ max_contacts max_x max_y` 等比换算，不硬编码屏幕分辨率；minitouch 单连接限制，连接超时=被 atx-agent /minitouch 等占用），`click/touch_down/move/up` 按方案分派，minitouch 会话懒加载；**自动回退**：minitouch 因非 root/SELinux 权限拒绝打不开 `/dev/input/event*`（`_start_server` 读启动日志分类，抛 `MinitouchUnavailableError`）时自动回退 `injectInputEvent` 并把 `control.method` 写回 config.yaml（下次启动/热加载也走默认方案）；minitouch 自身错误（不可用/被占用/会话断开）不算 u2 连接故障，`_is_conn_error` 不触发 u2 重连自愈；**设备掉线重连**：`_reconnect` 先 `_wait_device_online`——远程模拟器（host:port）adb 抖动时先 `adb connect` + 轮询等 `DEVICE_ONLINE_WAIT`=45s 回线再重连 u2，避免"device not found"被误判成需要整机重启（USB 真机掉线不等待直接抛） |
-| `src/locators.py` | UI 定位注册表 `LOCATORS`：名字 → u2 选择器 / OCR 候选文案 / rel 兜底坐标；`see()` / `see_all()` |
+| `src/u2dev.py` | uiautomator2 封装：连接（含 atx-agent 首装）、截图、`d.touch` 持续按压；**控制方案**（`control.method`，设置页下拉）：`injectInputEvent`（默认，`d.touch.down/up`，**不用 `d.click`**——UiDevice.click 走 JSON-RPC 模拟器上偶发失效；down/up 间保持 `CLICK_PRESS_SECONDS`=0.05s）/ `minitouch`（openstf minitouch，`MiniTouchSession`：二进制 `resources/minitouch/minitouch-<abi>` 推送设备 → `adb forward localabstract:minitouch` → socket 直发；forward 学习 ALAS 先 `forward --list` 复用、没有才在 20000-21000 随机高端口新建（低端口 Windows bind 10013）；坐标按握手 `^ max_contacts max_x max_y` 等比换算，不硬编码屏幕分辨率；minitouch 单连接限制，连接超时=被 atx-agent /minitouch 等占用），`click/touch_down/move/up` 按方案分派，minitouch 会话懒加载；**自动回退**：minitouch 因非 root/SELinux 权限拒绝打不开 `/dev/input/event*`（`_start_server` 读启动日志分类，抛 `MinitouchUnavailableError`）时自动回退 `injectInputEvent` 并把 `control.method` 写回 config.yaml（下次启动/热加载也走默认方案）；minitouch 自身错误（不可用/被占用/会话断开）不算 u2 连接故障，`_is_conn_error` 不触发 u2 重连自愈；**设备掉线重连**：`_reconnect` 先 `_wait_device_online`——远程模拟器（host:port）adb 抖动时先 `adb connect` + 轮询等 `DEVICE_ONLINE_WAIT`=45s 回线再重连 u2，避免"device not found"被误判成需要整机重启（USB 真机掉线不等待直接抛） |
+| `src/locators.py` | UI 定位注册表 `LOCATORS`：名字 → u2 选择器 / OCR 候选文案；`see()` / `see_all()` |
 | `src/adb/device.py` | adb 封装：设备在线管理（start-server）、屏幕尺寸读取（scrcpy 嵌入比例用）、`reboot_and_wait()` / `launch_app()`（异常恢复用） |
 | `src/ocr.py` / `src/coins.py` | RapidOCR 封装；主页金币 = 顶部状态栏最右侧数值（全屏 OCR） |
+| `src/version.py` / `src/update_checker.py` | 版本常量（`APP_VERSION`/`APP_GITHUB_REPO`，release 工作流打包前由 `tools/write_version.py --tag <tag>` 写入）；GitHub `releases/latest` 更新检查（纯 stdlib urllib，版本号分段比较） |
 | `src/progress_store.py` | 进度文件统一管理（`runs/*_progress.json`）：跨天规整（旧日期次数归档进 history、清掉旧日期的 `study_secs/work_secs`；`school/duration` 作为会话元数据跨天保留供跨零点结算累计）、原子写入（先写 `.tmp` 再 `os.replace`，进程被杀不留损坏文件）、损坏兜底（解析失败备份成 `*.corrupted.bak` 后按空档继续）；全部进度读写走这里，`src/progress.py` 只做兼容层 |
 | `src/progress.py` | 进度持久化对外兼容入口（常量 + 日志 + 各场景函数签名，内部转发 `src/progress_store.py`）：`log()`（控制台+文件+监听器）、`load_progress/save_progress/increment_progress`（含 history 跨天归档）、`count_cross` 交叉计数、学习/工作时长累计与迁移；进度文件固定 `runs/*.json` 单文件（曾按账号重定向到 `runs/accounts/<账号>/`，账号名靠状态面板 OCR 识别不稳定、数据被拆散，已取消多账号区分） |
 | `src/opener.py` | 模拟器模式集成：自实现设备/Root/frida-server/启动 QQ/注入全流程（frida Python API），hook JS 从 `assets/qqpet-module-opener/open_qqpet_module.js` 读取（只保留上游这一个 JS，手动更新）；Frida 17 起 Java 桥不再内置，注入前用 frida-tools 的 `frida-java-bridge`（`frida_tools/bridges/java.js`，打包时随包）包一层暴露全局 `Java` 再拼 hook；打开宠物主页后**保持注入不解除**（`_KEEPALIVE` 持有引用防 GC，好友访问/踩踩/PK 的 doAction 接管持续生效），注入前 `_wait_qq_settle` 等 QQ 启动稳定；`_start_qq` 冷启动会重试 `am start`（`START_QQ_ATTEMPTS`=3），轮询 `pidof` 前先确认设备在线，adb 抖动不误判成"QQ 没启动"；注入失败（script is destroyed/会话断开/SDK 超时）会强停 QQ 重试 `OPEN_PET_ATTEMPTS`=3 次；frida 设备发现加固（`_frida_device`）：项目 adb 目录前置 PATH（frida 枚举 adb 设备用 PATH 里的 adb）+ 每次重试前 `get-state`/重连确认设备在线 + `get_device` 重试 2 次 + 兜底 `adb forward tcp:27042` + frida remote device（模拟器刚开机 frida adb 枚举不稳时） |
@@ -78,16 +79,12 @@ $PY build.py --emulator          # 模拟器版（内置 hook JS + frida-server 
   进行中状态文字（`xxx_in`）用整屏 OCR 关键词（状态区域 xpath  bounds 随页面
   结构漂移，裁剪 OCR 不可靠；同一张 screen 连续多次 `see()` 共享一次整屏 OCR，
   见 `_ocr_texts_cached`）；整屏 OCR 统一走 `src/ocr.py` 的 `ocr_fullscreen()`
-  （先保持长宽比缩到接近 720×1280 再识别，坐标还原回原图）；游戏内按钮用整屏 OCR 文案（候选列表按优先序）；
-  只有无文字纯图形且位置固定的元素才用 `rel` 兜底
-  （rel 是"必然命中"，不能用于"检测是否存在"）。
+  （先保持长宽比缩到接近 720×1280 再识别，坐标还原回原图）；游戏内按钮用整屏 OCR 文案（候选列表按优先序）。
   位置固定、只需点击的元素可加 `'cache': True`（如 `back`）：第一次命中后坐标
   记入 `_locate_cache`，之后 `see()` 直接返回缓存点不再识别。
   位置固定的裁剪区域（如宠物状态面板 `status_region`）登记 xpath + `'cache': True`
   后用 `see_bounds()` 取范围：第一次命中后 bounds 记入 `_bounds_cache`，之后直接复用。
-- **参考坐标**：场景里的固定点位一律写 720×1280 参考坐标，点击/拖动走
-  `click_rel()` / `swipe()`（内部按当前分辨率换算），不得直接点绝对像素。
-  例外：洗澡搓洗点位按分辨率百分比（`care.py` 的 `SCRUB_TOP_PCT` / `SCRUB_BOTTOM_PCT`），
+- **洗澡搓洗**：搓洗点位按分辨率百分比（`care.py` 的 `SCRUB_TOP_PCT` / `SCRUB_BOTTOM_PCT`），
   起点取 `shower_10` 控件中心；搓洗中清洁连续 `SCRUB_STALL_REPRESS` 回合不提升判定
   按压失效（模拟器 minitouch 会话静默中断，touch_move 全丢），自动抬手重按肥皂自愈；
   喂食/洗澡达到尝试上限仍不达阈值时**跳过本次护理**（不抛异常——游戏有概率显示 bug，
@@ -197,11 +194,15 @@ $PY build.py --emulator          # 模拟器版（内置 hook JS + frida-server 
   `care.interval_seconds`（默认 60 秒，距上次检查起算，`care_due()`）节流，
   两种引擎共用（legacy 主循环每轮开头、队列引擎 care 任务）；场景上次检查时间
   记在 `CareScenario.last_care_at`。
-- **体力/清洁不足弹窗**：点 `*_start`（上课/打工/冒险/PK，含雇佣好友复用的
-  work_start）开始任务时，识别 `_start` 的同时同帧检测
+- **体力/清洁不足提示条**：提示条（`enabled=false` 内联条，非模态弹窗）会**替换
+  开始按钮**，因此检测要覆盖两类阶段：点 `*_start`（上课/打工/冒险/PK，含雇佣
+  好友复用的 work_start）时识别 `_start` 的同时同帧检测，以及**等待 `*_start`
+  出现的阶段**（`click_until_gone_or_see` 的 wait_name 以 `_start` 结尾时同样
+  每轮检测——提示条顶掉开始按钮时可能还没点过 _start，如"前往冒险"阶段等
+  adventure_start，只查 click_name 会漏判到导航超时）。检测目标：
   `//*[@content-desc="你的宠物体力不足，请回家补充体力"]` /
   `//*[@content-desc="你的宠物清洁值不足，请回家洗澡"]`（`src/locators.py` 的
-  `pet_low_energy` / `pet_low_clean`）；命中则点 back 关弹窗 -> 回主页面 ->
+  `pet_low_energy` / `pet_low_clean`）；命中则点 back 退出面板 -> 回主页面 ->
   护理一次（`care_once`，同调度器护理检查）-> 抛 `StatBlocked`
   （`src/scenario.py`），调度器 `run_one` 立即重试当前任务一次（不算失败/不重启，
   主任务/支线共用），护理后重试仍被拦截则按常规失败分流（主任务告警退出、
@@ -286,3 +287,5 @@ $PY build.py --emulator          # 模拟器版（内置 hook JS + frida-server 
 `build.py` 自动调 `tools/fetch_scrcpy.py` 从官方 Release 拉取。路径约定：打包后
 `APP_ROOT` = exe 所在目录（config.yaml 首启复制、runs/ 生成于此），
 `RESOURCE_ROOT` = `sys._MEIPASS`。exe 旁 `runs/` 目录放同名资源可覆盖包内资源（如 `runs/resources/scrcpy-win64/`、`runs/resources/frida-server/`）。
+Release 工作流打包前会执行 `tools/write_version.py --tag <tag>` 把版本号写进 `src/version.py`
+（exe 内"检查更新"按它比较版本）；本地手动打包发布前如需正确版本号，同样先跑这个命令。

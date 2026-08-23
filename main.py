@@ -36,6 +36,7 @@ from PyQt6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMainWindow,
+    QMessageBox,
     QPlainTextEdit,
     QPushButton,
     QScrollArea,
@@ -85,6 +86,7 @@ from src.stats_chart import StatsPanel
 from src.status_cache import FIELDS as STATUS_FIELDS
 from src.status_cache import load_accounts
 from src.queue_status import load_queue_status
+from src.version import APP_GITHUB_REPO, APP_VERSION
 
 # 仅类型检查用：U2Device 在方法内懒加载导入，注解里引用它需要类型检查器能解析
 from typing import TYPE_CHECKING
@@ -98,6 +100,7 @@ RUNNER_SCRIPT = PROJECT_ROOT / 'scenarios' / 'runner.py'
 EMBED_TRIES = 40  # 查找 scrcpy 窗口的次数（每次 500ms）
 SCRCPY_WATCHDOG_MS = 5000    # scrcpy 看门狗轮询间隔（毫秒）
 SCRCPY_RETRY_INTERVAL = 15.0  # 重拉失败后的退避（秒；设备重启要几十秒，别刷日志）
+UPDATE_CHECK_INTERVAL_MS = 6 * 3600 * 1000  # 检查更新周期（启动后先自动查一次）
 
 # Windows 下隐藏子进程的命令行窗口（scrcpy/taskkill 等都是控制台程序）
 _NO_WINDOW = subprocess.CREATE_NO_WINDOW if sys.platform == 'win32' else 0
@@ -494,13 +497,17 @@ def _format_remaining(seconds: float) -> str:
 
 
 class MainWindow(QMainWindow):
+    # 检查更新结果回投 GUI 线程：(manual, UpdateCheckResult)
+    _sig_update_result = pyqtSignal(object)
+
     def __init__(self, emulator_mode: bool = False, emulator_device: str | None = None):
         super().__init__()
         self.emulator_mode = emulator_mode
         self.emulator_device = emulator_device
         if emulator_mode:
             log('模拟器模式：调度器将用 qqpet-module-opener 打开 QQ 宠物主页')
-        self.setWindowTitle('QQ 宠物自动化助手' + ('（模拟器版）' if emulator_mode else ''))
+        self.setWindowTitle(f'QQ 宠物自动化助手 v{APP_VERSION}'
+                            + ('（模拟器版）' if emulator_mode else ''))
         self.resize(1200, 750)
 
         self.scrcpy_view = ScrcpyContainer()
@@ -598,6 +605,14 @@ class MainWindow(QMainWindow):
         self._stats_timer = QTimer(self, timeout=self._refresh_stats)
         self._stats_timer.start(1000)
         self._refresh_stats()
+
+        # 检查更新：启动后自动查一次，之后每 6 小时一次；设置页可手动触发
+        self._update_checking = False
+        self._sig_update_result.connect(self._on_update_result)
+        self._update_timer = QTimer(
+            self, timeout=lambda: self._start_update_check(manual=False))
+        self._update_timer.start(UPDATE_CHECK_INTERVAL_MS)
+        QTimer.singleShot(5000, lambda: self._start_update_check(manual=False))
 
         self._embed_tries = 0
         self._embed_fail_logged = False
@@ -1277,6 +1292,20 @@ class MainWindow(QMainWindow):
         test_btn = QPushButton('发送通知测试')
         test_btn.clicked.connect(self._test_notify)
         form.addRow('通知测试', test_btn)
+        # 检查更新：启动后自动查一次，之后每 6 小时一次；这里手动触发，
+        # 结果显示在旁边的标签上（有更新时是可点击的 Release 链接）
+        self._update_label = QLabel(f'当前版本 v{APP_VERSION}')
+        self._update_label.setOpenExternalLinks(True)
+        self._update_label.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextBrowserInteraction)
+        update_btn = QPushButton('检查更新')
+        update_btn.clicked.connect(lambda: self._start_update_check(manual=True))
+        update_row = QWidget()
+        update_layout = QHBoxLayout(update_row)
+        update_layout.setContentsMargins(0, 0, 0, 0)
+        update_layout.addWidget(update_btn)
+        update_layout.addWidget(self._update_label, 1)
+        form.addRow('检查更新', update_row)
         return self._wrap_form_page(form)
 
     def _fill_emulator_placeholders(self) -> None:
@@ -1316,6 +1345,49 @@ class MainWindow(QMainWindow):
         log('发送通知测试...')
         sent = send_alert('通知测试：收到这条说明告警渠道配置正常')
         log('通知测试已送达' if sent else '通知测试未送达（检查配置，各渠道详情见上方日志）')
+
+    # ---- 检查更新 ----
+
+    def _start_update_check(self, manual: bool) -> None:
+        """后台线程查 GitHub 最新 Release；manual=True 时结果弹窗提示。"""
+        if self._update_checking:
+            if manual:
+                QMessageBox.information(self, '检查更新', '正在检查更新，请稍候。')
+            return
+        self._update_checking = True
+        threading.Thread(target=self._update_check_worker, args=(manual,),
+                         daemon=True).start()
+
+    def _update_check_worker(self, manual: bool) -> None:
+        from src.update_checker import check_github_latest_release
+
+        result = check_github_latest_release(APP_GITHUB_REPO, APP_VERSION)
+        self._sig_update_result.emit((manual, result))
+
+    def _on_update_result(self, payload) -> None:
+        manual, result = payload
+        self._update_checking = False
+        if result.ok and result.has_update:
+            self._update_label.setText(
+                f'发现新版本 <a href="{result.release_url}">{result.latest_tag}</a>'
+                f'（当前 v{result.current_version}）')
+            log(f'发现新版本 {result.latest_tag}（当前 v{result.current_version}），'
+                f'下载：{result.release_url}')
+            if manual:
+                QMessageBox.information(
+                    self, '检查更新',
+                    f'发现新版本 {result.latest_tag}（当前 v{result.current_version}）\n'
+                    f'下载地址：{result.release_url}')
+        elif result.ok:
+            self._update_label.setText(f'当前已是最新版本（v{result.current_version}）')
+            if manual:
+                QMessageBox.information(self, '检查更新', '当前已是最新版本。')
+        else:
+            self._update_label.setText(result.message)
+            if manual:
+                QMessageBox.warning(self, '检查更新', result.message)
+            else:
+                log(result.message)
 
     def _get_test_dev(self) -> 'U2Device':
         """测试用 u2 连接：懒加载并复用；adb 路径/序列号变化时自动重建。

@@ -77,6 +77,12 @@ jobs:
         run: |
           python tools/fetch_scrcpy.py
 
+      - name: Write app version
+        shell: pwsh
+        run: |
+          # 打包前把 release tag 写进 src/version.py（exe 内检查更新按它比较）
+          python tools/write_version.py --tag "${{ steps.meta.outputs.tag }}"
+
       - name: Build with PyInstaller
         shell: pwsh
         env:
