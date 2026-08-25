@@ -14,6 +14,7 @@
 
 import os
 import queue
+import re
 import subprocess
 import sys
 import threading
@@ -23,8 +24,8 @@ from datetime import datetime, timedelta
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from PyQt6.QtCore import QObject, Qt, QTime, QTimer, pyqtSignal
-from PyQt6.QtGui import QColor
+from PyQt6.QtCore import QObject, Qt, QTime, QTimer, QUrl, pyqtSignal
+from PyQt6.QtGui import QColor, QDesktopServices
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -86,7 +87,7 @@ from src.stats_chart import StatsPanel
 from src.status_cache import FIELDS as STATUS_FIELDS
 from src.status_cache import load_accounts
 from src.queue_status import load_queue_status
-from src.version import APP_GITHUB_REPO, APP_VERSION
+from src.version import APP_GITHUB_REPO, APP_RELEASES_URL, APP_VERSION
 
 # 仅类型检查用：U2Device 在方法内懒加载导入，注解里引用它需要类型检查器能解析
 from typing import TYPE_CHECKING
@@ -98,6 +99,7 @@ SCRCPY = resource_path('resources/scrcpy-win64') / 'scrcpy.exe'
 SCRCPY_TITLE_PREFIX = 'QQPetCopilotScrcpy'
 RUNNER_SCRIPT = PROJECT_ROOT / 'scenarios' / 'runner.py'
 EMBED_TRIES = 40  # 查找 scrcpy 窗口的次数（每次 500ms）
+LOG_MAX_LINES = 5000  # 日志区显示行数上限（超出自动丢弃最旧的行；完整日志在 runs/logs/ 文件里）
 SCRCPY_WATCHDOG_MS = 5000    # scrcpy 看门狗轮询间隔（毫秒）
 SCRCPY_RETRY_INTERVAL = 15.0  # 重拉失败后的退避（秒；设备重启要几十秒，别刷日志）
 UPDATE_CHECK_INTERVAL_MS = 6 * 3600 * 1000  # 检查更新周期（启动后先自动查一次）
@@ -158,6 +160,42 @@ class _FocusOutPlainTextEdit(QPlainTextEdit):
     def focusOutEvent(self, event):
         self._on_focus_out()
         super().focusOutEvent(event)
+
+
+class LogView(QPlainTextEdit):
+    """日志区：纯文本保证大量日志下的性能；其中的 http(s) 链接可点击，
+    单击直接用浏览器打开（悬停显示手型光标）。"""
+
+    # 行内 URL 匹配：排除中文标点/引号/括号结尾（日志里链接常跟"下载：xxx。"）
+    _URL_RE = re.compile(r'https?://[^\s<>"\'），。；！？）]+')
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.setMouseTracking(True)
+
+    def _url_at(self, pos) -> str | None:
+        cursor = self.cursorForPosition(pos)
+        col = cursor.positionInBlock()
+        for m in self._URL_RE.finditer(cursor.block().text()):
+            if m.start() <= col < m.end():
+                return m.group(0)
+        return None
+
+    def mouseReleaseEvent(self, event):
+        # 拖选文本时不触发打开（hasSelection 说明刚在做选择）
+        if (event.button() == Qt.MouseButton.LeftButton
+                and not self.textCursor().hasSelection()):
+            url = self._url_at(event.position().toPoint())
+            if url:
+                QDesktopServices.openUrl(QUrl(url))
+                return
+        super().mouseReleaseEvent(event)
+
+    def mouseMoveEvent(self, event):
+        url = self._url_at(event.position().toPoint())
+        self.viewport().setCursor(
+            Qt.CursorShape.PointingHandCursor if url else Qt.CursorShape.IBeamCursor)
+        super().mouseMoveEvent(event)
 
 
 class _NoWheelSpinBox(QSpinBox):
@@ -511,8 +549,8 @@ class MainWindow(QMainWindow):
         self.resize(1200, 750)
 
         self.scrcpy_view = ScrcpyContainer()
-        self.log_view = QPlainTextEdit(readOnly=True)
-        self.log_view.setMaximumBlockCount(5000)
+        self.log_view = LogView(readOnly=True)
+        self.log_view.setMaximumBlockCount(LOG_MAX_LINES)
 
         # 右侧：顶部按钮行（开始/停止）+ 选项卡（日志/统计/设置）
         self.btn_start = QPushButton('开始')
@@ -1373,21 +1411,44 @@ class MainWindow(QMainWindow):
                 f'（当前 v{result.current_version}）')
             log(f'发现新版本 {result.latest_tag}（当前 v{result.current_version}），'
                 f'下载：{result.release_url}')
-            if manual:
-                QMessageBox.information(
-                    self, '检查更新',
-                    f'发现新版本 {result.latest_tag}（当前 v{result.current_version}）\n'
-                    f'下载地址：{result.release_url}')
         elif result.ok:
             self._update_label.setText(f'当前已是最新版本（v{result.current_version}）')
-            if manual:
-                QMessageBox.information(self, '检查更新', '当前已是最新版本。')
         else:
             self._update_label.setText(result.message)
-            if manual:
-                QMessageBox.warning(self, '检查更新', result.message)
-            else:
+            if not manual:
                 log(result.message)
+        if manual:
+            self._show_update_result_dialog(result)
+
+    def _show_update_result_dialog(self, result) -> None:
+        """手动检查更新的结果弹窗 打开发布页/稍后 两个按钮，
+        点"打开发布页"直接用浏览器打开 Release 页面。"""
+        ok = result.ok
+        if ok and result.has_update:
+            latest = result.latest_tag or f'v{result.latest_version}'
+            title = '发现新版本'
+            text = f'当前版本: v{result.current_version}\n最新版本: {latest}'
+            later_text = '稍后'
+        elif ok:
+            title = '检查完成'
+            text = f'当前版本: v{result.current_version}\n当前已是最新版本。'
+            later_text = '关闭'
+        else:
+            title = '检查失败'
+            text = f'{result.message}\n\n可手动查看发布地址:\n{result.release_url}'
+            later_text = '关闭'
+        box = QMessageBox(self)
+        box.setWindowTitle(title)
+        box.setIcon(QMessageBox.Icon.Information if ok else QMessageBox.Icon.Warning)
+        box.setText(text)
+        box.setStyleSheet(
+            'QLabel { font-size: 13px; padding: 4px 0; }'
+            'QPushButton { min-width: 88px; padding: 4px 14px; }')
+        open_btn = box.addButton('打开发布页', QMessageBox.ButtonRole.AcceptRole)
+        box.addButton(later_text, QMessageBox.ButtonRole.RejectRole)
+        box.exec()
+        if box.clickedButton() is open_btn:
+            QDesktopServices.openUrl(QUrl(result.release_url or APP_RELEASES_URL))
 
     def _get_test_dev(self) -> 'U2Device':
         """测试用 u2 连接：懒加载并复用；adb 路径/序列号变化时自动重建。
