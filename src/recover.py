@@ -22,7 +22,7 @@ from .adb.device import Device
 from .config import EmulatorConfig
 from .emulator import find_instance, launch_instance, restart_instance
 from .progress import log
-from .opener import OpenPetPageError, open_pet_page
+from .opener import OpenPetPageError, open_pet_page, _open_pet_via_scheme, _wait_qq_settle
 from .u2dev import U2Device
 
 # Windows 下隐藏子进程的命令行窗口
@@ -50,6 +50,7 @@ PET_ENTRY_DOUBLE_CLICK_INTERVAL = 0.03  # 紧凑双击两击间隔（秒）：mi
                                         # 本地直发，0.03s 足够压进应用双击窗口
 PET_PAGE_TIMEOUT = 15.0    # 每次点击后等宠物主页加载的超时（秒，冷启动可能要十几秒）
 PET_PAGE_POLL_INTERVAL = 3.0
+SCHEME_TRY_ROUNDS = 2      # 进宠物页先试官方 scheme 直开的轮数（失败回退点击 Q宠-* 入口）
 
 
 def reenter_pet(adb: Device, method: str = "重启设备",
@@ -64,7 +65,9 @@ def reenter_pet(adb: Device, method: str = "重启设备",
     配置的 emulator_restart_cmd > 自动探测模拟器实例分步停/启（src/emulator.py，
     serial 匹配到多个实例时用 emulator_cfg 的 类型/实例名称/安装路径 消歧）>
     回退 adb reboot（MuMu 会卡死 adb 服务，仅兜底）。
-    其余场景点完入口会等宠物主页（"宠物状态"容器）真的加载出来；没出来重新点，
+    其余场景启动 QQ 后先试官方 scheme 直开宠物主页（JumpActivity，零点击；平板身份
+    跳过），失败再回退点 Q宠-* 入口；点完入口会等宠物主页（"宠物状态"容器）真的
+    加载出来；没出来重新点，
     最多 PET_ENTRY_CLICK_TRIES 次。失败抛异常，由调用方决定再次恢复或放弃。
     """
     if method == "重启游戏":
@@ -105,6 +108,24 @@ def reenter_pet(adb: Device, method: str = "重启设备",
         raise RuntimeError('opener 打开宠物主页后未检测到主页标志（"宠物状态"容器）')
     log('启动 QQ...')
     adb.launch_app(QQ_PACKAGE)
+    # 先试官方 scheme 直开宠物主页（JumpActivity，零点击零权限，比点入口稳定）；
+    # 平板身份（ro.build.characteristics 含 tablet）门禁会拦 scheme，跳过直开
+    characteristics = ''
+    try:
+        characteristics = adb.getprop('ro.build.characteristics')
+    except Exception:  # noqa: BLE001 - 读不到按非平板处理，正常尝试
+        pass
+    if 'tablet' not in characteristics.lower():
+        _wait_qq_settle(adb.adb, adb.serial)
+        for attempt in range(1, SCHEME_TRY_ROUNDS + 1):
+            _open_pet_via_scheme(adb.adb, adb.serial)
+            if _wait_main_page(dev):
+                log('已通过官方 scheme 直开进入宠物主页')
+                return dev
+            log(f'scheme 直开后宠物主页未出现，重试 ({attempt}/{SCHEME_TRY_ROUNDS})')
+        log('scheme 直开未成功，回退点击 Q宠-* 入口')
+    else:
+        log(f'设备为平板身份（{characteristics}），跳过 scheme 直开')
     for attempt in range(1, PET_ENTRY_CLICK_TRIES + 1):
         _click_pet_entry(dev)
         if _wait_main_page(dev):

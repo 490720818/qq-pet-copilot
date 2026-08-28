@@ -89,6 +89,13 @@ class Device:
         subprocess.run([self.adb, "connect", target], capture_output=True, timeout=10,
                        creationflags=_NO_WINDOW, check=False)
 
+    def getprop(self, name: str) -> str:
+        """读设备属性（ro.product.model 等），失败/为空返回空串。"""
+        proc = self._run("shell", "getprop", name, check=False)
+        if proc.returncode != 0:
+            return ""
+        return proc.stdout.decode("utf-8", "replace").strip()
+
     def screen_size(self) -> tuple[int, int]:
         out = self._run("shell", "wm", "size").stdout.decode("utf-8", "replace")
         # 形如 "Physical size: 1080x2400"

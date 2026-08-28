@@ -1666,26 +1666,51 @@ class MainWindow(QMainWindow):
     def _fill_devices(self, combo: QComboBox, current: str) -> None:
         """枚举在线 adb 设备填充序列号下拉（可编辑，支持手动输入），
         首项为 自动（第一台）。手动输入的序列号（不在线/模拟器地址）下拉里没有时写回编辑框。
-        另外合并自动扫描到的 MuMu 模拟器实例 serial（离线也列出，供模拟器模式直接选）。"""
+        另外合并自动扫描到的模拟器实例 serial（离线也列出，供模拟器模式直接选）；
+        命中实例的选项在序列号后标注实例名（如 127.0.0.1:5561（MuMuPlayer-12.0-3））；
+        在线但未命中实例的（真机）标注手机型号（ro.product.brand/model）。"""
         combo.clear()
         combo.addItem('自动（第一台）', '')
+        # 先扫模拟器实例：serial -> 实例显示名（在线设备命中也标注；emulator-* 与
+        # 127.0.0.1:port 对偶形态都算命中）
+        names: dict[str, str] = {}
+        scanned: list[str] = []
+        try:
+            from src.emulator import get_serial_pair, scan_instances
+
+            for inst in scan_instances():
+                for serial in inst.serials:
+                    scanned.append(serial)
+                    names.setdefault(serial, inst.name)
+                    names.setdefault(get_serial_pair(serial), inst.name)
+        except Exception as e:
+            log(f'扫描模拟器 serial 失败: {e}')
+
+        def _label(serial: str) -> str:
+            name = names.get(serial)
+            return f'{serial}（{name}）' if name else serial
+
         try:
             from src.adb.device import Device
             from src.config import find_adb
 
             dev = Device(find_adb(load_config().adb.path))
             for serial in dev.online_devices():
-                combo.addItem(serial, serial)
+                label = names.get(serial)
+                if label is None:
+                    # 未命中模拟器实例（真机）：读 ro.product.brand/model 显示手机型号
+                    phone = Device(dev.adb, serial)
+                    brand, model = (phone.getprop('ro.product.brand'),
+                                    phone.getprop('ro.product.model'))
+                    if model:
+                        label = model if brand.lower() in model.lower() \
+                            else f'{brand} {model}'.strip()
+                combo.addItem(f'{serial}（{label}）' if label else serial, serial)
         except Exception as e:
             log(f'枚举设备失败: {e}')
-        try:
-            from src.emulator import scan_serials
-
-            for serial in scan_serials():
-                if combo.findData(serial) < 0:
-                    combo.addItem(serial, serial)
-        except Exception as e:
-            log(f'扫描模拟器 serial 失败: {e}')
+        for serial in scanned:
+            if combo.findData(serial) < 0:
+                combo.addItem(_label(serial), serial)
         idx = combo.findData(current)
         if idx >= 0:
             combo.setCurrentIndex(idx)
@@ -1698,10 +1723,15 @@ class MainWindow(QMainWindow):
         w, kind = self._setting_widgets[key]
         if kind == 'devices':
             # 可编辑下拉：用户手动输入不匹配任何下拉项时，Qt 仍保留上次选中项的
-            # currentData（会误判成已选中的值），所以统一按显示文本保存：
-            # 下拉的“自动（第一台）”项 → ''，其余（在线设备/手动输入）直接用文本本身
+            # currentData（会误判成已选中的值），所以统一按显示文本反查：
+            # 与某选项显示文本一致 → 取该项 data（选项文本带实例名标注，不能直接存）；
+            # 手动输入（不匹配任何选项）直接用文本本身；"自动（第一台）" → ''
             text = w.currentText().strip()
-            value = '' if text == '自动（第一台）' else text
+            idx = w.findText(text)
+            if idx >= 0:
+                value = w.itemData(idx) or ''
+            else:
+                value = '' if text == '自动（第一台）' else text
         elif kind == 'int':
             value = w.value()
         elif kind == 'bool':

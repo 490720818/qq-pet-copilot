@@ -597,9 +597,34 @@ class Runner:
         except Exception as e:
             self._alert_and_exit(f'模拟器模式打开宠物主页失败: {e}')
 
+    def _ensure_pet_page_or_relaunch(self) -> None:
+        '''真机启动检查：识别不到宠物主页面时，不在当前页面按 back（可能根本不在游戏里，
+        back 无意义甚至误退出别的 App），直接走"重启游戏"分支：强停 QQ -> 启动 QQ ->
+        点 Q宠-* 入口进宠物页。启动检查永远走轻量的重启游戏（不受 recover.method
+        配置影响，不重启设备）。失败发告警退出（主页都进不去后续任务无从谈起）。'''
+        try:
+            screen, source = self.school.snapshot()
+            if self.school.see('main_sign', screen, source):
+                log('启动检查：已在宠物主页面')
+                return
+        except Exception as e:
+            log(f'启动检查主页面识别异常: {e}')
+        log('启动检查：未识别到宠物主页面，走重启游戏分支（启动 QQ -> 点宠物入口）')
+        try:
+            dev = reenter_pet(self.school.dev.adb, '重启游戏')
+        except Exception as e:
+            self._alert_and_exit(f'启动进入宠物页失败: {e}')
+            return
+        for scen in (self.school, self.work, self.adventure, self.care, self.visit, self.pk,
+                     self.friend_care, self.hire_friend, self.employed):
+            scen.dev = dev
+        log('启动检查：已进入宠物主页面')
+
     def run(self) -> None:
         if self.use_opener and not self.skip_opener:
             self._open_pet_page_or_exit()
+        elif not self.use_opener:
+            self._ensure_pet_page_or_relaunch()
         school_dead = False  # 学习今天不再可用（达上限/没有课程/执行失败）
         work_dead = False    # 打工今天不再可用
         adventure_dead = False  # 冒险今天不再可用（执行失败）
@@ -930,6 +955,8 @@ class TaskQueueRunner(Runner):
     def run(self) -> None:
         if self.use_opener and not self.skip_opener:
             self._open_pet_page_or_exit()
+        elif not self.use_opener:
+            self._ensure_pet_page_or_relaunch()
         tasks: dict[str, _QueueTask] = {}
         order: list[str] = []
         self._apply_tasks_config(tasks, order)
