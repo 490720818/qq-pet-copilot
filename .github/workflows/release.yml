@@ -96,7 +96,7 @@ jobs:
         env:
           PYTHONIOENCODING: utf-8
         run: |
-          # 模拟器版：内置 hook JS + frida-server 离线包 + frida（build.py --emulator 会自动下载缺失的 frida-server）
+          # 模拟器版：内置 frida 客户端（opener 兜底注入用；frida-server xz 不随包，兜底触发时按提示放置）
           python build.py --emulator
 
       - name: Prepare package asset
@@ -239,7 +239,7 @@ jobs:
           $body += '| 文件 | 说明 |'
           $body += '| --- | --- |'
           $body += '| `QQPetCopilot.exe` | 普通版：真机（物理手机）使用，标准自动化托管，无需 Root。 |'
-          $body += '| `QQPetCopilotEmulator.exe` | 模拟器版：Root 模拟器（MuMu/雷电 等）使用；内置 qqpet-module-opener hook + frida-server 离线包，绕过模拟器 QQ 搜索卡片空入口打开宠物主页，并保持 hook 注入以支持频繁好友访问/踩踩/PK。 |'
+          $body += '| `QQPetCopilotEmulator.exe` | 模拟器版：模拟器（MuMu/雷电 等）使用；内置零注入 opener（MuMu 机型伪装 / 门禁补丁 + 官方 scheme 直开，frida 仅一次性兜底），解决模拟器 QQ 搜索卡片没有宠物入口的问题。Root 按需：日常运行不需要 Root，仅首次打门禁补丁或兜底注入时临时开一次。 |'
           $body += ''
           $body += '---'
           $body += ''

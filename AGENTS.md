@@ -23,8 +23,8 @@ $PY main.py                      # GUI（scrcpy 嵌入 + 调度控制）
 $PY scenarios/runner.py          # 控制台调度器
 $PY scenarios/runner.py --test <target>   # 单模块测试：coins / recover / opener / school.X / work.X / adventure.X / care.X / friend_care.X / hire_friend.X
 $PY build.py                     # PyInstaller 打包（onefile），--onedir 目录模式
-$PY build.py --emulator          # 模拟器版（内置 hook JS + frida-server 离线包 + frida），--all 普通版+模拟器版一起打
-# 模拟器模式（Root 模拟器）：main.py / runner.py 加 --emulator [--emulator-device 127.0.0.1:7555]
+$PY build.py --emulator          # 模拟器版（内置 frida 客户端；frida-server xz 不随包，兜底触发时按提示放到 exe 旁 runs/resources/frida-server/），--all 普通版+模拟器版一起打
+# 模拟器模式：main.py / runner.py 加 --emulator [--emulator-device 127.0.0.1:7555]（Root 按需，见 src/opener.py 行）
 ```
 
 - 无设备测试：用 `DeviceScenario.__new__(DeviceScenario)` 跳过 u2 设备连接，
@@ -54,7 +54,7 @@ $PY build.py --emulator          # 模拟器版（内置 hook JS + frida-server 
 | `src/version.py` / `src/update_checker.py` | 版本常量（`APP_VERSION`/`APP_GITHUB_REPO`，release 工作流打包前由 `tools/write_version.py --tag <tag>` 写入）；GitHub `releases/latest` 更新检查（纯 stdlib urllib，版本号分段比较） |
 | `src/progress_store.py` | 进度文件统一管理（`runs/*_progress.json`）：跨天规整（旧日期次数归档进 history、清掉旧日期的 `study_secs/work_secs`；`school/duration` 作为会话元数据跨天保留供跨零点结算累计）、原子写入（先写 `.tmp` 再 `os.replace`，进程被杀不留损坏文件）、损坏兜底（解析失败备份成 `*.corrupted.bak` 后按空档继续）；全部进度读写走这里，`src/progress.py` 只做兼容层 |
 | `src/progress.py` | 进度持久化对外兼容入口（常量 + 日志 + 各场景函数签名，内部转发 `src/progress_store.py`）：`log()`（控制台+文件+监听器）、`load_progress/save_progress/increment_progress`（含 history 跨天归档）、`count_cross` 交叉计数、学习/工作时长累计与迁移；进度文件固定 `runs/*.json` 单文件（曾按账号重定向到 `runs/accounts/<账号>/`，账号名靠状态面板 OCR 识别不稳定、数据被拆散，已取消多账号区分） |
-| `src/opener.py` | 模拟器模式集成：自实现设备/Root/frida-server/启动 QQ/注入全流程（frida Python API），hook JS 从 `assets/qqpet-module-opener/open_qqpet_module.js` 读取（只保留上游这一个 JS，手动更新）；Frida 17 起 Java 桥不再内置，注入前用 frida-tools 的 `frida-java-bridge`（`frida_tools/bridges/java.js`，打包时随包）包一层暴露全局 `Java` 再拼 hook；打开宠物主页后**保持注入不解除**（`_KEEPALIVE` 持有引用防 GC，好友访问/踩踩/PK 的 doAction 接管持续生效），注入前 `_wait_qq_settle` 等 QQ 启动稳定；`_start_qq` 冷启动会重试 `am start`（`START_QQ_ATTEMPTS`=3），轮询 `pidof` 前先确认设备在线，adb 抖动不误判成"QQ 没启动"；注入失败（script is destroyed/会话断开/SDK 超时）会强停 QQ 重试 `OPEN_PET_ATTEMPTS`=3 次；frida 设备发现加固（`_frida_device`）：项目 adb 目录前置 PATH（frida 枚举 adb 设备用 PATH 里的 adb）+ 每次重试前 `get-state`/重连确认设备在线 + `get_device` 重试 2 次 + 兜底 `adb forward tcp:27042` + frida remote device（模拟器刚开机 frida adb 枚举不稳时） |
+| `src/opener.py` | 模拟器模式集成（**零注入方案**：MuMu 机型伪装 / 设备门禁本地翻转 + 官方 scheme 跳转，旧版常驻 frida 注入被 QQ 风控"使用外挂插件"）：**Root 按需**——`_has_root()` 软检查（`su -c id`），有 Root 才做 `ensure_device_spoof()` 伪装重挂与 MMKV 补丁自检，无 Root 直接 scheme 直开（伪装/补丁都已持久化的设备日常零权限运行；scheme 失败且无 Root 时报错提示开一次 Root 打补丁，之后可永久关闭）伪装改 MuMu app 级机型映射（`/system/etc/mumu-configs/app-device-prop-*.config` 里 QQ 行从 `yyb.config` 原始模拟器 dump 换成真实手机 profile，root `mount --bind` 覆盖，重启模拟器失效、每次运行幂等重挂，非 MuMu 静默跳过），QQ 以真机身份运行、门禁原生通过、搜索卡片"宠物"入口可用；无伪装时模拟器被 QQ 判成 TABLET（`ro.build.characteristics` 含 tablet），门禁 `PetQQMC.e()` 读 UnitedConfig 107805 的 `enable_tablet`（默认 0）拦截官方跳转，此时 `ensure_gate_open()` 用 root 改本地 MMKV 缓存（`united_config_mmkv_<uin>` 追加 `enable_tablet:1` 记录 + 重算 CRC，`_patch_gate_mmkv` 有格式自检，不符就放弃不冒损坏风险）翻转门禁兜底；然后 `am start -a VIEW -d "mqqapi://qpet/open?..."`（JumpActivity，普通 shell 可发）由 QQ 官方路径打开宠物主页并初始化 SDK；三级调度：scheme 直开 → MMKV 补丁后 scheme → frida 一次性 SDK init + `am_start_pet_page` fragment 直开兜底（伪装名 `perf_daemon`、随机端口、几秒注入窗口，格式变化时启用）；`EMULATOR_MODE`/`GATE_OPEN` 标记由 `run_scheduler`/`--test`/`open_pet_page` 置位，visit 据此选游戏内导航或 am start 好友入口分支；好友入口 uin 由 `ensure_friend_entry()` 一次性注入捕获缓存 `runs/friend_entry.json`（仅兜底模式需要）；`_start_qq` 冷启动重试（`START_QQ_ATTEMPTS`=3）；QQ 服务端重发 107805 会覆盖补丁，每次启动自检重补 |
 | `src/status_cache.py` | 宠物状态缓存（`runs/status_cache.json`，单 default 条目——曾按账号名称组织兼容多账号，账号 OCR 误识别导致状态条多行，已取消）：体力/清洁/心情（care 状态面板 OCR 后）、金币（主页 OCR 后）、香皂/饼干（喂食/洗澡结束时 OCR 控件附近小图；库存角标无文字，取离 `feed_10`/`shower_10` 控件最近的数字）；一键护理后清空体力/清洁/心情/饼干/香皂；GUI 日志页顶部状态条每秒读一次 |
 | `src/queue_status.py` | 任务队列状态缓存（`runs/queue_status.json`）：TaskQueueRunner 每轮调度后写当前任务/下一任务（含等待点时间，HH:MM:SS + next_ts 时间戳，GUI 显示"xx秒后"倒计时）/待执行数量（在等退避/每日窗口/pending 收尾时间，主任务组 pending 也算一项）/等待中数量（现在就可执行、等调度器轮到），执行中任务在 `_execute` 里先写一次；GUI 状态条加一行每秒读一次（调度器未运行时不读，显示"调度器未运行"）；legacy 引擎不写 |
 | `src/config.py` | dataclass 配置 + 路径规划：`APP_ROOT`（可写）/ `RESOURCE_ROOT`（包内资源），`resource_path()` APP_ROOT 优先 |
@@ -62,12 +62,11 @@ $PY build.py --emulator          # 模拟器版（内置 hook JS + frida-server 
 | `src/notify.py` | 失败告警通知：Windows Toast（winotify）+ OnePush 多渠道推送（Bark/PushPlus/Server酱/SMTP/自定义 webhook 等），发送失败只记日志 |
 | `tools/dump_hierarchy.py` | 抓当前屏幕控件树 XML 存到 `xml/page.xml`（校准 locators 的 xpath/content-desc 用；`xml/` 已 git 排除） |
 | `tools/fetch_scrcpy.py` | 从官方 GitHub Release 下载解压 scrcpy（win64）到 `resources/scrcpy-win64/`（不入库）；`--version` 指定版本、`--force` 强制覆盖，build.py / CI 打包前自动调用 |
-| `tools/fetch_frida_server.py` | 下载 frida-server 离线包到 `resources/frida-server/`（不入库）；`--version`/`--arch`（可多个）/`--force`，GitHub 直连失败自动试镜像；源码运行 `src/opener.py` 缺失时自动调用，build.py --emulator 打包前也会调用 |
+| `tools/fetch_frida_server.py` | 下载 frida-server 离线包到 `resources/frida-server/`（不入库）；`--version`/`--arch`（可多个）/`--force`，GitHub 直连失败自动试镜像；源码运行 `src/opener.py` 缺失时自动调用（xz 不随 exe 打包，打包版兜底触发时按提示手动放置） |
 | `tools/fetch_minitouch.py` | 下载 minitouch 预编译二进制到 `resources/minitouch/minitouch-<abi>`（不入库，jsDelivr/unpkg/GitHub 多源）；`--arch`（可多个）/`--force`；源码运行 `src/u2dev.py` 控制方案选 minitouch 且缺失时自动调用，build.py 打包前也会调用 |
-| `assets/qqpet-module-opener/` | hook JS（取自上游，QQ 更新后手动同步，入库） |
-| `resources/` | 第三方二进制/离线包（不入库）：`scrcpy-win64/`（tools/fetch_scrcpy.py 拉取）、`frida-server/`（离线 xz，build.py --emulator 打包时带上）、`minitouch/`（minitouch 二进制，tools/fetch_minitouch.py 拉取，普通版/模拟器版都带上） |
+| `resources/` | 第三方二进制/离线包（不入库）：`scrcpy-win64/`（tools/fetch_scrcpy.py 拉取）、`frida-server/`（离线 xz，不随 exe 打包，兜底触发时手动放置/源码运行自动下载）、`minitouch/`（minitouch 二进制，tools/fetch_minitouch.py 拉取，普通版/模拟器版都带上） |
 | `tools/test_locator.py` | 测试 locator 的 xpath 在当前页面的命中稳定性（连设备连续多轮 dump，统计 live/snapshot 两种调用方式的命中率与 bounds 漂移，定位深层 xpath 时有时无/位置漂移问题） |
-| `tools/capture_visit_jump.py` | 抓取 QQ 宠物"访问好友"跳转参数（doJumpAction URL + doAction attrs），真机/模拟器对比、QQ 更新后排查用；`-s` 设备、`-c` 自动点 好友->访问 |
+| `tools/capture_visit_jump.py` | 抓取 QQ 宠物"访问好友"跳转参数（doJumpAction URL + doAction attrs），真机/模拟器对比、QQ 更新后排查用；`-s` 设备、`-c` 自动点 好友->访问；frida-server 按 opener 的隐身方式自动部署（伪装名 + 随机端口，用完即杀） |
 
 ## 关键约定（改动时必须遵守）
 
@@ -263,14 +262,48 @@ $PY build.py --emulator          # 模拟器版（内置 hook JS + frida-server 
   **被雇佣时间段内主任务（冒险/学习/打工/雇佣好友）不触发**（队列 `_main_choice`
   返回 None，pending 收尾不受影响；legacy 跳过冒险/雇佣好友/学习打工段睡到下次检查）。
 - 控制台中文乱码是 Windows GBK 终端显示问题，日志文件（UTF-8）里是正常的，不要当 bug 修。
-- **模拟器模式**（`--emulator`）：模拟器里 QQ 搜索卡片的宠物入口是空的（点不到 `Q宠-*`），
-  由 `src/opener.py` 用 frida 注入已登录 QQ 进程直接打开宠物主页。
-  上游 qqpet-module-opener 只保留 hook JS（`assets/qqpet-module-opener/open_qqpet_module.js`），
-  QQ 版本兼容性修复都在这个 JS 里，QQ 更新打不开时从上游手动同步该文件后重新打包。
-  frida-server 默认离线打包 x86_64（`resources/frida-server/frida-server-<版本>-android-x86_64.xz`，
-  不入库）；frida 客户端版本必须与它一致（`requirements.txt` 的 `frida` 与 `build.py` 的 `FRIDA_VERSION`）。
+- **模拟器模式**（`--emulator`）：模拟器里 QQ 搜索卡片的宠物入口默认是空的（点不到
+  `Q宠-*`），由 `src/opener.py` 打开宠物主页。**当前方案零注入**（旧版全程常驻 frida
+  注入被 QQ 风控"使用外挂插件"，详见 `src/opener.py` 模块 docstring），分级：
+  0. **MuMu 机型伪装映射改写**（`ensure_device_spoof`，启动 QQ 前执行，首选）：
+     MuMu 的 `/system/etc/mumu-configs/app-device-prop-*.config`（按 Android 版本
+     命名，多个匹配取实际含 QQ 行的）是"包名正则
+     →机型 profile"映射，QQ（`com.tencent.mobileqq`）被故意喂 `yyb.config`（完整
+     caas/Intel/AOSP/tablet 属性 dump），注入机制是 QQ 进程里的 MuMu hook lib
+     （libnemuinitaidl.so/libjavahelper.so）；把 QQ 行改成目录里已有的真实手机
+     profile（含 `ro.build.characteristics=default`，优先 `honor_magic4pro.config`），
+     QQ 进程重启即按真机身份运行——门禁原生通过，搜索"QQ宠物"卡片出现"宠物"功能
+     入口、双击即进宠物主页，与真机完全一致。/system 硬只读（USER 固件无
+     disable-verity），只能 root `mount --bind` 覆盖（暂存
+     `/data/local/tmp/qqpet_adp.config`），**重启模拟器后失效需重挂**（函数幂等，
+     每次 opener 运行自动检查重挂）；非 MuMu 设备静默跳过；
+  1. 无伪装时模拟器被 QQ 判成 TABLET（`ro.build.characteristics` 含 tablet），
+     宠物设备门禁 `PetQQMC.e()` 读 UnitedConfig 107805 配置的 `enable_tablet`
+     （默认 0）拦截一切官方跳转；opener 用 root 直接改 UnitedConfig 本地 MMKV 缓存
+     （`files/mmkv/united_config_mmkv_<uin>`，append-only 追加一条 `enable_tablet:1`
+     的 `107805_key_content` 记录 + 重算 CRC 元文件）本地翻转门禁；
+  2. 然后官方 scheme `am start -a VIEW -d "mqqapi://qpet/open?version=1&src_type=app&source=1"`
+     （JumpActivity，exported，普通 shell 可发）由 QQ 自己打开宠物主页并初始化宠物 SDK。
+  调度三级：scheme 直开（伪装/补丁持久，二次运行零写盘）→ MMKV 补丁后 scheme →
+  frida 一次性 SDK init + am start fragment 兜底（QQ 大改版 MMKV 格式变化时）。
+  注意：QQ 服务端重新下发 107805 配置会覆盖补丁，opener 每次启动自检重补（幂等）；
+  **Root 按需**（`_has_root()` 软检查）：伪装重挂、MMKV 补丁自检/重补、frida 兜底
+  都只在有 Root 时执行；无 Root 直接 scheme 直开——伪装（bind-mount 每次开机由
+  opener 重挂）与 MMKV 补丁（QQ 数据盘持久）都已在有 Root 时打过一次后，日常运行
+  可永久关闭 Root（实测 MuMu/雷电9 关 Root 后 scheme 直开均正常）；scheme 失败且
+  无 Root 才报错提示临时开一次 Root 补补丁。
+  scheme 打开的宠物页宿主是 `AdelieFragmentActivity`（am start fragment 是
+  `QPublicFragmentActivity`），渲染判定两种都认。
+  好友访问（踩踩/PK/好友护理/好友雇佣）：门禁翻转后（`opener.GATE_OPEN=True`）
+  游戏内 好友->访问 与真机一致直接可用；仅 frida 兜底模式（门禁仍关）才走
+  `visit.py` 的 `_goto_first_friend_emulator`（am start 直开 + `runs/friend_entry.json`
+  入口缓存）。
+  frida-server xz 不随 exe 打包（省 ~32MB）：兜底触发时按提示把
+  `frida-server-<版本>-android-<架构>.xz` 放到 exe 旁 `runs/resources/frida-server/`
+  （`tools/fetch_frida_server.py` 下载，源码运行缺失时自动联网下载）；
+  frida 客户端版本必须与它一致（`requirements.txt` 的 `frida` 锁定版本）。
   Frida 17 起 `Java` 桥不再内置在运行时里（脚本里没有全局 `Java`），注入前由
-  `_wrap_java_bridge` 把 frida-tools 的 `frida-java-bridge` 暴露为全局 `Java` 再拼 hook；
+  `_wrap_java_bridge` 把 frida-tools 的 `frida-java-bridge` 暴露为全局 `Java` 再拼 init 脚本；
   frida-tools 版本随 frida 一起锁定（`requirements.txt`），普通版打包时排除 frida_tools。
   模拟器模式下启动与 `recover()` 都走 opener 打开宠物主页（`src/recover.py` 的 `use_opener` 分支），
   不再依赖 `Q宠-*` 入口；GUI 手动重启恢复成功后再拉起调度器会传 `--skip-opener`

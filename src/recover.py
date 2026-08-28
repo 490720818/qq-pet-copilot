@@ -59,7 +59,7 @@ def reenter_pet(adb: Device, method: str = "重启设备",
     """按 recover.method 恢复：重启设备 或 重启游戏，再进宠物页面，返回新 U2Device。
 
     模拟器模式（use_opener=True）：QQ 搜索卡片的宠物入口是空的（点不到 Q宠-*），
-    改用 qqpet-module-opener（frida 注入）打开宠物主页，由 opener 负责启动 QQ。
+    改用 opener（一次性 SDK 初始化 + root am start 直开）打开宠物主页，由 opener 负责启动 QQ。
     模拟器不支持 adb reboot（MuMu 会把 adb 服务卡死）："重启设备"分支按优先级——
     配置的 emulator_restart_cmd > 自动探测模拟器实例分步停/启（src/emulator.py，
     serial 匹配到多个实例时用 emulator_cfg 的 类型/实例名称/安装路径 消歧）>
@@ -85,8 +85,8 @@ def reenter_pet(adb: Device, method: str = "重启设备",
         dev = _connect_u2(adb)
         _unlock(dev)
     if use_opener:
-        # 模拟器：不点 Q宠-* 入口（搜索卡片空入口），frida 注入直接打开宠物主页
-        log('异常恢复：模拟器模式，用 qqpet-module-opener 打开 QQ 宠物主页...')
+        # 模拟器：不点 Q宠-* 入口（搜索卡片空入口），opener 一次性初始化 + am start 直开
+        log('异常恢复：模拟器模式，正在打开 QQ 宠物主页...')
         try:
             open_pet_page(serial=opener_serial or adb.serial, adb_path=adb.adb)
         except OpenPetPageError as e:

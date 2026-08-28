@@ -52,7 +52,7 @@
   主任务当天结束后若还有延后重试的支线任务，调度器睡到重试点继续，不提前退出
 
 模拟器（Root 模拟器）：python scenarios/runner.py --emulator [--emulator-device 127.0.0.1:7555]
-  （QQ 搜索卡片空入口打不开宠物主页，用 qqpet-module-opener frida 注入打开）
+  （QQ 搜索卡片空入口打不开宠物主页，opener 一次性初始化 SDK 后 root am start 直开）
 
 运行：python scenarios/runner.py                     （调度循环，Ctrl+C 停止）
 单测：python scenarios/runner.py --test coins         （只测主页金币识别）
@@ -81,6 +81,7 @@ from src.config import (
     load_config,
 )
 from src.notify import send_alert
+from src import opener
 from src.opener import open_pet_page
 from src.ocr import get_engine
 from src.progress import (
@@ -139,7 +140,7 @@ def parse_hhmm(value, field: str):
 class Runner:
     def __init__(self, use_opener: bool = False, opener_serial: str | None = None,
                  skip_opener: bool = False):
-        '''use_opener: 模拟器模式，用 qqpet-module-opener（frida 注入）打开宠物主页；
+        '''use_opener: 模拟器模式，用 src/opener.py（一次性 SDK 初始化 + am start 直开）打开宠物主页；
         opener_serial: 模拟器 ADB 地址（如 127.0.0.1:7555），默认用 config 的 adb.device_serial；
         skip_opener: 宠物主页已打开（如 GUI 手动重启刚恢复完），启动时跳过 opener 打开。'''
         self.use_opener = use_opener
@@ -581,7 +582,7 @@ class Runner:
         '''模拟器模式启动：QQ 搜索卡片空入口无法手动进宠物主页，先由 opener 打开。
 
         失败视为硬故障（模拟器上没宠物主页后续任务无从谈起），发告警后退出调度器。'''
-        log('模拟器模式：正在用 qqpet-module-opener 打开 QQ 宠物主页...')
+        log('模拟器模式：正在打开 QQ 宠物主页（一次性初始化 + intent 直开）...')
         try:
             serial = self.opener_serial or self.school.dev.adb.serial
             open_pet_page(serial=serial, adb_path=self.school.dev.adb.adb)
@@ -1472,7 +1473,7 @@ def run_test(name: str) -> None:
         log('recover 测试完成')
         return
     if name == 'opener':
-        # 模拟器：直接用 qqpet-module-opener 打开宠物主页（绕过空搜索入口）
+        # 模拟器：opener 一次性初始化 SDK 后 root am start 直开宠物主页（绕过空搜索入口）
         from src.opener import open_pet_page as _open
         cfg = load_config()
         _open(serial=cfg.adb.device_serial or None, adb_path=find_adb(cfg.adb.path))
@@ -1504,6 +1505,8 @@ def run_scheduler(use_opener: bool, opener_serial: str | None = None,
         log(f'runner.engine 配置无效: {engine!r}，使用默认 task_queue')
         engine = 'task_queue'
     log(f'调度引擎: {engine}')
+    # 模拟器模式标记：visit 等场景据此走 am start 好友入口分支（src/opener.py）
+    opener.EMULATOR_MODE = use_opener
     runner_cls = TaskQueueRunner if engine == 'task_queue' else Runner
     runner_cls(use_opener=use_opener, opener_serial=opener_serial,
                skip_opener=skip_opener).run()
@@ -1526,6 +1529,8 @@ if __name__ == '__main__':
     args = ap.parse_args()
 
     if args.test:
+        # 单测也同步模拟器模式标记（visit 等场景走 am start 好友入口分支）
+        opener.EMULATOR_MODE = args.emulator or (is_emulator_build() and not args.no_emulator)
         run_test(args.test)
     else:
         if args.emulator:

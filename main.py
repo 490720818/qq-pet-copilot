@@ -543,7 +543,7 @@ class MainWindow(QMainWindow):
         self.emulator_mode = emulator_mode
         self.emulator_device = emulator_device
         if emulator_mode:
-            log('模拟器模式：调度器将用 qqpet-module-opener 打开 QQ 宠物主页')
+            log('模拟器模式：调度器将用 opener（一次性初始化 + intent 直开）打开 QQ 宠物主页')
         self.setWindowTitle(f'QQ 宠物自动化助手 v{APP_VERSION}'
                             + ('（模拟器版）' if emulator_mode else ''))
         self.resize(1200, 750)

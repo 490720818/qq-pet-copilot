@@ -3,6 +3,8 @@
 流程（u2 控件定位，分辨率无关）：
 1. 点击 好友（visit_friends）打开好友面板
 2. 点击 访问（visit）进入第一个好友的宠物页
+   （模拟器模式：门禁已翻转（scheme 路径）时与真机一致；门禁未翻转
+   （frida 兜底）时改为 root am start 直开好友页，见 goto_first_friend）
 3. 点击 踩踩（visit_step），当天次数 +1 并持久化到 runs/visit_progress.json
    （访问进入时默认就是好友列表的第一个好友）；
    若出现已踩标志（visit_stepped，"已踩"——今天已踩过该好友），
@@ -28,6 +30,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from src import opener
 from src.locators import LOCATORS, see_bounds
 from src.ocr import ocr_texts
 from src.progress import (
@@ -41,7 +44,7 @@ from src.progress import (
     save_exp_daily,
     save_progress,
 )
-from src.scenario import CLICK_INTERVAL, DeviceScenario
+from src.scenario import CLICK_INTERVAL, NAV_TIMEOUT, DeviceScenario
 from scenarios.care import ONE_CLICK_PAY_RETRIES
 
 FRIEND_ITEM_XPATH = LOCATORS['visit_friend_item']['xpath'][0]
@@ -60,10 +63,39 @@ class VisitScenario(DeviceScenario):
     # ---- 各阶段 ----
 
     def goto_first_friend(self) -> None:
-        """好友面板 -> 访问 -> 第一个好友宠物页（出现踩踩按钮）。"""
+        """好友面板 -> 访问 -> 第一个好友宠物页（出现踩踩按钮）。
+
+        模拟器模式（opener.EMULATOR_MODE）：门禁已本地翻转（opener.GATE_OPEN，
+        scheme 路径）时游戏内"访问"与真机一致直接可用；仅当走了 frida 兜底
+        （门禁仍关）才用 root am start 直开好友宠物页
+        （petUin=好友入口缓存的 uin + attrs，见 src/opener.py）。
+        """
+        if opener.EMULATOR_MODE and not opener.GATE_OPEN:
+            self._goto_first_friend_emulator()
+            return
         self.click_until_gone_or_see('visit_friends', 'visit', '打开好友列表')
         # 不额外等固定 1 秒：点访问靠 click_until_gone_or_see 重试（点不中下一轮再点）
         self.click_until_gone_or_see('visit', 'visit_step', '访问好友')
+
+    def _goto_first_friend_emulator(self) -> None:
+        """模拟器 frida 兜底（门禁未翻转）：am start 直开好友宠物页；
+        缓存失效则重新捕获一次再试。"""
+        adb = self.dev.adb.adb
+        serial = self.dev.adb.serial
+        for attempt in (1, 2):
+            entry = opener.ensure_friend_entry(adb, serial, self.dev)
+            opener.am_start_pet_page(adb, serial, entry['uin'], entry['attrs'])
+            # 等好友页渲染（踩踩/已踩 按钮出现）。好友页 chrome（按钮/好友列表）
+            # 首次加载偏慢（实测可能 >10 秒），等待轮数给足 NAV_TIMEOUT*2
+            for _ in range(NAV_TIMEOUT * 2):
+                source = self.dev.hierarchy()
+                if (self.see('visit_step', source=source)
+                        or self.see('visit_stepped', source=source)):
+                    return
+                time.sleep(CLICK_INTERVAL)
+            opener.invalidate_friend_entry()
+            log(f'am start 进好友页超时，好友入口缓存可能失效，重新捕获 ({attempt}/2)')
+        raise RuntimeError('好友页未找到踩踩按钮（am start 直开 + 重新捕获均失败）')
 
     def step_once(self) -> str:
         """点一次踩踩，返回 'stepped'；检测到已踩标志（今天踩过该好友）

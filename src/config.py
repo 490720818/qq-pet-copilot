@@ -387,7 +387,7 @@ def load_config(config_path: str | Path | None = None) -> Config:
 def is_emulator_build() -> bool:
     """是否为打包的模拟器版（build.py --emulator 内置 emulator_mode.txt 标记）。
 
-    模拟器版 exe 启动后默认开启模拟器模式（用 qqpet-module-opener 打开宠物主页）；
+    模拟器版 exe 启动后默认开启模拟器模式（opener 一次性初始化 + am start 直开宠物主页）；
     普通版/源码运行时为 False，可用 --emulator / --no-emulator 命令行参数覆盖。
     """
     if not getattr(sys, "frozen", False):

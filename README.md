@@ -49,7 +49,8 @@ PyQt6 图形界面内嵌 scrcpy 实时画面，任务队列自动调度，按金
   非 Root/SELinux 不可用时会自动回退 injectInputEvent 并写回配置。
 - **异常自动恢复**：页面错乱先回主页面重进场景自愈，仍失败走"重启设备/重启游戏"
   （模拟器多实例自动探测分步停/启）→ 重开 QQ → 回宠物页；模拟器模式用
-  qqpet-module-opener（frida 注入）打开宠物主页并**保持注入**（好友访问/踩踩/PK 持续可用）；
+  内置 opener **零注入**打开宠物主页（MuMu 机型伪装 / 门禁 MMKV 补丁 + 官方 scheme 直开，
+  frida 仅作一次性兜底、不常驻注入，旧版常驻注入会被 QQ 风控"使用外挂插件"）；
   模拟器重启后 adb 抖动会先等回线，不再误判整机重启；多开实例互不干扰。
 - **失败告警通知**：主任务多次重试仍失败时发 Windows Toast + OnePush 多渠道推送
   （Bark / PushPlus / Server酱 / SMTP / 自定义 webhook），并附当前手机截图。
@@ -71,15 +72,19 @@ PyQt6 图形界面内嵌 scrcpy 实时画面，任务队列自动调度，按金
 
 1. 打开 [Releases 发布页](https://github.com/490720818/qq-pet-copilot/releases)，下载对应版本并解压：
    - `QQPetCopilot-<版本>-windows-x64.zip` —— **普通版**：真机（物理手机）使用，无需 Root；
-   - `QQPetCopilotEmulator-<版本>-windows-x64.zip` —— **模拟器版**：Root 模拟器（MuMu/雷电 等）使用，
-     内置 qqpet-module-opener hook + frida-server 离线包，绕过模拟器 QQ 搜索卡片空入口。
+   - `QQPetCopilotEmulator-<版本>-windows-x64.zip` —— **模拟器版**：模拟器（MuMu/雷电 等）使用，
+     内置零注入 opener（MuMu 机型伪装 / 门禁补丁 + 官方 scheme 直开，frida 仅一次性兜底），
+     解决模拟器 QQ 搜索卡片没有宠物入口的问题。
    - **模拟器版使用前提**：推荐使用最新版本 MuMu 模拟器（下载地址 [https://mumu.163.com/](https://mumu.163.com/)），
      模拟器内安装 **QQ 9.3.25 及以上版本**并登录账号后，再开启脚本。
+     **Root 按需**：日常运行不需要 Root（机型伪装/门禁补丁持久化后零权限可用）；
+     仅首次打门禁补丁或兜底注入时需要临时开一次 Root，之后可永久关闭。
 2. 双击解压出的 `QQPetCopilot.exe` / `QQPetCopilotEmulator.exe` 启动：
-   - 首次运行会自动在 exe 旁生成 `config.yaml` 和 `runs/` 目录；scrcpy、OCR 模型、frida-server、
-     minitouch 等资源都已打进包内，无需联网下载。
+   - 首次运行会自动在 exe 旁生成 `config.yaml` 和 `runs/` 目录；scrcpy、OCR 模型、
+     minitouch 等资源都已打进包内，无需联网下载（frida-server xz 不随包，兜底注入
+     触发时按日志提示放置或自动下载）。
    - Windows 若提示"已保护你的电脑"，点"更多信息 → 仍要运行"（exe 未签名属正常现象）。
-3. 手机开 USB 调试并连接电脑（或启动 Root 模拟器），在 GUI 设置页（或直接编辑 exe 旁的 `config.yaml`）填好 `adb.device_serial`。
+3. 手机开 USB 调试并连接电脑（或启动模拟器），在 GUI 设置页（或直接编辑 exe 旁的 `config.yaml`）填好 `adb.device_serial`。
 4. 点**开始**运行。模拟器版 exe 启动即默认模拟器模式，无需带参数。
    - **多开**（多台设备 / 多个账号）：把整个解压目录复制成多份，每份配置各自的设备序列号，
      各实例的 `config.yaml` / `runs/` 互相独立，互不影响。
@@ -103,10 +108,11 @@ python -m venv .venv
 ```
 
 GUI 打开后自动嵌入手机画面，点**开始**启动调度器（子进程），点**停止**立即结束。
-（scrcpy、模拟器版的 frida-server、minitouch 首次运行缺失时会自动下载到 `resources/`，无需手动拉取；
-如需手动拉取也可运行 `tools/fetch_scrcpy.py` / `tools/fetch_frida_server.py` / `tools/fetch_minitouch.py`。）
+（scrcpy、minitouch 首次运行缺失时会自动下载到 `resources/`，无需手动拉取；frida-server
+仅模拟器兜底注入需要，缺失时同样自动下载。如需手动拉取可运行 `tools/fetch_scrcpy.py` /
+`tools/fetch_frida_server.py` / `tools/fetch_minitouch.py`。）
 
-**模拟器模式**（Root 模拟器，如 MuMu）：推荐使用最新版本 MuMu 模拟器（下载地址
+**模拟器模式**（如 MuMu / 雷电）：推荐使用最新版本 MuMu 模拟器（下载地址
 [https://mumu.163.com/](https://mumu.163.com/)），模拟器内安装 **QQ 9.3.25 及以上版本**并登录账号后再启动；
 QQ 搜索卡片打不开宠物主页时，带参数启动：
 
@@ -116,12 +122,22 @@ QQ 搜索卡片打不开宠物主页时，带参数启动：
 ```
 
 `--emulator-device` 可省略（默认用 `config.yaml` 的 `adb.device_serial`，模拟器填 127.0.0.1:7555 这类地址）。
-首次运行会把内置的 frida-server 推送到模拟器并启动（需已开启 Root 与 ADB）；源码运行时若
-`resources/frida-server/` 里没有 xz，会自动用 `tools/fetch_frida_server.py` 下载（GitHub 失败自动试镜像），
-`main.py` 启动时也会后台检查补齐 scrcpy / frida-server / minitouch。
-**打开宠物主页后 hook 保持注入不解除**（好友访问/踩踩/PK 的跳转接管需要持续生效；
-QQ 重启后恢复流程会自动重新注入）。注入前会等 QQ 启动稳定（避免被启动流程顶回主界面）。
-（Frida 17 起 Java 桥不再内置，注入前会自动用 `frida-tools` 自带的 `frida-java-bridge` 补桥，效果与上游一致。）
+模拟器模式由内置 opener 打开宠物主页，**零注入、Root 按需**，三级方案依次尝试：
+
+1. **官方 scheme 直开**（`mqqapi://qpet/open`，普通 shell 权限）——MuMu 上先做机型伪装
+   （有 Root 时改写 app 级机型映射，QQ 以真机身份运行，门禁原生通过）；
+2. scheme 失败且有 Root → 改 QQ 本地 MMKV 缓存翻转平板设备门禁（`enable_tablet=1`）后再 scheme；
+3. 仍失败 → frida 一次性 SDK 初始化兜底（伪装名 frida-server、随机端口、几秒注入窗口，
+   用完即杀，**不常驻注入**——旧版常驻 hook 会被 QQ 风控提示"使用外挂插件"）。
+
+伪装与门禁补丁都持久化在设备上，打过一次后**日常运行可关闭 Root**；scheme 直开不需要任何权限。
+frida-server xz 不随 exe 打包（减小体积）：兜底触发且本地没有时，源码运行自动用
+`tools/fetch_frida_server.py` 下载（GitHub 失败自动试镜像），打包版按日志提示把 xz 放到
+exe 旁 `runs/resources/frida-server/` 即可。注入前会等 QQ 启动稳定（避免被启动流程顶回主界面）。
+（Frida 17 起 Java 桥不再内置，注入前会自动用 `frida-tools` 自带的 `frida-java-bridge` 补桥。）
+
+> 规划：scheme 直开 + MMKV 补丁已覆盖绝大多数场景，frida 兜底极少触发。后续会评估
+> **完全去除 frida 客户端及相关代码**，去除后门禁补丁失效时将只保留 scheme + MMKV 两级方案。
 
 > 提示：两种方式首次连接手机时，uiautomator2 都会自动往手机安装 atx-agent，需在手机弹窗上允许安装。
 
@@ -192,13 +208,12 @@ QQ 重启后恢复流程会自动重新注入）。注入前会等 QQ 启动稳�
 ```
 
 `build.py` 打包前会自动下载 scrcpy（`tools/fetch_scrcpy.py`）、OCR 模型
-（`tools/fetch_ocr_models.py`）、minitouch（`tools/fetch_minitouch.py`）；模拟器版还会把
-`assets/qqpet-module-opener/` 的 hook JS 和 `resources/frida-server/` 的离线包打进 exe
-（默认 x86_64，本地已有 xz 直接用，缺失时尝试从 GitHub 下载）。
-hook JS 更新：QQ 更新导致打不开时，从上游
-[qqpet-module-opener](https://github.com/yikehuang/qqpet-module-opener) 的
-`src/open_qqpet_module.js` 手动同步到 `assets/qqpet-module-opener/open_qqpet_module.js` 后重新打包；
-frida-server 换版本需同时改 `requirements.txt` 的 frida 版本与 `build.py` 的 `FRIDA_VERSION`。
+（`tools/fetch_ocr_models.py`）、minitouch（`tools/fetch_minitouch.py`）；模拟器版内置
+frida 客户端（opener 兜底注入用），注入脚本内置在 `src/opener.py`；**frida-server xz
+不随 exe 打包**（省 ~32MB）——兜底注入触发且本地没有时，源码运行自动下载，打包版按日志
+提示把 xz 放到 exe 旁 `runs/resources/frida-server/`（用 `tools/fetch_frida_server.py`
+下载，默认 x86_64）。
+frida-server 换版本只需改 `requirements.txt` 的 frida 锁定版本（客户端与 server 必须一致）。
 打包后 `config.yaml` 首次运行自动复制到 exe 旁，`runs/` 也生成在 exe 旁；exe 旁 `runs/` 目录放同名资源
 可覆盖包内资源（如 `runs/resources/scrcpy-win64/`、`runs/resources/frida-server/`），无需重新打包。冷启动需解压资源，会慢几秒。
 模拟器版 exe 启动即默认开启模拟器模式，无需带参数。
@@ -227,7 +242,7 @@ src/
   scenario.py         # 场景基类：定位导航、回主页面、等待/延时收尾、被雇佣召回、鼓励宠物
   recover.py          # 异常恢复链路（重启设备/游戏、模拟器实例重启、opener 重试）
   emulator.py         # 多模拟器实例自动探测与分步停/启（MuMu/雷电/夜神/蓝叠/逍遥）
-  opener.py           # 模拟器模式：frida 注入打开宠物主页（保持注入）
+  opener.py           # 模拟器模式：零注入打开宠物主页（scheme 直开 / MMKV 门禁补丁 / frida 一次性兜底）
   adb/device.py       # adb 封装：设备在线管理、屏幕属性读取、远程模拟器 connect
   ocr.py              # RapidOCR 封装（整屏 OCR、剩余时间/面板解析）
   coins.py            # 主页金币 OCR
@@ -237,12 +252,9 @@ src/
   notify.py           # 失败告警通知（Windows Toast + OnePush）
   settings.py         # config.yaml 读写（保留注释）
   config.py           # 配置加载与路径规划（兼容 PyInstaller）
-assets/
-  qqpet-module-opener/
-    open_qqpet_module.js     # hook JS（取自上游 qqpet-module-opener，手动更新，入库）
 resources/                   # 第三方二进制/离线包（不入库，build 时下载或本地放入）
   scrcpy-win64/              # scrcpy 二进制
-  frida-server/              # frida-server 离线包（模拟器版打包时带上）
+  frida-server/              # frida-server 离线包（不随 exe 打包，兜底注入触发时自动下载/手动放置）
   minitouch/                 # minitouch 控制方案二进制（x86_64 / arm64-v8a）
 tools/
   fetch_scrcpy.py / fetch_frida_server.py / fetch_minitouch.py / fetch_ocr_models.py
@@ -260,8 +272,8 @@ tools/
 - [scrcpy](https://github.com/Genymobile/scrcpy)
   Android 画面镜像与控制工具，本项目的实时画面嵌入和 adb 能力实现。
 - [qqpet-module-opener](https://github.com/yikehuang/qqpet-module-opener)
-  模拟器初始化 QQ 宠物 SDK 并直接打开宠物主页，本项目的模拟器模式基于这一方案实现
-  （只保留其 hook JS `assets/qqpet-module-opener/open_qqpet_module.js` 并手动跟随更新）。
+  模拟器初始化 QQ 宠物 SDK 并直接打开宠物主页，本项目模拟器模式的 frida 兜底注入
+  脚本即源自该方案（现已改为零注入优先：scheme 直开 / 门禁 MMKV 补丁，frida 仅一次性兜底）。
 - [frida](https://frida.re) / [frida-tools](https://github.com/frida/frida-tools)
   注入框架；Frida 17 起 Java 桥不再内置，运行时用 frida-tools 自带的 `frida-java-bridge` 补桥。
 - [RapidOCR](https://github.com/RapidAI/RapidOCR) / [PP-OCRv6](https://github.com/PaddlePaddle/PaddleOCR)

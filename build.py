@@ -2,14 +2,16 @@
 
 用法：python build.py                 单文件模式（默认）：dist/QQPetCopilot.exe
       python build.py --onedir       目录模式：dist/QQPetCopilot/QQPetCopilot.exe
-      python build.py --emulator     模拟器版（内置 hook JS + frida-server 离线包 + frida）：
+      python build.py --emulator     模拟器版（内置 frida 客户端，frida-server xz 不随包——
+                                     注入兜底触发时按提示自行放置）：
                                      dist/QQPetCopilotEmulator.exe
       python build.py --all          普通版 + 模拟器版一起打包
 
 目录约定（打包后）：
 - exe 所在目录：可写数据（config.yaml 首次运行自动复制出来、runs/ 进度与日志）
 - exe 同级的 resources/scrcpy-win64/ 若存在则优先于包内资源（方便替换）
-- 模拟器版：assets/qqpet-module-opener/（hook JS，入库）+ resources/frida-server/（xz 离线包，不入库）
+- 模拟器版：frida-server xz 不打包（省 ~32MB），兜底需要时放到 exe 旁
+  runs/resources/frida-server/（注入脚本内置在 src/opener.py）
 """
 import os
 import subprocess
@@ -34,13 +36,6 @@ ARGS = [
     'QQPetCopilot.spec',
 ]
 
-# 模拟器版默认离线的 frida-server 架构（xz 放 resources/frida-server/，tools/fetch_frida_server.py 拉取）
-FRIDA_SERVER_REL = Path('resources') / 'frida-server'
-FRIDA_SERVER_ARCH = 'x86_64'
-# frida 客户端版本与 frida-server 必须一致（见 requirements.txt 的 frida 锁定版本）
-FRIDA_VERSION = '17.17.0'
-
-
 def fetch_common() -> None:
     """打包前下载公共依赖（OCR 模型 / scrcpy）；失败不阻塞，exe 缺资源时另行处理。"""
     fetch = PROJECT_ROOT / 'tools' / 'fetch_ocr_models.py'
@@ -56,19 +51,6 @@ def fetch_common() -> None:
                         '--arch', 'x86_64', 'arm64-v8a'], check=False)
 
 
-def ensure_frida_server_xz() -> None:
-    """确保模拟器版用的 frida-server xz 就位（默认 x86_64，离线打包）。
-
-    统一走 tools/fetch_frida_server.py：本地已有则直接用，缺失时尝试从
-    GitHub Release 下载（CI 等有网环境），失败不阻塞——exe 缺它时运行期会给出明确提示。
-    """
-    fetch = PROJECT_ROOT / 'tools' / 'fetch_frida_server.py'
-    subprocess.run(
-        [sys.executable, str(fetch), '--version', FRIDA_VERSION, '--arch', FRIDA_SERVER_ARCH],
-        check=False,
-    )
-
-
 def build(emulator: bool) -> None:
     env = dict(os.environ)
     if ONEDIR:
@@ -76,7 +58,6 @@ def build(emulator: bool) -> None:
     else:
         env.pop('QQ_PET_ONEDIR', None)
     if emulator:
-        ensure_frida_server_xz()
         env['QQ_PET_EMULATOR'] = '1'
     else:
         env.pop('QQ_PET_EMULATOR', None)

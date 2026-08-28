@@ -9,8 +9,9 @@ opener 打开好友页异常时，用它抓取 doJumpAction 的完整 URL 与 do
   python tools/capture_visit_jump.py -s 127.0.0.1:7555     # 指定设备
   python tools/capture_visit_jump.py -c                    # 挂好探针后自动点 好友->访问
 
-前提：目标设备已 Root 并运行 frida-server（版本与本机 frida 一致），QQ 已登录、
-已打开宠物主页。脚本 hook 跳转入口后，由你在手机上点 好友 -> 访问
+前提：目标设备已 Root（frida-server 由脚本按 src/opener.py 的隐身方式自动部署：
+伪装名 + 127.0.0.1 随机端口，用完即杀），QQ 已登录、已打开宠物主页。
+脚本 hook 跳转入口后，由你在手机上点 好友 -> 访问
 （或 -c 自动点），打印抓到的完整跳转 URL / attrs / doAction 返回值与调用栈。
 """
 import argparse
@@ -92,8 +93,13 @@ Java.perform(function () {
   send({event:'ready'});
 });
 """
+    # opener 隐身化后 frida-server 不再监听默认 27042（伪装名 + 随机端口），
+    # 连接走 opener 的部署/forward 辅助函数，用完杀掉
+    from src.opener import _connect_frida, _ensure_frida_server, _kill_frida_server
+    port = _ensure_frida_server(adb, serial)
+    local_port = None
     try:
-        device = frida.get_device(serial, timeout=10)
+        device, local_port = _connect_frida(adb, serial, port)
     except Exception as e:
         print(f'frida 连不上设备 {serial}: {e}', file=sys.stderr)
         return 1
@@ -165,6 +171,7 @@ Java.perform(function () {
         script.unload()
     finally:
         session.detach()
+        _kill_frida_server(adb, serial, local_port)
     return 0
 
 

@@ -5,8 +5,8 @@ from pathlib import Path
 from PyInstaller.utils.hooks import collect_data_files
 from PyInstaller.utils.hooks import collect_all
 
-# 模拟器版（build.py --emulator 会设置 QQ_PET_EMULATOR=1）：内置 hook JS + frida-server
-# 离线包 + frida，exe 名带 Emulator 后缀，与普通版共存于 dist/
+# 模拟器版（build.py --emulator 会设置 QQ_PET_EMULATOR=1）：内置 frida 客户端，
+# exe 名带 Emulator 后缀，与普通版共存于 dist/
 EMULATOR = bool(os.environ.get('QQ_PET_EMULATOR'))
 EXE_NAME = 'QQPetCopilotEmulator' if EMULATOR else 'QQPetCopilot'
 
@@ -24,16 +24,9 @@ binaries = []
 hiddenimports = []
 
 if EMULATOR:
-    # 模拟器版：内置 hook JS（assets/qqpet-module-opener/，入库）+ frida-server 离线包
-    # （resources/frida-server/，不入库）。hook JS 来自上游 qqpet-module-opener，
-    # 本项目只保留这一个文件（手动更新）；frida-server xz 由 build.py --emulator
-    # 确保就位（默认 x86_64，其他架构自行放入）
-    for _src in (Path('assets') / 'qqpet-module-opener', Path('resources') / 'frida-server'):
-        if not _src.is_dir():
-            raise SystemExit(f'缺少 {_src}/（hook JS 或 frida-server xz），模拟器版无法构建')
-        for _f in sorted(_src.rglob('*')):
-            if _f.is_file():
-                datas.append((str(_f), str(_f.parent)))
+    # 模拟器版：frida-server xz 不随包（省 ~32MB）——注入兜底触发时 opener 给出
+    # 明确提示，用户把 xz 放到 exe 旁 runs/resources/frida-server/ 即可
+    # （tools/fetch_frida_server.py 可下载；注入脚本内置在 src/opener.py）
     # frida：opener 的 Python 注入依赖（frida 包自带 _frida.pyd / frida-core，体积较大）
     frida_all = collect_all('frida')
     datas += frida_all[0]
