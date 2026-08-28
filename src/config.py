@@ -74,6 +74,9 @@ class EmulatorConfig:
     name: str = ""
     # 模拟器安装路径（留空自动探测）
     path: str = ""
+    # MuMu 机型伪装（opener ensure_device_spoof，需 Root）：改写 app 级机型映射
+    # 让 QQ 以真机身份运行；默认关闭，门禁 MMKV 补丁已翻转过的设备无需开启
+    device_spoof: bool = False
 
 
 @dataclass

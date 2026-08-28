@@ -23,6 +23,9 @@ emulator:
   name: ""
   # 模拟器安装路径（留空自动探测）
   path: ""
+  # MuMu 机型伪装（需 Root，改写 app 级机型映射让 QQ 以真机身份运行；默认关闭，
+  # 门禁 MMKV 补丁已翻转过的设备无需开启）
+  device_spoof: false
 
 school:
   # 属性点课程选择：力量 / 智力 / 魅力

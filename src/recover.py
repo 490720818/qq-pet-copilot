@@ -20,7 +20,7 @@ import time
 
 from .adb.device import Device
 from .config import EmulatorConfig
-from .emulator import find_instance, restart_instance
+from .emulator import find_instance, launch_instance, restart_instance
 from .progress import log
 from .opener import OpenPetPageError, open_pet_page
 from .u2dev import U2Device
@@ -162,6 +162,44 @@ def _restart_emulator_auto(adb: Device,
     log(f'异常恢复：重启模拟器实例 {inst.type} {inst.name}（分步停/启）...')
     restart_instance(inst)
     _adb_back_online(adb)
+    return True
+
+
+def launch_emulator_if_offline(adb: Device,
+                               emulator_cfg: "EmulatorConfig | None" = None) -> bool:
+    """目标 adb 设备不在线时，自动探测所属模拟器实例并启动（只启动，不重启）。
+
+    返回 True = 设备在线（本来就在线或启动成功）；探测不到实例返回 False
+    （调用方按原逻辑继续，连接失败再报错）。启动失败（开机超时等）抛异常。
+    """
+    try:
+        if adb.serial in adb.online_devices():
+            return True
+    except Exception:  # noqa: BLE001 - adb 服务未起时查询失败，按不在线处理
+        pass
+    if ':' in (adb.serial or ''):
+        adb.connect_remote()
+        try:
+            if adb.serial in adb.online_devices():
+                return True
+        except Exception:  # noqa: BLE001
+            pass
+    try:
+        inst = find_instance(
+            adb.serial,
+            emulator=emulator_cfg.type if emulator_cfg else '',
+            name=emulator_cfg.name if emulator_cfg else '',
+            path=emulator_cfg.path if emulator_cfg else '')
+    except Exception as e:
+        log(f'扫描模拟器实例失败: {e}')
+        return False
+    if inst is None:
+        log(f'设备 {adb.serial} 不在线，也未探测到所属模拟器实例')
+        return False
+    log(f'设备 {adb.serial} 不在线，启动模拟器实例 {inst.type} {inst.name}...')
+    launch_instance(inst)
+    _adb_back_online(adb)
+    log(f'模拟器 {inst.name} 启动完成，设备已在线')
     return True
 
 

@@ -668,49 +668,58 @@ def _launch(args: list[str]) -> None:
     subprocess.Popen(args, close_fds=True)
 
 
-def restart_instance(inst: EmulatorInstance) -> None:
-    """分步停/启实例（stop -> 等进程退出 -> start，比 restart 可控，见 ALAS）。"""
+def launch_instance(inst: EmulatorInstance) -> None:
+    """仅启动实例（设备未运行时拉起，不做 stop）。restart_instance 的启动半边。"""
     t = inst.type
     if t == MUMU12:
         # 启动必须走 MuMuManager（MuMuNxMain.exe 是 GUI 单例，并发启动请求会被丢弃）
         manager = str(inst.console or inst.exe)
-        _run([manager, 'control', '-v', str(inst.index), 'shutdown'])
-        time.sleep(SHUTDOWN_WAIT)
         _run([manager, 'control', '-v', str(inst.index), 'launch'])
     elif t in LD_FAMILY:
         console = str(inst.console or inst.exe.parent / 'ldconsole.exe')
-        _run([console, 'quit', '--index', str(inst.index)])
-        time.sleep(SHUTDOWN_WAIT)
         _run([console, 'launch', '--index', str(inst.index)])
     elif t in NOX_FAMILY:
-        _run([str(inst.exe), f'-clone:{inst.name}', '-quit'])
-        time.sleep(SHUTDOWN_WAIT)
         _launch([str(inst.exe), f'-clone:{inst.name}'])
     elif t == BS5:
-        _kill_process_by_path(inst.exe)
-        time.sleep(SHUTDOWN_WAIT)
         _launch([str(inst.exe), '--instance', inst.name])
+    elif t == BS4:
+        _launch([str(inst.exe), '-vmname', inst.name])
+    elif t == MEMU:
+        _launch([str(inst.exe), inst.name])
+    elif t == MUMU6:
+        _launch([str(inst.exe)])
+    elif t == MUMUX:
+        _launch([str(inst.exe), '-m', inst.name])
+    else:
+        raise RuntimeError(f'不支持的模拟器类型: {t}')
+
+
+def restart_instance(inst: EmulatorInstance) -> None:
+    """分步停/启实例（stop -> 等进程退出 -> start，比 restart 可控，见 ALAS）。"""
+    t = inst.type
+    if t == MUMU12:
+        manager = str(inst.console or inst.exe)
+        _run([manager, 'control', '-v', str(inst.index), 'shutdown'])
+    elif t in LD_FAMILY:
+        console = str(inst.console or inst.exe.parent / 'ldconsole.exe')
+        _run([console, 'quit', '--index', str(inst.index)])
+    elif t in NOX_FAMILY:
+        _run([str(inst.exe), f'-clone:{inst.name}', '-quit'])
+    elif t == BS5:
+        _kill_process_by_path(inst.exe)
     elif t == BS4:
         if inst.console:
             _run([str(inst.console), 'quit', '--name', inst.name])
         else:
             _kill_process_by_path(inst.exe)
-        time.sleep(SHUTDOWN_WAIT)
-        _launch([str(inst.exe), '-vmname', inst.name])
     elif t == MEMU:
         if inst.console:
             _run([str(inst.console), 'stop', '-n', inst.name])
         else:
             _kill_process_by_path(inst.exe)
-        time.sleep(SHUTDOWN_WAIT)
-        _launch([str(inst.exe), inst.name])
-    elif t == MUMU6:
+    elif t in (MUMU6, MUMUX):
         _kill_process_by_path(inst.exe)
-        time.sleep(SHUTDOWN_WAIT)
-        _launch([str(inst.exe)])
-    elif t == MUMUX:
-        _kill_process_by_path(inst.exe)
-        time.sleep(SHUTDOWN_WAIT)
-        _launch([str(inst.exe), '-m', inst.name])
     else:
         raise RuntimeError(f'不支持的模拟器类型: {t}')
+    time.sleep(SHUTDOWN_WAIT)
+    launch_instance(inst)

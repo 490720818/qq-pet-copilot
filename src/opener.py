@@ -1146,7 +1146,8 @@ def open_pet_page(serial: str | None = None, adb_path: str | None = None) -> boo
 
     三级流程（按隐身性优先，**Root 按需**）：
     0. MuMu 机型伪装映射改写（ensure_device_spoof，启动 QQ 前执行，幂等，
-       需 Root；无 Root 跳过——门禁已翻转过的设备不受影响）：
+       需 Root 且配置项 emulator.device_spoof 开启——默认关闭，门禁已翻转过的
+       设备无需开启）：
        QQ 进程按真实手机身份运行，门禁原生通过，搜索卡片"宠物"入口也出现；
     1. scheme 直开（mqqapi://qpet/open，官方 JumpActivity 路径，零写盘零注入
        **零权限**，伪装成功或门禁已翻转过的设备直接成功——MMKV 补丁写在 QQ
@@ -1162,6 +1163,7 @@ def open_pet_page(serial: str | None = None, adb_path: str | None = None) -> boo
     """
     global GATE_OPEN
     GATE_OPEN = False
+    cfg = None
     if adb_path is None or serial is None:
         # 至少有一个参数没传时，用项目配置补默认值
         try:
@@ -1179,9 +1181,19 @@ def open_pet_page(serial: str | None = None, adb_path: str | None = None) -> boo
         serial = cfg.adb.device_serial or None
     serial = _choose_device(adb, serial)
     log(f'已连接模拟器: {serial}')
+    if cfg is None:
+        # 两个参数都显式传入时补读一次配置拿机型伪装开关（读失败按关闭处理）
+        try:
+            cfg = load_config()
+        except Exception:
+            cfg = None
+    spoof = bool(cfg and getattr(cfg.emulator, 'device_spoof', False))
     has_root = _has_root(adb, serial)
     if has_root:
-        ensure_device_spoof(adb, serial)  # MuMu 机型伪装（QQ 启动前，幂等重挂）
+        if spoof:
+            ensure_device_spoof(adb, serial)  # MuMu 机型伪装（QQ 启动前，幂等重挂）
+        else:
+            log('MuMu 机型伪装已关闭（emulator.device_spoof=false），跳过')
     else:
         log('模拟器未开放 Root：跳过机型伪装/门禁补丁，直接 scheme 直开'
             '（门禁已翻转过的设备不受影响）')

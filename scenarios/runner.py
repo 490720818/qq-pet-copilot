@@ -97,7 +97,7 @@ from src.progress import (
     log,
 )
 from src.queue_status import save_queue_status
-from src.recover import reenter_pet
+from src.recover import launch_emulator_if_offline, reenter_pet
 from src.scenario import StatBlocked, TaskDeferred
 from src.status_cache import update_status
 from src.u2dev import U2Device
@@ -158,12 +158,20 @@ class Runner:
         cfg = load_config()
         self._last_cfg = cfg  # 最近一次加载的配置（任务队列调度读 tasks 段用）
         serial = opener_serial or cfg.adb.device_serial
-        if use_opener and serial and ':' in serial:
-            # 模拟器（MuMu/雷电等 127.0.0.1:port）可能还没进 adb devices，先 connect 一次
+        if use_opener and serial:
+            adb_dev = Device(find_adb(cfg.adb.path), serial)
+            if ':' in serial:
+                # 模拟器（MuMu/雷电等 127.0.0.1:port）可能还没进 adb devices，先 connect 一次
+                try:
+                    adb_dev.connect_remote(serial)
+                except Exception as e:
+                    log(f'adb connect {serial} 失败: {e}')
             try:
-                Device(find_adb(cfg.adb.path), serial).connect_remote(serial)
+                if serial not in adb_dev.online_devices():
+                    # 目标设备不在线：自动探测并启动所属模拟器实例（只启动，不重启）
+                    launch_emulator_if_offline(adb_dev, cfg.emulator)
             except Exception as e:
-                log(f'adb connect {serial} 失败: {e}')
+                log(f'检查/启动模拟器失败: {e}')
         dev = U2Device(find_adb(cfg.adb.path), serial)
         self.school = SchoolScenario(dev)
         self.work = WorkScenario(dev)

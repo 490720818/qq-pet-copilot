@@ -226,6 +226,7 @@ SETTING_FIELDS = [
     ('emulator.type', '模拟器类型', ['auto'] + EMULATOR_TYPES),
     ('emulator.name', '实例名称（留空自动探测）', 'str'),
     ('emulator.path', '模拟器安装路径（留空自动探测）', 'str'),
+    ('emulator.device_spoof', 'MuMu 机型伪装（需 Root，默认关闭）', 'bool'),
     ('runner.engine', '调度引擎', ['task_queue', 'legacy']),
     ('tasks.failure_interval', '任务失败重试间隔（秒）', 'int'),
     ('schedule.coin_threshold', '金币阈值', 'int'),
@@ -240,7 +241,8 @@ SETTING_FIELDS = [
 
 # 模拟器专用设置项：非模拟器模式在设置页隐藏
 EMULATOR_SETTING_KEYS = {
-    'emulator.type', 'emulator.name', 'emulator.path', 'recover.emulator_restart_cmd',
+    'emulator.type', 'emulator.name', 'emulator.path', 'emulator.device_spoof',
+    'recover.emulator_restart_cmd',
 }
 
 # 任务选项卡字段：任务队列顺序 + 各场景任务相关设置
@@ -685,6 +687,10 @@ class MainWindow(QMainWindow):
     def _start_all(self) -> None:
         # Qt 槽里未捕获的异常会直接 abort 进程（无 traceback 的"闪退"），
         # 启动失败记日志并继续，调度器仍可手动开始
+        if self.emulator_mode:
+            # 模拟器模式：目标 adb 设备不在线时后台启动所属模拟器实例（不阻塞 Qt 线程；
+            # 设备上线后 scrcpy 看门狗会自动拉起并重嵌入）
+            threading.Thread(target=self._ensure_emulator_device, daemon=True).start()
         try:
             kill_previous_scrcpy()
             if self.btn_scrcpy.isChecked():
@@ -701,6 +707,28 @@ class MainWindow(QMainWindow):
             self._embed_tries = 0
             self._embed_fail_logged = False
             self._embed_timer.start(500)
+
+    def _ensure_emulator_device(self) -> None:
+        """模拟器模式启动时：目标 adb 设备不在线则探测并启动所属模拟器实例。
+
+        后台线程执行（模拟器开机要等几十秒）；只启动不重启，设备本来在线直接返回。
+        """
+        try:
+            cfg = load_config()
+            serial = self.emulator_device or cfg.adb.device_serial
+            if not serial:
+                return
+            adb = Device(find_adb(cfg.adb.path), serial)
+            if ':' in serial:
+                adb.connect_remote(serial)
+            if serial in adb.online_devices():
+                return
+            from src.recover import launch_emulator_if_offline
+            launch_emulator_if_offline(adb, cfg.emulator)
+        except Exception:
+            import traceback
+
+            log(f'检查/启动模拟器失败:\n{traceback.format_exc()}')
 
     def _try_embed(self) -> None:
         hwnd = find_scrcpy_hwnd(self._scrcpy_proc)

@@ -23,6 +23,7 @@ DEFAULTS = {
     'emulator.type': 'auto',
     'emulator.name': '',
     'emulator.path': '',
+    'emulator.device_spoof': False,
     'school.attribute': '力量',
     'school.times_per_day': 0,
     'work.location': '风铃旅社',
@@ -145,7 +146,8 @@ def validate_field(key: str, value):
             return (True, value) if int(value) >= 1 else (False, default)
         except (TypeError, ValueError):
             return False, default
-    if key == 'notify.win_toast' or key == 'adventure.skip_bad_weather':
+    if key == 'notify.win_toast' or key == 'adventure.skip_bad_weather' \
+            or key == 'emulator.device_spoof':
         return (True, value) if isinstance(value, bool) else (False, default)
     if key == 'notify.onepush_config':
         # OnePush 推送配置（YAML，支持多行）：留空，或能解析出含 provider 的字典
