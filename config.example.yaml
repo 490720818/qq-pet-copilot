@@ -7,6 +7,13 @@ adb:
   # 设备序列号；留空则使用第一台在线设备
   device_serial: ""
 
+# 界面设置（仅 GUI 使用，调度器不读）
+gui:
+  # 主题：跟随系统 / 深色 / 浅色
+  theme: 跟随系统
+  # 画面镜像开关（主页工具栏开关状态持久化）
+  mirror: true
+
 # 控制方案：injectInputEvent（默认，uiautomator2 d.touch，走 u2 server 事件注入）/
 # minitouch（openstf minitouch socket 本地直发触摸事件，模拟器上 d.click 不可靠时更稳）
 control:

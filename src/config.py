@@ -285,10 +285,19 @@ class NotifyConfig:
 
 
 @dataclass
+class GuiConfig:
+    # 界面主题：跟随系统 / 深色 / 浅色（仅 GUI 用，调度器不读）
+    theme: str = "跟随系统"
+    # 画面镜像开关（主页工具栏，开关状态持久化；仅 GUI 用）
+    mirror: bool = True
+
+
+@dataclass
 class Config:
     adb: AdbConfig = field(default_factory=AdbConfig)
     control: ControlConfig = field(default_factory=ControlConfig)
     emulator: EmulatorConfig = field(default_factory=EmulatorConfig)
+    gui: GuiConfig = field(default_factory=GuiConfig)
     school: SchoolConfig = field(default_factory=SchoolConfig)
     work: WorkConfig = field(default_factory=WorkConfig)
     schedule: ScheduleConfig = field(default_factory=ScheduleConfig)
@@ -367,6 +376,8 @@ def load_config(config_path: str | Path | None = None) -> Config:
                if k in ControlConfig.__dataclass_fields__}),
         emulator=EmulatorConfig(**{k: v for k, v in (raw.get("emulator", {}) or {}).items()
                                    if k in EmulatorConfig.__dataclass_fields__}),
+        gui=GuiConfig(**{k: v for k, v in (raw.get("gui", {}) or {}).items()
+                         if k in GuiConfig.__dataclass_fields__}),
         school=SchoolConfig(**raw.get("school", {})),
         work=WorkConfig(**raw.get("work", {})),
         schedule=ScheduleConfig(**raw.get("schedule", {})),

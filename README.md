@@ -1,7 +1,7 @@
 # QQ 宠物自动化助手（qq-pet-copilot）
 
 基于 uiautomator2 控件定位 + RapidOCR 文字识别的 QQ 宠物自动托管工具（分辨率无关）。
-PyQt6 图形界面内嵌 scrcpy 实时画面，任务队列自动调度，按金币和**学习/工作时长**规则推进，
+PyQt6（Fluent Widgets）图形界面内嵌 scrcpy 实时画面，任务队列自动调度，按金币和**学习/工作时长**规则推进，
 并自动处理**被雇佣召回**、**体力/清洁照顾**、**好友护理/雇佣**等日常。
 
 > **游戏机制注意：护理相关勋章如果要拿的话不能一键！！！**
@@ -56,10 +56,14 @@ PyQt6 图形界面内嵌 scrcpy 实时画面，任务队列自动调度，按金
   （Bark / PushPlus / Server酱 / SMTP / 自定义 webhook），并附当前手机截图。
 - **每日计数与时长持久化**：各场景次数与累计时长按天记录在 `runs/*.json`（含历史），
   中途停止重跑接着计数，跨天自动归档清零（单账号，不按账号拆分）。
-- **GUI**：左侧 scrcpy 实时画面嵌入，右侧日志，顶部状态条实时显示体力/清洁/金币与
-  调度状态；日志页"今日"显示 `已学习/工作/总时长（小时）0.0/0.0/0.0`；
+- **GUI（PyQt6-Fluent-Widgets）**：左侧 Fluent 导航（主页/调度/统计/任务/设置），顶部全局
+  工具栏常驻（开始/停止/画面镜像/连接测试/手动重启 + 运行时间，画面镜像开关状态持久化
+  `gui.mirror`）；主页 = scrcpy 实时画面（9:16 竖屏等比自适应嵌入）+ 宠物状态/任务队列/
+  今日统计/日志卡片——任务队列卡调度器未运行时也按配置推算下一任务，今日统计以
+  学习(h)/工作(h) 时长 + 各任务当日次数的两行网格展示；统计页为各任务近 N 天次数的
+  平滑折线图；主题支持 跟随系统/深色/浅色（`gui.theme`，即时切换）；
   调度/任务/设置页可视化修改 config.yaml，保存后**热加载即时生效**（无需重启）；
-  右上角"手动重启"按配置执行一次异常恢复，恢复后自动重启调度器；
+  "手动重启"按配置执行一次异常恢复，恢复后自动重启调度器；
   设置页"检查更新"：启动后自动检查一次、之后每 6 小时一次，发现新版本显示 Release 下载链接。
 - **分辨率无关定位**：优先 u2 控件选择器，游戏内自绘按钮用 RapidOCR（PP-OCRv6 tiny）
   整屏文字识别，换分辨率/机型无需改代码。
@@ -145,7 +149,8 @@ exe 旁 `runs/resources/frida-server/` 即可。注入前会等 QQ 启动稳定�
 
 | 配置 | 说明 |
 | --- | --- |
-| `adb.path` / `adb.device_serial` | adb 路径（默认用 scrcpy 自带）/ 设备序列号（空 = 第一台） |
+| `adb.path` / `adb.device_serial` | adb 路径（默认用 scrcpy 自带）/ 设备序列号（空 = 第一台；设置页下拉带实例名/手机型号标注，离线模拟器实例也会列出） |
+| `gui.theme` / `gui.mirror` | 界面主题（跟随系统/深色/浅色）/ 画面镜像开关状态持久化（仅 GUI） |
 | `control.method` | 控制方案：`injectInputEvent`（真机推荐，默认）/ `minitouch`（模拟器推荐） |
 | `school.attribute` | 属性点课程：力量 / 智力 / 魅力 |
 | `school.times_per_day` | 每天学习次数上限，0 不限 |
@@ -163,6 +168,7 @@ exe 旁 `runs/resources/frida-server/` 即可。注入前会等 QQ 启动稳定�
 | `employed.*` | 被雇佣检查的开关、时间段、间隔、召回策略 |
 | `tasks.failure_interval` | 所有任务统一的失败重试间隔（秒，设置页"任务失败重试间隔"） |
 | `recover.method` / `recover.emulator_restart_cmd` | 异常恢复方式：重启设备 / 重启游戏；模拟器可配 MuMuManager 重启命令 |
+| `emulator.device_spoof` | MuMu 机型伪装开关（需 Root，默认关闭；补丁持久化后日常可关 Root） |
 
 > 旧版 `school_factor` / `work_factor` / `daily_point_limit` 仅保留用于首次运行迁移老进度
 > （把已有次数换算成时长），不再参与调度、也不在设置页显示。
@@ -222,7 +228,7 @@ frida-server 换版本只需改 `requirements.txt` 的 frida 锁定版本（客�
 ## 目录结构
 
 ```
-main.py               # PyQt6 GUI 入口（scrcpy 嵌入 + 日志/调度/统计/任务/设置 + 手动重启）
+main.py               # PyQt6 GUI 入口（Fluent 导航 + 全局工具栏 + scrcpy 9:16 嵌入 + 调度控制）
 build.py              # PyInstaller 打包脚本（--emulator / --all 打模拟器版）
 config.yaml           # 全部可调配置
 scenarios/
@@ -246,9 +252,12 @@ src/
   adb/device.py       # adb 封装：设备在线管理、屏幕属性读取、远程模拟器 connect
   ocr.py              # RapidOCR 封装（整屏 OCR、剩余时间/面板解析）
   coins.py            # 主页金币 OCR
-  progress.py         # 日志 + 每日次数/时长持久化（含历史、学园、时长迁移）
+  progress.py         # 日志 + 每日次数/时长持久化对外入口（兼容层）
+  progress_store.py   # 进度文件统一管理（跨天归档/原子写入/损坏兜底）
+  stats_chart.py      # 统计页平滑折线图（QPainter 自绘）
   status_cache.py     # 宠物状态缓存
   queue_status.py     # 任务队列状态缓存
+  version.py / update_checker.py  # 版本常量 / GitHub Release 更新检查
   notify.py           # 失败告警通知（Windows Toast + OnePush）
   settings.py         # config.yaml 读写（保留注释）
   config.py           # 配置加载与路径规划（兼容 PyInstaller）
@@ -271,6 +280,8 @@ tools/
 
 - [scrcpy](https://github.com/Genymobile/scrcpy)
   Android 画面镜像与控制工具，本项目的实时画面嵌入和 adb 能力实现。
+- [PyQt6-Fluent-Widgets](https://github.com/zhiyiYo/PyQt6-Fluent-Widgets)
+  Fluent Design 组件库，GUI 的导航栏、卡片与控件实现。
 - [qqpet-module-opener](https://github.com/yikehuang/qqpet-module-opener)
   模拟器初始化 QQ 宠物 SDK 并直接打开宠物主页，本项目模拟器模式的 frida 兜底注入
   脚本即源自该方案（现已改为零注入优先：scheme 直开 / 门禁 MMKV 补丁，frida 仅一次性兜底）。

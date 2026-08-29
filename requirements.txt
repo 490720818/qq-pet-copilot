@@ -4,6 +4,7 @@ rapidocr==3.9.2
 onnxruntime>=1.19.0
 Pillow>=10.0.0
 PyQt6>=6.5.0
+PyQt6-Fluent-Widgets>=1.11,<2
 pywin32>=306; sys_platform == 'win32'
 ruamel.yaml>=0.17
 pyinstaller>=6.0

@@ -1,10 +1,11 @@
-"""启动入口（PyQt6 GUI）：左侧嵌入 scrcpy 窗口，右侧实时显示调度器日志。
+"""启动入口（PyQt6 GUI，界面基于 PyQt6-Fluent-Widgets）：左侧 Fluent 导航栏 +
+右侧内容区（顶部全局工具栏 + 页面堆栈）。
 
 - 启动前清理本设备遗留的 scrcpy（只清本实例/本设备，多开互不影响），再重新拉起并以 --window-borderless 嵌入
 - scrcpy 以 --turn-screen-off 运行（手机屏幕关闭，镜像照常）
-- 右侧顶部"开始/停止"按钮：开始 = 子进程启动调度器，停止 = 立即结束调度器进程
-- 右侧选项卡：日志（顶部当日统计条）/ 统计（各任务近 N 天平滑折线图）/ 设置
-- 调度器子进程的 stdout 实时显示在右侧日志区
+- 顶部工具栏"开始/停止"按钮：开始 = 子进程启动调度器，停止 = 立即结束调度器进程
+- 导航页：主页（画面+状态+今日统计+日志）/调度/统计（各任务近 N 天平滑折线图）/任务/设置
+- 调度器子进程的 stdout 实时显示在主页日志卡片
 - scrcpy 看门狗：进程断开（设备 adb reboot/掉线）后自动重拉并重嵌入
 - 关闭窗口时结束由本程序拉起的 scrcpy 和调度器进程
 
@@ -24,31 +25,45 @@ from datetime import datetime, timedelta
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from PyQt6.QtCore import QObject, Qt, QTime, QTimer, QUrl, pyqtSignal
+from PyQt6.QtCore import QObject, QSize, Qt, QTime, QTimer, QUrl, pyqtSignal
 from PyQt6.QtGui import QColor, QDesktopServices
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QApplication,
-    QCheckBox,
-    QComboBox,
     QFormLayout,
+    QGridLayout,
     QHBoxLayout,
     QHeaderView,
-    QLabel,
-    QLineEdit,
-    QMainWindow,
-    QMessageBox,
-    QPlainTextEdit,
-    QPushButton,
-    QScrollArea,
-    QSpinBox,
-    QSplitter,
-    QTableWidget,
+    QSizePolicy,
     QTableWidgetItem,
-    QTabWidget,
-    QTimeEdit,
     QVBoxLayout,
     QWidget,
+)
+from qfluentwidgets import (
+    BodyLabel,
+    CaptionLabel,
+    CardWidget,
+    ComboBox,
+    EditableComboBox,
+    FluentIcon as FIF,
+    HeaderCardWidget,
+    HyperlinkLabel,
+    LineEdit,
+    MessageBox,
+    MSFluentWindow,
+    NavigationItemPosition,
+    PlainTextEdit,
+    PrimaryPushButton,
+    PushButton,
+    ScrollArea,
+    SimpleCardWidget,
+    SpinBox,
+    StrongBodyLabel,
+    SwitchButton,
+    TableWidget,
+    Theme,
+    TimeEdit,
+    setTheme,
 )
 
 from ruamel.yaml.scalarstring import DoubleQuotedScalarString
@@ -107,36 +122,12 @@ UPDATE_CHECK_INTERVAL_MS = 6 * 3600 * 1000  # 检查更新周期（启动后先�
 # Windows 下隐藏子进程的命令行窗口（scrcpy/taskkill 等都是控制台程序）
 _NO_WINDOW = subprocess.CREATE_NO_WINDOW if sys.platform == 'win32' else 0
 
-# 按钮样式
-_BTN_BASE = """
-    QPushButton {{
-        color: white; border: none; border-radius: 5px;
-        padding: 3px 16px; font-size: 14px; font-weight: bold;
-    }}
-    QPushButton:hover {{ background-color: {hover}; }}
-    QPushButton:pressed {{ background-color: {pressed}; }}
-    QPushButton:disabled {{ background-color: {disabled}; color: #f5f5f5; }}
-"""
-START_BTN_STYLE = 'QPushButton { background-color: #4CAF50; }' + _BTN_BASE.format(
-    hover='#45a049', pressed='#3d8b40', disabled='#c8e6c9')
-STOP_BTN_STYLE = 'QPushButton { background-color: #f44336; }' + _BTN_BASE.format(
-    hover='#e53935', pressed='#d32f2f', disabled='#ffcdd2')
-# scrcpy 开关：未勾选=关闭（灰），勾选=开启（蓝）
-SCRCPY_BTN_STYLE = """
-QPushButton {{
-    color: white; border: none; border-radius: 5px;
-    padding: 3px 16px; font-size: 14px; font-weight: bold;
-    background-color: #9e9e9e;
-}}
-QPushButton:hover {{ background-color: #bdbdbd; }}
-QPushButton:checked {{ background-color: #2196F3; }}
-QPushButton:checked:hover {{ background-color: #1e88e5; }}
-QPushButton:disabled {{ background-color: #e0e0e0; color: #f5f5f5; }}
-"""
-
 # OnePush 各提供方参数配置教程（ALAS wiki 中文文档）
 ONEPUSH_HELP_URL = ('https://github.com/LmeSzinc/AzurLaneAutoScript'
                     '/wiki/Onepush-configuration-%5BCN%5D')
+
+# 主题设置项（gui.theme）-> qfluentwidgets Theme
+THEME_MAP = {'跟随系统': Theme.AUTO, '深色': Theme.DARK, '浅色': Theme.LIGHT}
 
 class _TestSignals(QObject):
     """连接测试按钮：后台线程 -> GUI 主线程 的信号（跨线程安全）。"""
@@ -150,7 +141,7 @@ class _RecoverSignals(QObject):
     finished = pyqtSignal(bool)  # True=恢复成功（宠物主页已打开），拉起调度器时跳过 opener
 
 
-class _FocusOutPlainTextEdit(QPlainTextEdit):
+class _FocusOutPlainTextEdit(PlainTextEdit):
     """失焦时触发保存回调的多行文本框（QPlainTextEdit 没有 editingFinished）。"""
 
     def __init__(self, on_focus_out):
@@ -162,15 +153,16 @@ class _FocusOutPlainTextEdit(QPlainTextEdit):
         super().focusOutEvent(event)
 
 
-class LogView(QPlainTextEdit):
+class LogView(PlainTextEdit):
     """日志区：纯文本保证大量日志下的性能；其中的 http(s) 链接可点击，
     单击直接用浏览器打开（悬停显示手型光标）。"""
 
     # 行内 URL 匹配：排除中文标点/引号/括号结尾（日志里链接常跟"下载：xxx。"）
     _URL_RE = re.compile(r'https?://[^\s<>"\'），。；！？）]+')
 
-    def __init__(self, **kwargs):
+    def __init__(self, readOnly: bool = False, **kwargs):
         super().__init__(**kwargs)
+        self.setReadOnly(readOnly)  # fluent PlainTextEdit 构造不收 readOnly 关键字
         self.setMouseTracking(True)
 
     def _url_at(self, pos) -> str | None:
@@ -198,7 +190,7 @@ class LogView(QPlainTextEdit):
         super().mouseMoveEvent(event)
 
 
-class _NoWheelSpinBox(QSpinBox):
+class _NoWheelSpinBox(SpinBox):
     """数字输入框：禁用鼠标滚轮改值（滚轮悬停数字框容易误触加减，防手滑）。
 
     仅屏蔽滚轮事件，键盘上下键、直接输入等行为不受影响；
@@ -209,17 +201,28 @@ class _NoWheelSpinBox(QSpinBox):
         event.ignore()
 
 
-class _NoWheelQTimeEdit(QTimeEdit):
+class _NoWheelTimeEdit(TimeEdit):
     """时间编辑框：禁用鼠标滚轮改值（同 _NoWheelSpinBox，防手滑）。"""
 
     def wheelEvent(self, event):
         event.ignore()
 
 
+class _NoInsertEditableComboBox(EditableComboBox):
+    """可编辑下拉：手动输入不追加进下拉列表（EditableComboBox 回车默认会把
+    输入文本 addItem 进去，设备序列号下拉不需要这个行为）。"""
+
+    def _onReturnPressed(self):
+        index = self.findText(self.text())
+        if index >= 0 and index != self.currentIndex():
+            self.setCurrentIndex(index)
+
+
 # 设置页面字段：(点路径, 显示名, 类型)
 # 类型: 'int' / 'str' / 'bool' / 'text'(多行文本) / 'devices'(adb 设备下拉) / 选项列表
 # 设置选项卡：连接/调度引擎/全局规则/告警等全局设置（场景任务相关的在任务选项卡）
 SETTING_FIELDS = [
+    ('gui.theme', '主题', ['跟随系统', '深色', '浅色']),
     ('adb.path', 'adb 路径', 'str'),
     ('adb.device_serial', '设备序列号', 'devices'),
     ('control.method', '控制方案', ['injectInputEvent', 'minitouch']),
@@ -258,20 +261,20 @@ TASK_SETTING_FIELDS = [
     ('work.times_per_day', '每天打工次数（0 不限）', 'int'),
     ('work.employ_scroll_limit', '雇佣拖动上限', 'int'),
     ('adventure.times_per_day', '每天冒险次数（0 不冒险）', 'int'),
-    ('adventure.start_time', '冒险调度时间（HH:MM）', 'str'),
+    ('adventure.start_time', '冒险调度时间', 'str'),
     ('adventure.skip_bad_weather', '冒险跳过"天色不对"', 'bool'),
     ('adventure.batch', '单轮冒险次数', 'int'),
     ('visit.times_per_day', '每天踩踩次数（0 不踩）', 'int'),
-    ('visit.start_time', '踩踩调度时间（HH:MM）', 'str'),
+    ('visit.start_time', '踩踩调度时间', 'str'),
     ('pk.times_per_day', '每天 PK 次数（0 不 PK）', 'int'),
-    ('pk.start_time', 'PK 调度时间（HH:MM）', 'str'),
+    ('pk.start_time', 'PK 调度时间', 'str'),
     ('friend_care.enabled', '启用好友护理', 'bool'),
-    ('friend_care.time_range', '好友护理时间段（HH:MM-HH:MM）', 'str'),
+    ('friend_care.time_range', '好友护理时间段', 'str'),
     ('friend_care.friend_name', '护理好友名称', 'str'),
     ('friend_care.method', '护理好友方式', ['一键护理', 'ocr检测']),
     ('friend_care.interval_seconds', '好友护理调度间隔（秒）', 'int'),
     ('hire_friend.enabled', '雇佣好友开关', 'bool'),
-    ('hire_friend.time_range', '雇佣好友时间段（HH:MM-HH:MM）', 'str'),
+    ('hire_friend.time_range', '雇佣好友时间段', 'str'),
     ('hire_friend.interval_seconds', '雇佣好友调度间隔（秒）', 'int'),
     ('hire_friend.friend_name', '雇佣好友名称', 'str'),
     ('hire_friend.times_per_day', '雇佣好友次数（0 不雇佣）', 'int'),
@@ -281,7 +284,7 @@ TASK_SETTING_FIELDS = [
     ('care.interval_seconds', '护理间隔（秒）', 'int'),
     ('employed.action', '被雇佣后处理', ['等到25/75（小于45min）', '等到25/75', '立刻召回']),
     ('employed.enabled', '被雇佣开关', 'bool'),
-    ('employed.time_range', '被雇佣时间段（HH:MM-HH:MM）', 'str'),
+    ('employed.time_range', '被雇佣时间段', 'str'),
     ('employed.interval_seconds', '被雇佣检查间隔（秒）', 'int'),
 ]
 
@@ -289,6 +292,19 @@ TASK_SETTING_FIELDS = [
 SCHEDULE_TASK_NAMES = {'care': '护理', 'adventure': '冒险', 'visit': '踩踩', 'pk': 'PK',
                        'hire_friend': '雇佣好友', 'friend_care': '好友护理',
                        'school': '学习', 'work': '打工'}
+
+# 设置/任务表单的分组卡片标题：按配置键第一段分组（顺序按字段首次出现）
+SETTING_GROUP_TITLES = {
+    'adb': '连接', 'control': '连接',
+    'gui': '界面',
+    'emulator': '模拟器', 'recover': '异常恢复',
+    'runner': '调度引擎', 'tasks': '任务队列', 'schedule': '全局规则',
+    'notify': '告警通知',
+    'school': '学习', 'work': '打工', 'adventure': '冒险',
+    'visit': '踩踩', 'pk': 'PK',
+    'friend_care': '好友护理', 'hire_friend': '雇佣好友',
+    'care': '护理', 'employed': '被雇佣',
+}
 
 
 def _scrcpy_title() -> str:
@@ -460,22 +476,50 @@ def find_scrcpy_hwnd(proc: subprocess.Popen | None = None) -> int | None:
 
 
 class ScrcpyContainer(QWidget):
-    """scrcpy 窗口的嵌入容器，按手机屏幕比例等比适配并居中。"""
+    """scrcpy 窗口的嵌入容器，按手机屏幕比例等比适配并居中。
+
+    手机屏幕是 9:16 竖屏：sizeHint/heightForWidth 按竖屏比例报尺寸，
+    让布局给画面区预留竖屏空间；设备未连接或比例读取失败时 _fit 也按
+    (9, 16) 兜底，避免拿到横屏/空比例时把嵌入窗口拉成宽屏。
+    """
 
     def __init__(self):
         super().__init__()
         self._hwnd: int | None = None
         self._aspect: tuple[int, int] | None = None  # 手机屏幕物理像素 (宽, 高)
-        self.setStyleSheet('background: black;')
+        # 普通 QWidget 子类要开 WA_StyledBackground，样式表背景才会真正绘制
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        # 未嵌入时跟随主题背景（透出下层卡片色），不显示死黑一块；
+        # 嵌入后画面按真实比例正好铺满，无需黑色留白
+        self.setStyleSheet('background: transparent; border-radius: 8px;')
         self.setMinimumWidth(280)
+
+    def sizeHint(self) -> QSize:
+        return QSize(360, 640)  # 9:16 竖屏
+
+    def hasHeightForWidth(self) -> bool:
+        return True
+
+    def heightForWidth(self, width: int) -> int:
+        return width * 16 // 9  # 9:16 竖屏
 
     def set_hwnd(self, hwnd: int | None) -> None:
         self._hwnd = hwnd
 
     def embed(self, hwnd: int, aspect: tuple[int, int] | None = None) -> None:
         self._hwnd = hwnd
-        self._aspect = aspect
         win32gui.SetParent(hwnd, int(self.winId()))
+        # 缩放前先取 scrcpy 窗口客户区真实尺寸作为嵌入比例（客户区 = 视频画面大小，
+        # 自适应任何设备与 --max-size 设置）；device_aspect 的设备物理分辨率比例
+        # 可能和实际窗口不一致（如 720x1280 等比缩放窗口 vs 1080x2400 物理屏），
+        # 用它会留出两侧黑边
+        try:
+            _, _, real_w, real_h = win32gui.GetClientRect(hwnd)
+            if real_w > 32 and real_h > 32:
+                aspect = (real_w, real_h)
+        except Exception:
+            pass
+        self._aspect = aspect
         style = win32gui.GetWindowLong(hwnd, win32con.GWL_STYLE)
         win32gui.SetWindowLong(
             hwnd, win32con.GWL_STYLE,
@@ -494,12 +538,11 @@ class ScrcpyContainer(QWidget):
         if not self._hwnd:
             return
         cw, ch = self.width(), self.height()
-        x, y, w, h = 0, 0, cw, ch
-        if self._aspect and self._aspect[0] and self._aspect[1]:
-            aw, ah = self._aspect
-            scale = min(cw / aw, ch / ah)
-            w, h = int(aw * scale), int(ah * scale)
-            x, y = (cw - w) // 2, (ch - h) // 2
+        # 设备比例未知（未连接/读取失败）时按 9:16 竖屏兜底
+        aw, ah = self._aspect if self._aspect and all(self._aspect) else (9, 16)
+        scale = min(cw / aw, ch / ah)
+        w, h = int(aw * scale), int(ah * scale)
+        x, y = (cw - w) // 2, (ch - h) // 2
         win32gui.MoveWindow(self._hwnd, x, y, w, h, True)
 
     def resizeEvent(self, event) -> None:
@@ -536,7 +579,66 @@ def _format_remaining(seconds: float) -> str:
     return f'{secs}秒'
 
 
-class MainWindow(QMainWindow):
+class CompactCardWidget(HeaderCardWidget):
+    """紧凑版 HeaderCardWidget：标题栏 48→34、内容边距 24→(16,10,16,12)。
+
+    原版卡片 chrome 占高 ~96px，分组卡片多了一页放不下几组设置；
+    所有分组卡片（主页状态/统计/日志、设置/任务页）统一用这个。
+    """
+
+    def _postInit(self):
+        self.headerView.setFixedHeight(34)
+        self.headerLayout.setContentsMargins(16, 0, 12, 0)
+        self.viewLayout.setContentsMargins(16, 10, 16, 12)
+
+
+class TwoColumnCardsPanel(QWidget):
+    """分组卡片两列容器：左右两个竖列，add_card 按两列累计高度塞到较矮的一列。
+
+    每列内部紧密排列（spacing 12）、列尾 stretch 顶格对齐，卡片高度就是内容高度，
+    同列卡片之间不会出现 FlowLayout"行高=该行最高卡片"造成的大空白；
+    两列 stretch 相同保证卡片等宽。设置/任务页共用。
+    注意：分组卡片创建时还是空的（字段后填），高度平衡要等字段填完调 finalize()。
+    """
+
+    def __init__(self):
+        super().__init__()
+        box = QHBoxLayout(self)
+        box.setContentsMargins(0, 0, 0, 0)
+        box.setSpacing(12)
+        self._columns: list = []
+        self._heights = [0, 0]  # 两列累计高度（sizeHint 估算），平衡用
+        self._pending: list = []  # finalize 前添加的卡片
+        self._finalized = False
+        for _ in range(2):
+            col = QVBoxLayout()
+            col.setContentsMargins(0, 0, 0, 0)
+            col.setSpacing(12)
+            col.addStretch(1)  # 列尾顶格：卡片永远从列头紧密排起
+            box.addLayout(col, 1)
+            self._columns.append(col)
+
+    def add_card(self, card: QWidget) -> None:
+        if self._finalized:
+            self._place(card)  # 此时字段已填完，sizeHint 可信
+        else:
+            self._pending.append(card)
+
+    def finalize(self) -> None:
+        """字段全部填完后调用：按 sizeHint 高度把卡片平衡进两列。"""
+        for card in self._pending:
+            self._place(card)
+        self._pending.clear()
+        self._finalized = True
+
+    def _place(self, card: QWidget) -> None:
+        idx = 0 if self._heights[0] <= self._heights[1] else 1
+        col = self._columns[idx]
+        col.insertWidget(col.count() - 1, card)  # 插到列尾 stretch 之前
+        self._heights[idx] += card.sizeHint().height() + 12
+
+
+class MainWindow(MSFluentWindow):
     # 检查更新结果回投 GUI 线程：(manual, UpdateCheckResult)
     _sig_update_result = pyqtSignal(object)
 
@@ -548,92 +650,32 @@ class MainWindow(QMainWindow):
             log('模拟器模式：调度器将用 opener（一次性初始化 + intent 直开）打开 QQ 宠物主页')
         self.setWindowTitle(f'QQ 宠物自动化助手 v{APP_VERSION}'
                             + ('（模拟器版）' if emulator_mode else ''))
-        self.resize(1200, 750)
+        self.resize(1280, 820)
+        self.setMinimumSize(1100, 700)
 
         self.scrcpy_view = ScrcpyContainer()
         self.log_view = LogView(readOnly=True)
         self.log_view.setMaximumBlockCount(LOG_MAX_LINES)
 
-        # 右侧：顶部按钮行（开始/停止）+ 选项卡（日志/统计/设置）
-        self.btn_start = QPushButton('开始')
-        self.btn_stop = QPushButton('停止')
-        self.btn_start.setStyleSheet(START_BTN_STYLE)
-        self.btn_stop.setStyleSheet(STOP_BTN_STYLE)
-        self.btn_stop.setEnabled(False)
-        self.btn_start.clicked.connect(self.start_runner)
-        self.btn_stop.clicked.connect(self.stop_runner)
-        btn_row = QHBoxLayout()
-        btn_row.addWidget(self.btn_start)
-        btn_row.addWidget(self.btn_stop)
-        btn_row.addStretch()  # 左侧：开始/停止；右侧：画面镜像开关 + 连接测试按钮
-        # 右侧按钮放进独立子布局，间距紧凑；不影响左侧开始/停止的间距
-        right_btns = QHBoxLayout()
-        right_btns.setSpacing(0)  # 右侧按钮间距：紧凑排列（需要留缝可改回 2~4）
-        # 画面镜像开关：开=启动 scrcpy 并看门狗自动重连，关=结束进程且不再自动拉起
-        self.btn_scrcpy = QPushButton()
-        self.btn_scrcpy.setCheckable(True)
-        self.btn_scrcpy.setChecked(True)  # 默认开启（沿用原来启动即拉 scrcpy 的行为）
-        self.btn_scrcpy.setStyleSheet(SCRCPY_BTN_STYLE)
-        self.btn_scrcpy.clicked.connect(self._toggle_scrcpy)
-        self._update_scrcpy_btn()
-        right_btns.addWidget(self.btn_scrcpy)
-        # 连接测试：u2 截图 + OCR 识别 + 控件树拉取 耗时（后台线程执行，结果在日志页）
-        self._btn_connect_test = QPushButton('连接测试')
-        self._btn_connect_test.clicked.connect(self._test_connect)
-        right_btns.addWidget(self._btn_connect_test)
-        # 手动重启：按 recover.method 配置执行一次异常恢复（重启设备/重启游戏回宠物页）
-        self._btn_manual_recover = QPushButton('手动重启')
-        self._btn_manual_recover.clicked.connect(self._manual_recover)
-        right_btns.addWidget(self._btn_manual_recover)
-        btn_row.addLayout(right_btns)
-
-        # 日志页：顶部账号状态条 + 当日统计条 + 日志区
-        self.status_label = QLabel()
-        self.status_label.setStyleSheet(
-            'color: #ffd54f; background: #263238; padding: 4px 8px; font-size: 13px;')
-        self.stats_label = QLabel()
-        self.stats_label.setStyleSheet(
-            'color: #ddd; background: #263238; padding: 4px 8px; font-size: 13px;')
-        log_page = QWidget()
-        log_layout = QVBoxLayout(log_page)
-        log_layout.setContentsMargins(0, 0, 0, 0)
-        log_layout.setSpacing(0)
-        log_layout.addWidget(self.status_label)
-        log_layout.addWidget(self.stats_label)
-        log_layout.addWidget(self.log_view)
-
-        self.tabs = QTabWidget()
-        # 设置/任务选项卡的表单控件注册表（加载/保存共用，见 _build_settings_form）
+        # 设置/任务页的表单控件注册表（加载/保存共用，见 _build_settings_form）
         self._setting_widgets: dict = {}
         # 护理方式选"一键护理"时体力/清洁阈值用不上，隐藏对应表单行（label + 控件）
         self._care_threshold_rows: dict = {}
         # 模拟器相关设置行（label + 控件），非模拟器模式隐藏
         self._emulator_rows: list = []
-        self.tabs.addTab(log_page, '日志')
-        self.tabs.addTab(self._build_schedule_page(), '调度')
-        self.stats_panel = StatsPanel()
-        self.tabs.addTab(self.stats_panel, '统计')
-        self.tabs.addTab(self._build_tasks_page(), '任务')
-        self.tabs.addTab(self._build_settings_page(), '设置')
-        self.tabs.currentChanged.connect(self._on_tab_changed)
+        # 实例名称/安装路径的自动填充记录（key -> 上次自动填的值），
+        # 换设备后区分"自动填的"和"用户手改的"，只作废前者
+        self._emulator_autofill: dict = {}
+        # 主页宠物状态卡片：缓存字段 -> 数值标签（每秒刷新，见 _refresh_stats）
+        self._status_values: dict = {}
 
-        right_panel = QWidget()
-        right_layout = QVBoxLayout(right_panel)
-        right_layout.setContentsMargins(0, 0, 0, 0)
-        right_layout.addLayout(btn_row)
-        right_layout.addWidget(self.tabs)
-
-        splitter = QSplitter()
-        splitter.addWidget(self.scrcpy_view)
-        splitter.addWidget(right_panel)
-        splitter.setSizes([420, 780])
-        splitter.setCollapsible(0, False)
-        splitter.setCollapsible(1, False)
-        self.setCentralWidget(splitter)
+        self._build_control_widgets()
+        self._install_toolbar()
+        self._init_navigation()
 
         self._scrcpy_proc: subprocess.Popen | None = None
         self._runner_proc: subprocess.Popen | None = None
-        self._runner_started_at: float | None = None  # 调度器启动时刻（monotonic），日志页显示运行时间用
+        self._runner_started_at: float | None = None  # 调度器启动时刻（monotonic），主页显示运行时间用
         self._recovering = False  # 手动重启进行中：期间开始/停止按钮联动禁用
 
         # 日志：本进程监听器 + 调度子进程 stdout -> 队列 -> 定时器刷到界面
@@ -681,6 +723,223 @@ class MainWindow(QMainWindow):
         self._recover_signals.finished.connect(self._on_recover_finished)
 
         QTimer.singleShot(0, self._start_all)
+
+    # ---- 界面构建 ----
+
+    def _build_control_widgets(self) -> None:
+        """顶部工具栏上的按钮/开关（处理器与各状态字段与原布局一致）。"""
+        # 开始 = 子进程启动调度器，停止 = 立即结束调度器进程
+        self.btn_start = PrimaryPushButton('开始', self, FIF.PLAY)
+        self.btn_stop = PushButton('停止', self, FIF.CLOSE)
+        self.btn_stop.setEnabled(False)
+        self.btn_start.clicked.connect(self.start_runner)
+        self.btn_stop.clicked.connect(self.stop_runner)
+        # 画面镜像开关：开=启动 scrcpy 并看门狗自动重连，关=结束进程且不再自动拉起。
+        # 开关状态持久化到 gui.mirror，下次启动保持。
+        # 注意先 setChecked 再连接：SwitchButton 的 checkedChanged 在 setChecked 时就触发
+        self.btn_scrcpy = SwitchButton(self)
+        self.btn_scrcpy.setOnText('开')
+        self.btn_scrcpy.setOffText('关')
+        self.btn_scrcpy.setChecked(load_config().gui.mirror)
+        self.btn_scrcpy.checkedChanged.connect(self._toggle_scrcpy)
+        # 连接测试：u2 截图 + OCR 识别 + 控件树拉取 耗时（后台线程执行，结果在日志页）
+        self._btn_connect_test = PushButton('连接测试', self, FIF.LINK)
+        self._btn_connect_test.clicked.connect(self._test_connect)
+        # 手动重启：按 recover.method 配置执行一次异常恢复（重启设备/重启游戏回宠物页）
+        self._btn_manual_recover = PushButton('手动重启', self, FIF.SYNC)
+        self._btn_manual_recover.clicked.connect(self._manual_recover)
+
+    def _build_toolbar(self) -> CardWidget:
+        """顶部全局工具栏：开始/停止 + 画面镜像开关 + 连接测试/手动重启，右侧运行时间。"""
+        card = CardWidget(self)
+        row = QHBoxLayout(card)
+        row.setContentsMargins(14, 8, 14, 8)
+        row.setSpacing(10)
+        row.addWidget(self.btn_start)
+        row.addWidget(self.btn_stop)
+        row.addSpacing(6)
+        row.addWidget(BodyLabel('画面镜像'))
+        row.addWidget(self.btn_scrcpy)
+        row.addSpacing(6)
+        row.addWidget(self._btn_connect_test)
+        row.addWidget(self._btn_manual_recover)
+        row.addStretch(1)
+        self._runtime_label = BodyLabel('运行时间 0小时0分钟')
+        row.addWidget(self._runtime_label)
+        return card
+
+    def _install_toolbar(self) -> None:
+        """把 stackedWidget 包进右侧容器（上工具栏、下页面堆栈），
+        工具栏固定在窗口内容区顶部，切换导航页不受影响。"""
+        right = QWidget()
+        box = QVBoxLayout(right)
+        box.setContentsMargins(16, 8, 16, 0)
+        box.setSpacing(10)
+        box.addWidget(self._build_toolbar())
+        self.hBoxLayout.removeWidget(self.stackedWidget)
+        box.addWidget(self.stackedWidget, 1)
+        self.hBoxLayout.addWidget(right, 1)
+
+    def _init_navigation(self) -> None:
+        """左侧 Fluent 导航栏：主页/调度/统计/任务/设置（设置固定在底部）。"""
+        self.addSubInterface(self._build_home_page(), FIF.HOME, '主页')
+        self.addSubInterface(self._build_schedule_page(), FIF.CALENDAR, '调度')
+        self.stats_panel = StatsPanel()
+        self.stats_panel.setObjectName('statsPage')
+        self.addSubInterface(self._wrap_page(self.stats_panel), FIF.HISTORY, '统计')
+        self.addSubInterface(self._build_tasks_page(), FIF.TILES, '任务')
+        self.addSubInterface(self._build_settings_page(), FIF.SETTING, '设置',
+                             position=NavigationItemPosition.BOTTOM)
+        self.stackedWidget.currentChanged.connect(self._on_tab_changed)
+
+    @staticmethod
+    def _wrap_page(content: QWidget) -> QWidget:
+        """给导航页内容加统一外边距（左右已由工具栏容器留白，页面只管上下）。"""
+        page = content
+        page.setContentsMargins(0, 4, 0, 12)
+        return page
+
+    def _build_home_page(self) -> QWidget:
+        """主页：左侧 scrcpy 画面卡片（9:16 竖屏等比嵌入，宽度随高度自适应），
+        右侧 上=宠物状态、中=今日统计、下=日志（吃掉剩余空间）。"""
+        page = QWidget()
+        page.setObjectName('homePage')
+        layout = QHBoxLayout(page)
+        layout.setContentsMargins(0, 4, 0, 12)
+        layout.setSpacing(16)
+
+        self._screen_card = SimpleCardWidget()
+        screen_layout = QVBoxLayout(self._screen_card)
+        screen_layout.setContentsMargins(10, 10, 10, 10)
+        screen_layout.addWidget(self.scrcpy_view)
+        # 画面卡宽度 = 高度 × 画面比例（_fit_screen_card，窗口缩放/嵌入后重算），
+        # 不用 QSplitter：把手在深色主题下会渲染成一条白色竖条，且宽度本就由
+        # 高度推导，拖动没有意义
+        layout.addWidget(self._screen_card)
+
+        side = QWidget()
+        side.setMinimumWidth(400)
+        side_layout = QVBoxLayout(side)
+        side_layout.setContentsMargins(0, 0, 0, 0)
+        side_layout.setSpacing(12)
+        # 状态/任务队列/今日卡垂直方向 Maximum：紧贴内容高度，多余空间全给日志卡
+        # （否则侧栏多余高度把它们撑高，卡片内容垂直居中、网格与状态行之间空出大块）
+        status_card = self._build_status_card()
+        status_card.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
+        queue_card = self._build_queue_card()
+        queue_card.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
+        today_card = self._build_today_card()
+        today_card.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
+        side_layout.addWidget(status_card)
+        side_layout.addWidget(queue_card)
+        side_layout.addWidget(today_card)
+        side_layout.addWidget(self._build_log_card(), 1)
+        layout.addWidget(side, 1)
+        return page
+
+    def _fit_screen_card(self) -> None:
+        """把画面卡宽度收成 高度×画面比例（消除两侧黑边），窗口缩放和嵌入后调用。"""
+        card = getattr(self, '_screen_card', None)
+        if card is None:
+            return
+        h = card.height() - 20  # 卡片内边距 10×2
+        if h <= 0:
+            return
+        aw, ah = self.scrcpy_view._aspect or (9, 16)
+        if not aw or not ah:
+            aw, ah = 9, 16
+        card.setFixedWidth(max(300, int(h * aw / ah) + 20))
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        # 等布局算完再按新高度收宽度（resizeEvent 触发时 height 还是旧值）
+        QTimer.singleShot(0, self._fit_screen_card)
+
+    def _build_status_card(self) -> HeaderCardWidget:
+        """宠物状态卡片：体力/清洁/心情/金币/饼干/香皂 横排一行均匀分布。"""
+        card = CompactCardWidget()
+        card.setTitle('宠物状态')
+        body = QWidget()
+        layout = QHBoxLayout(body)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+        for key, label in STATUS_FIELDS:
+            cell = QWidget()
+            cell_layout = QVBoxLayout(cell)
+            cell_layout.setContentsMargins(0, 0, 0, 0)
+            cell_layout.setSpacing(2)
+            cell_layout.addWidget(CaptionLabel(label))
+            value = StrongBodyLabel('-')
+            cell_layout.addWidget(value)
+            self._status_values[key] = value
+            layout.addWidget(cell, 1)  # 等宽均分整行
+        card.viewLayout.addWidget(body)
+        return card
+
+    def _build_queue_card(self) -> HeaderCardWidget:
+        """任务队列卡片：当前任务/下一任务/待执行/等待中 横排一行均匀分布。
+
+        调度器运行时读 runs/queue_status.json 的精确状态，未运行按配置推算
+        （与调度页"下次执行"列共用 _predict_next），见 _refresh_queue_card。
+        """
+        card = CompactCardWidget()
+        card.setTitle('任务队列')
+        body = QWidget()
+        row = QHBoxLayout(body)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(8)
+        self._queue_values = {}
+        for key, label in (('current', '当前任务'), ('next', '下一任务'),
+                           ('ready', '待执行'), ('waiting', '等待中')):
+            cell = QWidget()
+            cell_layout = QVBoxLayout(cell)
+            cell_layout.setContentsMargins(0, 0, 0, 0)
+            cell_layout.setSpacing(2)
+            cell_layout.addWidget(CaptionLabel(label))
+            value = StrongBodyLabel('-')
+            cell_layout.addWidget(value)
+            self._queue_values[key] = value
+            row.addWidget(cell, 1)  # 四格等宽均分
+        card.viewLayout.addWidget(body)
+        return card
+
+    def _build_today_card(self) -> HeaderCardWidget:
+        """今日统计卡片：两行网格均匀分布（每秒从进度文件刷新）。
+
+        上行：学习(h)/工作(h)/学习/打工/冒险；下行：踩踩/经验日常/PK/被雇佣。
+        """
+        card = CompactCardWidget()
+        card.setTitle('今日统计')
+        body = QWidget()
+        grid = QGridLayout(body)
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setSpacing(8)
+        self._today_values = {}
+        fields = (('study_h', '学习(h)'), ('work_h', '工作(h)'),
+                  ('学习', '学习'), ('打工', '打工'), ('冒险', '冒险'),
+                  ('踩踩', '踩踩'), ('经验日常', '经验日常'), ('PK', 'PK'), ('被雇佣', '被雇佣'))
+        for i, (key, label) in enumerate(fields):
+            cell = QWidget()
+            cell_layout = QVBoxLayout(cell)
+            cell_layout.setContentsMargins(0, 0, 0, 0)
+            cell_layout.setSpacing(2)
+            cell_layout.addWidget(CaptionLabel(label))
+            value = StrongBodyLabel('-')
+            cell_layout.addWidget(value)
+            self._today_values[key] = value
+            grid.addWidget(cell, i // 5, i % 5)
+        for col in range(5):
+            grid.setColumnStretch(col, 1)  # 5 列等宽均分
+        card.viewLayout.addWidget(body)
+        return card
+
+    def _build_log_card(self) -> HeaderCardWidget:
+        """主页日志卡片：调度器与本进程日志实时显示（链接可点击），吃掉右侧剩余空间。"""
+        card = CompactCardWidget()
+        card.setTitle('日志')
+        # viewLayout 是 QHBoxLayout，日志撑满
+        card.viewLayout.addWidget(self.log_view, 1)
+        return card
 
     # ---- 启动流程 ----
 
@@ -734,6 +993,7 @@ class MainWindow(QMainWindow):
         hwnd = find_scrcpy_hwnd(self._scrcpy_proc)
         if hwnd:
             self.scrcpy_view.embed(hwnd, device_aspect())
+            self._fit_screen_card()  # 嵌入后拿到真实画面比例，重算画面卡宽度
             self._embed_timer.stop()
             self._embed_fail_logged = False
             return
@@ -789,50 +1049,94 @@ class MainWindow(QMainWindow):
             secs = 0
         return f'运行时间 {secs // 3600}小时{(secs % 3600) // 60}分钟　'
 
-    def _queue_status_line(self) -> str:
-        """任务队列状态行：当前任务 / 下一任务 / 待执行数量 / 等待中数量
-        （调度器 task_queue 引擎每轮写 runs/queue_status.json，本方法每秒读一次）。"""
+    def _refresh_queue_card(self) -> None:
+        """刷新任务队列卡：当前任务 / 下一任务 / 待执行 / 等待中。
+
+        调度器运行时读 runs/queue_status.json 的精确状态（每秒读一次）；
+        未运行时按配置推算（与调度页"下次执行"列共用 _predict_next），
+        不开调度器也能看到队列里接下来要跑什么。
+        """
         running = self._runner_proc is not None and self._runner_proc.poll() is None
-        if not running:
-            return '任务队列: 调度器未运行'
-        st = load_queue_status()
-        if not st:
-            return '任务队列: 暂无（调度器运行后自动更新）'
-        current = st.get('current') or (
-            f"{st['pending']}（进行中）" if st.get('pending') else '无')
-        nxt = st.get('next') or '无'
-        if st.get('next_at'):
-            nxt = f"{nxt} {st['next_at']}"
-            # 按时间戳算剩余时间（每次刷新重新算，自然形成倒计时）；
-            # 已过等待点、调度器还没写新一轮状态时会短暂为负，显示"xx前"
-            ts = st.get('next_ts') or 0
-            if ts:
-                delta = ts - time.time()
-                if delta >= 0:
-                    nxt += f'（{_format_remaining(delta)}后）'
+        if running:
+            st = load_queue_status()
+            if st:
+                current = st.get('current') or (
+                    f"{st['pending']}（进行中）" if st.get('pending') else '无')
+                nxt = st.get('next') or '无'
+                if st.get('next_at'):
+                    nxt = f"{nxt} {st['next_at']}"
+                    # 按时间戳算剩余时间（每次刷新重新算，自然形成倒计时）；
+                    # 已过等待点、调度器还没写新一轮状态时会短暂为负，显示"xx前"
+                    ts = st.get('next_ts') or 0
+                    if ts:
+                        delta = ts - time.time()
+                        if delta >= 0:
+                            nxt += f'（{_format_remaining(delta)}后）'
+                        else:
+                            nxt += f'（{_format_remaining(-delta)}前）'
+                ready, waiting = str(st.get('ready', 0)), str(st.get('waiting', 0))
+            else:
+                current, nxt = '无', '暂无（等待调度器写入）'
+                ready = waiting = '-'
+        else:
+            current = '无'
+            nxt, ready, waiting = self._predict_queue_summary()
+        for key, text in (('current', current), ('next', nxt),
+                          ('ready', ready), ('waiting', waiting)):
+            label = self._queue_values[key]
+            label.setText(str(text))
+            label.setToolTip(str(text))
+
+    def _predict_queue_summary(self) -> tuple:
+        """调度器未运行时按配置推算队列概要：下一任务 / 现在可执行数 / 等待中数。
+
+        按 tasks.order 顺序扫描启用中的任务，第一个非"—"的推算结果就是下一任务
+        （order 越靠前越优先，与调度器扫描顺序一致）。
+        """
+        try:
+            cfg = load_config()
+            now = datetime.now()
+            order = [k.strip() for k in cfg.tasks.order.split('>') if k.strip()]
+            ready = waiting = 0
+            nxt = '无'
+            for key in order:
+                if key not in SCHEDULE_TASK_NAMES:
+                    continue
+                item = getattr(cfg.tasks, key)
+                if not item.enabled:
+                    continue
+                pred = self._predict_next(key, item, cfg, now)
+                if pred == '—':
+                    continue
+                if pred in ('现在可执行', '启动后立即', '启动后判定'):
+                    ready += 1
                 else:
-                    nxt += f'（{_format_remaining(-delta)}前）'
-        return (f"任务队列: 当前任务 {current}　下一任务 {nxt}"
-                f"　待执行 {st.get('ready', 0)}　等待中 {st.get('waiting', 0)}")
+                    waiting += 1
+                if nxt == '无':
+                    # "启动后判定"（学习/打工要等金币与时长判定）这类内部提示不展示
+                    nxt = (SCHEDULE_TASK_NAMES[key] if pred == '启动后判定'
+                           else f'{SCHEDULE_TASK_NAMES[key]}（{pred}）')
+            return nxt, str(ready), str(waiting)
+        except Exception:
+            return '推算失败', '-', '-'
 
     def _refresh_stats(self) -> None:
-        """刷新日志页顶部：运行时间 + 状态条（状态缓存）+ 任务队列状态行 + 各任务当日统计。"""
+        """刷新主页卡片：运行时间 + 宠物状态横排（状态缓存）+ 任务队列卡 + 各任务当日统计。"""
         try:
-            run_prefix = self._run_time_prefix()
-            queue_line = self._queue_status_line()
+            self._runtime_label.setText(self._run_time_prefix().strip())
+            self._refresh_queue_card()
             accounts = load_accounts()
             if accounts:
                 # 单条目（default；老缓存文件可能残留多账号条目，优先取 default，
                 # 调度器第一次写状态缓存时会自愈清掉残留条目）
                 st = accounts.get('default') or next(iter(accounts.values()))
-                parts = '　'.join(f'{label} {st.get(key, "-")}'
-                                  for key, label in STATUS_FIELDS)
-                self.status_label.setText(run_prefix + parts + '\n' + queue_line)
+                for key, _label in STATUS_FIELDS:
+                    self._status_values[key].setText(str(st.get(key, '-')))
             else:
-                self.status_label.setText(
-                    run_prefix + '账号状态: 暂无（调度器运行后自动更新）\n' + queue_line)
+                for key, _label in STATUS_FIELDS:
+                    self._status_values[key].setText('-')
         except Exception as e:
-            self.status_label.setText(f'账号状态读取失败: {e}')
+            self._queue_values['current'].setText(f'状态读取失败: {e}')
         try:
             cfg = load_config()
             tasks = [
@@ -843,22 +1147,25 @@ class MainWindow(QMainWindow):
                 ('PK', PK_PROGRESS_FILE, cfg.pk.times_per_day),
                 ('被雇佣', EMPLOYED_PROGRESS_FILE, 0),  # 无次数上限，只显示当日次数
             ]
-            parts = []
             study_s, work_s = load_durations(
                 cfg.schedule.school_factor, cfg.schedule.work_factor)
-            parts.append(
-                '已学习/工作/总时长（小时）'
-                f'{study_s / 3600:.1f}/{work_s / 3600:.1f}/{(study_s + work_s) / 3600:.1f}')
+            values = {
+                # 整数时长不带小数点（0 而不是 0.0），一位小数照常显示
+                'study_h': f'{study_s / 3600:.1f}'.removesuffix('.0'),
+                'work_h': f'{work_s / 3600:.1f}'.removesuffix('.0'),
+            }
             for label, progress_file, limit in tasks:
                 _, done, _ = load_progress(progress_file, quiet=True)
-                parts.append(f'{label} {done}/{limit}' if limit else f'{label} {done}')
+                values[label] = f'{done}/{limit}' if limit else str(done)
                 if label == '踩踩':
                     # 经验日常（好友照顾）当日是否完成：踩踩次数满但经验未完成时仍会继续
                     _, exp_done, _ = load_exp_daily(quiet=True)
-                    parts.append('经验日常' + ('✓' if exp_done else '✗'))
-            self.stats_label.setText('今日: ' + '　'.join(parts))
+                    values['经验日常'] = '✓' if exp_done else '✗'
+            for key, text in values.items():
+                self._today_values[key].setText(text)
         except Exception as e:
-            self.stats_label.setText(f'今日统计读取失败: {e}')
+            self._today_values['study_h'].setText('读取失败')
+            self._today_values['study_h'].setToolTip(str(e))
         try:
             self._refresh_schedule()
         except Exception as e:
@@ -867,12 +1174,17 @@ class MainWindow(QMainWindow):
     # ---- 调度页面 ----
 
     def _build_schedule_page(self) -> QWidget:
-        """调度选项卡：每任务 开关 / 执行间隔 / 启用时段 可直接在表格里编辑
+        """调度页：每任务 开关 / 执行间隔 / 启用时段 可直接在表格里编辑
         （保存到 config.yaml，调度器下一轮热加载生效），下次执行列每秒刷新
         ——调度器运行时读 queue_status.json 的精确时间，未运行时按配置推算。"""
         page = QWidget()
+        page.setObjectName('schedulePage')
         layout = QVBoxLayout(page)
-        self.schedule_table = QTableWidget(0, 5)
+        layout.setContentsMargins(0, 4, 0, 12)
+        layout.setSpacing(8)
+        self.schedule_table = TableWidget()
+        self.schedule_table.setRowCount(0)
+        self.schedule_table.setColumnCount(5)
         self.schedule_table.setHorizontalHeaderLabels(
             ['任务', '开关', '执行间隔', '启用时段', '下次执行'])
         self.schedule_table.horizontalHeader().setSectionResizeMode(
@@ -881,11 +1193,10 @@ class MainWindow(QMainWindow):
         self.schedule_table.verticalHeader().setDefaultSectionSize(38)
         self.schedule_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.schedule_table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
-        layout.addWidget(self.schedule_table)
-        note = QLabel('开关/执行间隔/启用时段可直接编辑（保存到 config.yaml，调度器下一轮生效）；'
-                      '"下次执行"每秒刷新：调度器运行时显示精确时间，未运行时按配置推算；'
-                      '学习/打工由主任务组统一调度，无固定间隔，下次执行显示"启动后判定"。')
-        note.setStyleSheet('color: #888; padding: 4px 2px;')
+        layout.addWidget(self.schedule_table, 1)
+        note = CaptionLabel('开关/执行间隔/启用时段可直接编辑（保存到 config.yaml，调度器下一轮生效）；'
+                            '"下次执行"每秒刷新：调度器运行时显示精确时间，未运行时按配置推算；'
+                            '学习/打工由主任务组统一调度，无固定间隔，下次执行显示"启动后判定"。')
         note.setWordWrap(True)
         layout.addWidget(note)
         self._schedule_sig: tuple | None = None  # 配置签名：变化且不在编辑中时重建编辑器
@@ -983,18 +1294,20 @@ class MainWindow(QMainWindow):
         return wrap
 
     def _make_switch_editor(self, key: str, item, in_order: bool) -> QWidget:
-        cb = QCheckBox()
+        cb = SwitchButton()
+        cb.setOnText('开')
+        cb.setOffText('关')
         cb.setChecked(item.enabled)
         cb.setEnabled(in_order)
         cb.setToolTip('启用/停用该任务（保存到 config.yaml，调度器下一轮生效）'
                       + ('' if in_order else '；不在 tasks.order 中，不调度'))
-        cb.toggled.connect(lambda checked, k=key: self._save_schedule_bool(k, checked))
+        cb.checkedChanged.connect(lambda checked, k=key: self._save_schedule_bool(k, checked))
         return self._centered(cb)
 
     def _make_interval_editor(self, key: str, item, cfg, in_order: bool) -> QWidget:
         if key in ('adventure', 'visit', 'pk'):
             # 每日调度时间（HH:MM）：场景 start_time，保存时同步队列 daily_times
-            te = _NoWheelQTimeEdit()
+            te = _NoWheelTimeEdit()
             te.setDisplayFormat('HH:mm')
             te.setTime(self._qtime_from_value(getattr(cfg, key).start_time))
             te.setEnabled(in_order)
@@ -1014,7 +1327,7 @@ class MainWindow(QMainWindow):
             spin.valueChanged.connect(lambda v, k=key: self._save_schedule_interval(k, v))
             return spin
         # 学习/打工：主任务组统一调度，无固定间隔
-        label = QLabel('—')
+        label = BodyLabel('—')
         label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         label.setToolTip('学习/打工由主任务组（冒险/学习/打工/雇佣好友）按需统一调度，无固定间隔')
         return label
@@ -1024,7 +1337,8 @@ class MainWindow(QMainWindow):
             value = str(getattr(cfg, key).time_range)
         else:
             value = str(item.enabled_time_range)
-        edit = QLineEdit(value)
+        edit = LineEdit()
+        edit.setText(value)
         edit.setEnabled(in_order)
         edit.setPlaceholderText('如 00:00-23:59 或 08:00:00-20:00:00')
         edit.setToolTip('启用时段：HH:MM-HH:MM 或 HH:MM:SS-HH:MM:SS，结束早于开始视为跨零点')
@@ -1260,119 +1574,172 @@ class MainWindow(QMainWindow):
 
     # ---- 设置/任务页面 ----
 
-    def _build_settings_form(self, fields: list) -> QWidget:
+    def _make_field_widget(self, key: str, kind) -> QWidget:
+        """按字段类型创建表单控件并注册到 self._setting_widgets（保存信号在此连接）。
+
+        返回放入表单行的控件（'text' 类型返回含教程链接的列容器）。
+        """
+        if kind == 'int':
+            w = _NoWheelSpinBox()
+            # 体力/清洁是 0-100，其余次数/阈值放宽
+            w.setRange(0, 100 if key.startswith('care.') else 99999)
+            # 用 valueChanged 而非 editingFinished：滚轮/滚动导致的失焦不再误触发保存，
+            # 只有数值真的变化（箭头/键盘/输入提交）才保存；_load_settings 用 blockSignals 防误存
+            w.valueChanged.connect(lambda _v, k=key: self.save_field(k))
+        elif kind == 'bool':
+            w = SwitchButton()
+            w.setOnText('开')
+            w.setOffText('关')
+            w.checkedChanged.connect(lambda _c, k=key: self.save_field(k))
+        elif kind == 'text':
+            # 多行文本（如 OnePush YAML 配置）：失焦自动保存，下方附配置教程链接
+            w = _FocusOutPlainTextEdit(lambda k=key: self.save_field(k))
+            w.setMinimumHeight(60)
+            w.setMaximumHeight(110)
+            w.setPlaceholderText('provider: bark\nkey: 你的Key')
+            # HyperlinkLabel 的 (url, text) 重载要求 url 是 QUrl——传 str 会被当成
+            # （text, parent) 重载，显示原始 URL 且点击无效
+            help_label = HyperlinkLabel(QUrl(ONEPUSH_HELP_URL), 'OnePush 配置教程')
+            col = QWidget()
+            col_layout = QVBoxLayout(col)
+            col_layout.setContentsMargins(0, 0, 0, 0)
+            col_layout.setSpacing(4)
+            col_layout.addWidget(w)
+            col_layout.addWidget(help_label)
+            self._setting_widgets[key] = (w, kind)
+            return col
+        elif kind == 'devices' or isinstance(kind, list):
+            if kind == 'devices':
+                # 设备序列号：可编辑下拉——既可从在线设备里选，也可手动输入
+                # （模拟器 127.0.0.1:7555 这类地址可能还没连进 adb，下拉里没有）
+                w = _NoInsertEditableComboBox()
+                w.setPlaceholderText('自动（第一台）或输入序列号，如 127.0.0.1:7555')
+                w.setToolTip('从下拉选择在线设备，或直接输入设备序列号/模拟器 adb 地址')
+                # 手动输入每敲一个字符就保存会反复重启 scrcpy/调度器，
+                # 只在 选了下拉项（activated）或 输入结束（Enter/失焦）时保存
+                w.activated.connect(lambda _i, k=key: self.save_field(k))
+                w.editingFinished.connect(lambda k=key: self.save_field(k))
+            else:
+                w = ComboBox()
+                w.addItems(kind)
+                w.currentTextChanged.connect(lambda _t, k=key: self.save_field(k))
+                if key == 'care.method':
+                    # 护理方式变化时联动显隐体力/清洁阈值（一键护理不读状态，阈值无意义）
+                    w.currentTextChanged.connect(self._on_care_method_changed)
+        else:
+            w = LineEdit()
+            # 时间类字段：格式提示不占标签宽度，放在 placeholder 里
+            if key.endswith('.start_time'):
+                w.setPlaceholderText('HH:MM')
+            elif key.endswith('.time_range'):
+                w.setPlaceholderText('HH:MM-HH:MM（结束早于开始视为跨零点）')
+            w.editingFinished.connect(lambda k=key: self.save_field(k))
+        self._setting_widgets[key] = (w, kind)
+        return w
+
+    def _build_settings_form(self, fields: list) -> tuple:
         """按字段列表构建设置表单页（表单编辑 config.yaml，字段失焦自动保存，保留注释）。
 
-        设置选项卡和任务选项卡共用：控件都注册进 self._setting_widgets，
-        加载/保存逻辑（load_settings / save_field）不区分来自哪个选项卡。
-        """
-        form = QFormLayout()
-        for key, label, kind in fields:
-            if kind == 'int':
-                w = _NoWheelSpinBox()
-                # 体力/清洁是 0-100，其余次数/阈值放宽
-                w.setRange(0, 100 if key.startswith('care.') else 99999)
-                # 用 valueChanged 而非 editingFinished：滚轮/滚动导致的失焦不再误触发保存，
-                # 只有数值真的变化（箭头/键盘/输入提交）才保存；_load_settings 用 blockSignals 防误存
-                w.valueChanged.connect(lambda _v, k=key: self.save_field(k))
-            elif kind == 'bool':
-                w = QCheckBox()
-                w.stateChanged.connect(lambda _s, k=key: self.save_field(k))
-            elif kind == 'text':
-                # 多行文本（如 OnePush YAML 配置）：失焦自动保存，下方附配置教程链接
-                w = _FocusOutPlainTextEdit(lambda k=key: self.save_field(k))
-                w.setMinimumHeight(60)
-                w.setMaximumHeight(110)
-                w.setPlaceholderText('provider: bark\nkey: 你的Key')
-                help_label = QLabel(f'<a href="{ONEPUSH_HELP_URL}">OnePush 配置教程</a>')
-                help_label.setOpenExternalLinks(True)
-                col = QWidget()
-                col_layout = QVBoxLayout(col)
-                col_layout.setContentsMargins(0, 0, 0, 0)
-                col_layout.setSpacing(4)
-                col_layout.addWidget(w)
-                col_layout.addWidget(help_label)
-                self._setting_widgets[key] = (w, kind)
-                form.addRow(label, col)
-                continue
-            elif kind == 'devices' or isinstance(kind, list):
-                w = QComboBox()
-                if kind == 'devices':
-                    # 设备序列号：可编辑下拉——既可从在线设备里选，也可手动输入
-                    # （模拟器 127.0.0.1:7555 这类地址可能还没连进 adb，下拉里没有）
-                    w.setEditable(True)
-                    w.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)  # 手动输入不追加进下拉
-                    w.lineEdit().setPlaceholderText('自动（第一台）或输入序列号，如 127.0.0.1:7555')
-                    w.setToolTip('从下拉选择在线设备，或直接输入设备序列号/模拟器 adb 地址')
-                    # 手动输入每敲一个字符就保存会反复重启 scrcpy/调度器，
-                    # 只在 选了下拉项（activated）或 输入结束（Enter/失焦）时保存
-                    w.activated.connect(lambda _i, k=key: self.save_field(k))
-                    w.lineEdit().editingFinished.connect(lambda k=key: self.save_field(k))
-                else:
-                    if isinstance(kind, list):
-                        w.addItems(kind)
-                    w.currentTextChanged.connect(lambda _t, k=key: self.save_field(k))
-                    if key == 'care.method':
-                        # 护理方式变化时联动显隐体力/清洁阈值（一键护理不读状态，阈值无意义）
-                        w.currentTextChanged.connect(self._on_care_method_changed)
-            else:
-                w = QLineEdit()
-                w.editingFinished.connect(lambda k=key: self.save_field(k))
-            self._setting_widgets[key] = (w, kind)
-            form.addRow(label, w)
-            if key in ('care.energy_threshold', 'care.clean_threshold'):
-                self._care_threshold_rows[key] = (form.labelForField(w), w)
-            if key in EMULATOR_SETTING_KEYS:
-                self._emulator_rows.append((form.labelForField(w), w))
-        return form
+        字段按配置键第一段分组（SETTING_GROUP_TITLES），每组一张 HeaderCardWidget，
+        组顺序按字段首次出现；卡片在 TwoColumnCardsPanel 里按高度平衡进左右两列
+        （字段填完后 finalize，用 sizeHint 估算高度塞到较矮的一列）。
+        返回 (容器控件, {组标题: QFormLayout}, {组标题: 卡片})。
 
-    def _wrap_form_page(self, form: QFormLayout) -> QWidget:
-        """把表单包进滚动区域页。"""
-        form_widget = QWidget()
-        form_widget.setLayout(form)
-        scroll = QScrollArea()
-        scroll.setWidget(form_widget)
+        设置页和任务页共用：控件都注册进 self._setting_widgets，
+        加载/保存逻辑（load_settings / save_field）不区分来自哪个页。
+        """
+        container = TwoColumnCardsPanel()
+        group_forms: dict = {}
+        group_cards: dict = {}
+        for key, label, kind in fields:
+            title = SETTING_GROUP_TITLES.get(key.split('.')[0], '其他')
+            form = group_forms.get(title)
+            if form is None:
+                card = CompactCardWidget()
+                card.setTitle(title)
+                form = QFormLayout()
+                form.setContentsMargins(0, 0, 0, 0)
+                form.setSpacing(10)
+                card.viewLayout.addLayout(form)
+                group_forms[title] = form
+                group_cards[title] = card
+                container.add_card(card)
+            w = self._make_field_widget(key, kind)
+            form.addRow(BodyLabel(label), w)
+            field_w = self._setting_widgets[key][0]
+            if key in ('care.energy_threshold', 'care.clean_threshold'):
+                self._care_threshold_rows[key] = (form.labelForField(w), field_w)
+            if key in EMULATOR_SETTING_KEYS:
+                self._emulator_rows.append((form.labelForField(w), field_w))
+        container.finalize()  # 字段已填完，按卡片实际高度平衡进两列
+        return container, group_forms, group_cards
+
+    def _wrap_form_page(self, container: QWidget) -> QWidget:
+        """把表单容器包进 Fluent 滚动区域页（透明背景，透出窗口主题底色）。"""
+        scroll = ScrollArea()
+        scroll.setWidget(container)
         scroll.setWidgetResizable(True)
+        scroll.setStyleSheet('QScrollArea { background: transparent; border: none; }')
+        container.setStyleSheet('background: transparent;')
         page = QWidget()
         layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 4, 0, 12)
         layout.addWidget(scroll)
         return page
 
     def _build_tasks_page(self) -> QWidget:
-        """任务选项卡：任务队列执行顺序 + 各场景任务相关设置。"""
-        return self._wrap_form_page(self._build_settings_form(TASK_SETTING_FIELDS))
+        """任务页：任务队列执行顺序 + 各场景任务相关设置。"""
+        page = self._wrap_form_page(self._build_settings_form(TASK_SETTING_FIELDS)[0])
+        page.setObjectName('tasksPage')
+        return page
 
     def _build_settings_page(self) -> QWidget:
-        """设置选项卡：连接/调度引擎/全局规则/告警等全局设置。"""
-        form = self._build_settings_form(SETTING_FIELDS)
+        """设置页：连接/调度引擎/全局规则/告警等全局设置 + 关于与更新。"""
+        container, group_forms, group_cards = self._build_settings_form(SETTING_FIELDS)
         if not self.emulator_mode:
-            # 非模拟器版：模拟器相关设置用不上，隐藏
+            # 非模拟器版：模拟器相关设置用不上，整组隐藏（含全是模拟器字段的"模拟器"卡片）
             for label, w in self._emulator_rows:
                 label.hide()
                 w.hide()
+            group_cards['模拟器'].hide()
         else:
             self._fill_emulator_placeholders()
         # 通知测试：按当前 config.yaml 的 notify 配置发一条测试告警。
         # 点击按钮会先让输入框失焦（失焦自动保存），未落盘的修改也会先生效；
         # 各渠道发送结果见日志页
-        test_btn = QPushButton('发送通知测试')
+        test_btn = PushButton('发送通知测试', self, FIF.SEND)
         test_btn.clicked.connect(self._test_notify)
-        form.addRow('通知测试', test_btn)
+        test_row = QWidget()
+        test_row_layout = QHBoxLayout(test_row)
+        test_row_layout.setContentsMargins(0, 0, 0, 0)
+        test_row_layout.addWidget(test_btn)
+        test_row_layout.addStretch(1)
+        group_forms['告警通知'].addRow(BodyLabel('通知测试'), test_row)
         # 检查更新：启动后自动查一次，之后每 6 小时一次；这里手动触发，
         # 结果显示在旁边的标签上（有更新时是可点击的 Release 链接）
-        self._update_label = QLabel(f'当前版本 v{APP_VERSION}')
+        about_card = CompactCardWidget()
+        about_card.setTitle('关于与更新')
+        about_form = QFormLayout()
+        about_form.setContentsMargins(0, 0, 0, 0)
+        about_form.setSpacing(10)
+        about_card.viewLayout.addLayout(about_form)
+        self._update_label = BodyLabel(f'当前版本 v{APP_VERSION}')
         self._update_label.setOpenExternalLinks(True)
         self._update_label.setTextInteractionFlags(
             Qt.TextInteractionFlag.TextBrowserInteraction)
-        update_btn = QPushButton('检查更新')
+        update_btn = PushButton('检查更新', self, FIF.UPDATE)
         update_btn.clicked.connect(lambda: self._start_update_check(manual=True))
         update_row = QWidget()
         update_layout = QHBoxLayout(update_row)
         update_layout.setContentsMargins(0, 0, 0, 0)
+        update_layout.setSpacing(8)
         update_layout.addWidget(update_btn)
         update_layout.addWidget(self._update_label, 1)
-        form.addRow('检查更新', update_row)
-        return self._wrap_form_page(form)
+        about_form.addRow(BodyLabel('检查更新'), update_row)
+        container.add_card(about_card)
+        page = self._wrap_form_page(container)
+        page.setObjectName('settingsPage')
+        return page
 
     def _fill_emulator_placeholders(self) -> None:
         """实例名称/安装路径留空自动探测：占位符显示按当前设备序列号探测到的值。"""
@@ -1387,14 +1754,29 @@ class MainWindow(QMainWindow):
                 item = self._setting_widgets.get(key)
                 if not item:
                     continue
-                item[0].setPlaceholderText(
-                    f'自动探测：{value}' if value else hint)
+                w = item[0]
+                w.setPlaceholderText(f'自动探测：{value}' if value else hint)
+                # 上次自动填的值用户没动过：设备换了就作废旧值，跟随新探测结果
+                text = w.text().strip()
+                if text and text == self._emulator_autofill.get(key) and text != value:
+                    w.blockSignals(True)
+                    w.setText('')
+                    w.blockSignals(False)
+                    text = ''
+                # 字段留空且探测到实例时，把探测值直接填进输入框（初始化数据，
+                # 用户可再改；清空并失焦保存后恢复"留空自动探测"）
+                if value and not text:
+                    w.blockSignals(True)
+                    w.setText(value)
+                    w.blockSignals(False)
+                    self._emulator_autofill[key] = value
         except Exception:
             pass  # 占位符只是提示，探测失败不影响设置页
 
     def _on_tab_changed(self, index: int) -> None:
-        """切到任务页（第 4 个）或设置页（第 5 个）时加载当前配置。"""
-        if index in (3, 4):
+        """切到任务页或设置页时加载当前配置（按页面 objectName 判定，不依赖页序）。"""
+        w = self.stackedWidget.widget(index)
+        if w is not None and w.objectName() in ('tasksPage', 'settingsPage'):
             self.load_settings()
 
     def _on_care_method_changed(self, method: str) -> None:
@@ -1418,7 +1800,10 @@ class MainWindow(QMainWindow):
         """后台线程查 GitHub 最新 Release；manual=True 时结果弹窗提示。"""
         if self._update_checking:
             if manual:
-                QMessageBox.information(self, '检查更新', '正在检查更新，请稍候。')
+                box = MessageBox('检查更新', '正在检查更新，请稍候。', self)
+                box.cancelButton.hide()
+                box.yesButton.setText('好')
+                box.exec()
             return
         self._update_checking = True
         threading.Thread(target=self._update_check_worker, args=(manual,),
@@ -1456,26 +1841,19 @@ class MainWindow(QMainWindow):
             latest = result.latest_tag or f'v{result.latest_version}'
             title = '发现新版本'
             text = f'当前版本: v{result.current_version}\n最新版本: {latest}'
-            later_text = '稍后'
+            yes_text, later_text = '打开发布页', '稍后'
         elif ok:
             title = '检查完成'
             text = f'当前版本: v{result.current_version}\n当前已是最新版本。'
-            later_text = '关闭'
+            yes_text, later_text = '好', '关闭'
         else:
             title = '检查失败'
             text = f'{result.message}\n\n可手动查看发布地址:\n{result.release_url}'
-            later_text = '关闭'
-        box = QMessageBox(self)
-        box.setWindowTitle(title)
-        box.setIcon(QMessageBox.Icon.Information if ok else QMessageBox.Icon.Warning)
-        box.setText(text)
-        box.setStyleSheet(
-            'QLabel { font-size: 13px; padding: 4px 0; }'
-            'QPushButton { min-width: 88px; padding: 4px 14px; }')
-        open_btn = box.addButton('打开发布页', QMessageBox.ButtonRole.AcceptRole)
-        box.addButton(later_text, QMessageBox.ButtonRole.RejectRole)
-        box.exec()
-        if box.clickedButton() is open_btn:
+            yes_text, later_text = '打开发布页', '关闭'
+        box = MessageBox(title, text, self)
+        box.yesButton.setText(yes_text)
+        box.cancelButton.setText(later_text)
+        if box.exec() and yes_text == '打开发布页':
             QDesktopServices.openUrl(QUrl(result.release_url or APP_RELEASES_URL))
 
     def _get_test_dev(self) -> 'U2Device':
@@ -1663,14 +2041,16 @@ class MainWindow(QMainWindow):
         if self.emulator_mode:
             self._fill_emulator_placeholders()
 
-    def _fill_devices(self, combo: QComboBox, current: str) -> None:
+    def _fill_devices(self, combo: '_NoInsertEditableComboBox', current: str) -> None:
         """枚举在线 adb 设备填充序列号下拉（可编辑，支持手动输入），
         首项为 自动（第一台）。手动输入的序列号（不在线/模拟器地址）下拉里没有时写回编辑框。
         另外合并自动扫描到的模拟器实例 serial（离线也列出，供模拟器模式直接选）；
         命中实例的选项在序列号后标注实例名（如 127.0.0.1:5561（MuMuPlayer-12.0-3））；
         在线但未命中实例的（真机）标注手机型号（ro.product.brand/model）。"""
         combo.clear()
-        combo.addItem('自动（第一台）', '')
+        # 注意 fluent ComboBox.addItem 签名是 (text, icon=None, userData=None)：
+        # userData 必须关键字传，位置传参会被当成 icon，data 全是 None（选啥都存成空）
+        combo.addItem('自动（第一台）', userData='')
         # 先扫模拟器实例：serial -> 实例显示名（在线设备命中也标注；emulator-* 与
         # 127.0.0.1:port 对偶形态都算命中）
         names: dict[str, str] = {}
@@ -1705,17 +2085,17 @@ class MainWindow(QMainWindow):
                     if model:
                         label = model if brand.lower() in model.lower() \
                             else f'{brand} {model}'.strip()
-                combo.addItem(f'{serial}（{label}）' if label else serial, serial)
+                combo.addItem(f'{serial}（{label}）' if label else serial, userData=serial)
         except Exception as e:
             log(f'枚举设备失败: {e}')
         for serial in scanned:
             if combo.findData(serial) < 0:
-                combo.addItem(_label(serial), serial)
+                combo.addItem(_label(serial), userData=serial)
         idx = combo.findData(current)
         if idx >= 0:
             combo.setCurrentIndex(idx)
         else:
-            combo.setEditText(current)  # 下拉里没有的自定义序列号，填回编辑框
+            combo.setText(current)  # 下拉里没有的自定义序列号，填回编辑框
 
     def save_field(self, key: str) -> None:
         """字段失焦自动保存：校验 -> 值没变直接返回 -> 写回 config.yaml ->
@@ -1751,7 +2131,7 @@ class MainWindow(QMainWindow):
                 if idx >= 0:
                     w.setCurrentIndex(idx)
                 else:
-                    w.setEditText(str(fixed))
+                    w.setText(str(fixed))
             elif kind == 'int':
                 w.setValue(fixed)
             elif kind == 'bool':
@@ -1776,6 +2156,9 @@ class MainWindow(QMainWindow):
             log(f'保存配置失败: {e}')
             return
         log(f'配置已保存: {key} = {fixed}')
+        if key == 'gui.theme':
+            # 主题即时切换（qfluentwidgets 支持运行时 setTheme），无需重启
+            setTheme(THEME_MAP.get(str(fixed), Theme.AUTO))
         if key in ('adb.device_serial', 'adb.path'):
             # adb 连接相关：重拉 scrcpy，调度器也需要重启重建连接
             if key == 'adb.device_serial' and self.emulator_mode:
@@ -1816,18 +2199,21 @@ class MainWindow(QMainWindow):
             self._embed_fail_logged = False
             self._embed_timer.start(500)
 
-    def _update_scrcpy_btn(self) -> None:
-        """按开关状态刷新按钮文字（开/关样式由 checked 状态驱动）。"""
-        self.btn_scrcpy.setText('画面镜像: 开' if self.btn_scrcpy.isChecked() else '画面镜像: 关')
-
-    def _toggle_scrcpy(self) -> None:
-        """scrcpy 开关点击：开=启动并嵌入，关=结束进程且不再自动拉起。"""
+    def _toggle_scrcpy(self, _checked: bool = False) -> None:
+        """scrcpy 开关切换：开=启动并嵌入，关=结束进程且不再自动拉起。
+        开关状态持久化到 gui.mirror（下次启动保持）。"""
+        try:
+            data = settings_io.load_raw()
+            if settings_io.get_value(data, 'gui.mirror') != self.btn_scrcpy.isChecked():
+                settings_io.set_value(data, 'gui.mirror', self.btn_scrcpy.isChecked())
+                settings_io.save_raw(data)
+        except Exception as e:
+            log(f'保存画面镜像开关状态失败: {e}')
         if self.btn_scrcpy.isChecked():
             log('开启 scrcpy...')
             self._enable_scrcpy()
         else:
             self._disable_scrcpy()
-        self._update_scrcpy_btn()
 
     def _enable_scrcpy(self) -> None:
         """启动 scrcpy 并开始查找嵌入（看门狗随后自动维护重连）。"""
@@ -2082,6 +2468,8 @@ def main() -> None:
         return
     _ensure_runtime_resources(emulator)
     app = QApplication(_strip_emulator_args(sys.argv))
+    # 主题：跟随系统/深色/浅色（gui.theme 配置，默认跟随系统）
+    setTheme(THEME_MAP.get(load_config().gui.theme, Theme.AUTO))
     window = MainWindow(emulator_mode=emulator, emulator_device=emulator_device)
     window.show()
     sys.exit(app.exec())

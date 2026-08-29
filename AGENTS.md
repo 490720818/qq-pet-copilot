@@ -31,6 +31,10 @@ $PY build.py --emulator          # 模拟器版（内置 frida 客户端；frida
   桩掉 `see()` / `click()` 后调用被测方法（见历史上对 `wait_end` 的测试方式）。
 - 无头 GUI 测试：`QT_QPA_PLATFORM=offscreen $PY -c ...`，
   并补丁 `MainWindow._start_all = lambda self: None` 避免拉起 scrcpy/调度器。
+  注意 offscreen 平台**字体库为空**（截图全是豆腐块）：验收截图需先
+  `QFontDatabase.addApplicationFont('C:/Windows/Fonts/msyh.ttc')`（和 segoeui.ttf）；
+  另外 offscreen 下 Mica 无 DWM backdrop，深色主题截图前 `w.setMicaEffectEnabled(False)`
+  走纯色回退底色。
 - **测试时不要污染真实进度文件**（`runs/*.json`）：涉及计数时把进度文件
   重定向到临时目录（monkeypatch `src.progress` 里的文件常量），或事后回退。
 
@@ -38,10 +42,10 @@ $PY build.py --emulator          # 模拟器版（内置 frida 客户端；frida
 
 | 路径 | 职责 |
 | --- | --- |
-| `main.py` | PyQt6 GUI：scrcpy 窗口嵌入（SetParent）、选项卡（日志/调度/统计/任务/设置；调度页 = 每任务 开关/执行间隔（每日时间）/启用时段 可直接编辑（保存 config.yaml 热加载生效），下次执行 = 调度器运行时读 `runs/queue_status.json` 的 tasks 段、未运行时按配置推算的详细时间；任务页 = 任务队列顺序 + 场景任务设置，设置页 = 连接/调度引擎/全局规则/告警）、调度器子进程控制、scrcpy 看门狗（设备重启后自动重拉重嵌入；进程活着但没嵌上——多开同时拉起窗口创建慢、嵌入轮询已超时——看门狗补挂嵌入轮询，窗口出现即自动嵌入）、右上角"手动重启"按钮
+| `main.py` | PyQt6 GUI，**界面基于 PyQt6-Fluent-Widgets**（requirements 已加 `PyQt6-Fluent-Widgets>=1.11,<2`，不要装 [full] 扩展会拉 scipy）：`MSFluentWindow` + 左侧导航栏（主页/调度/统计/任务/设置；设置页固定导航底部；主题按 `gui.theme` 配置（跟随系统/深色/浅色，`THEME_MAP`），启动时 `setTheme`、设置页改动即时生效）。**顶部全局工具栏**（`_install_toolbar` 把 stackedWidget 包进右侧容器：上工具栏下页面，切页不受影响）：开始 PrimaryPushButton、停止、画面镜像 SwitchButton（开关状态持久化 `gui.mirror`，`_toggle_scrcpy` 里写回，启动时 `load_config().gui.mirror` 恢复）、连接测试、手动重启 + 右侧运行时间 label。主页 = 左侧 scrcpy 画面卡片（SetParent 嵌入，**9:16 竖屏**：`ScrcpyContainer` 报竖屏 sizeHint/heightForWidth，`embed` 优先取 scrcpy 窗口客户区真实尺寸做嵌入比例（自适应任何设备/--max-size，用设备物理分辨率比例会留两侧黑边），`_aspect` 未知按 (9,16) 兜底 `_fit`，画面卡宽度随高度自适应收拢（`_fit_screen_card`：fixed width = 高度×画面比例，嵌入后/窗口缩放重算；**不用 QSplitter**——把手在深色主题下渲染成白色竖条；容器未嵌入时透明背景跟随主题，不写死黑色）+ 右侧卡片列（宠物状态横排一行/任务队列卡/今日统计（两行网格：学习(h)/工作(h) 时长拆分 + 各任务当日次数）/日志卡——三张卡内容都按列等宽均分（单元格 addWidget(cell, 1)，不要挤在左侧）——`log_view` 在主页吃剩余空间，状态/队列/今日卡垂直 sizePolicy Maximum 紧贴内容；**任务队列卡**（当前任务/下一任务/待执行/等待中）调度器运行时读 `runs/queue_status.json`、未运行按配置推算（`_predict_queue_summary` 复用调度页 `_predict_next`，按 `tasks.order` 顺序取第一个非"—"任务为下一任务）；分组卡片全用 `CompactCardWidget`（紧凑版 HeaderCardWidget：标题栏 48→34、内容边距 24→16/10/16/12，原版 chrome 占高 ~96px 一页放不了几组）；注意 `HeaderCardWidget.viewLayout` 是 QHBoxLayout，竖排内容要包一层 body widget）；调度页 = 每任务 开关（SwitchButton 开/关）/执行间隔（每日时间）/启用时段 可直接编辑（保存 config.yaml 热加载生效），下次执行 = 调度器运行时读 `runs/queue_status.json` 的 tasks 段、未运行时按配置推算的详细时间；任务/设置页 = `SETTING_FIELDS`/`TASK_SETTING_FIELDS` 数据驱动表单，按配置键第一段分组进 CompactCardWidget（分组标题映射 `SETTING_GROUP_TITLES`，任务页 = 任务队列顺序 + 场景任务设置，设置页 = 连接/调度引擎/全局规则/告警 + 关于与更新卡片），**分组卡片两列排布**（`TwoColumnCardsPanel`：QHBoxLayout 两个竖列、列尾 stretch 顶格，`_build_settings_form` 填完字段后 `finalize()` 按 sizeHint 高度把卡片平衡进较矮列，等宽；别用 FlowLayout——行高=该行最高卡片会在同列卡片间留白）；切页加载配置按页面 objectName 判定（`_on_tab_changed`，不依赖页序）；表单控件全用 fluent 类（SwitchButton 信号是 `checkedChanged` 不是 stateChanged；devices 下拉用 `_NoInsertEditableComboBox`——EditableComboBox 回车默认把输入追加进下拉，已改写拦截；**fluent ComboBox.addItem 签名是 (text, icon=None, userData=None)，userData 必须关键字传**（位置传参被当 icon、data 全 None，设备序列号下拉曾因此选啥都存成空）；HyperlinkLabel 的 (url, text) 重载要求 url 传 QUrl，传 str 会被当成 (text, parent) 重载（显示原始 URL、点击无效）；非 editable 的 fluent ComboBox **不是** QComboBox 子类但同名 API 基本兼容）、调度器子进程控制、scrcpy 看门狗（设备重启后自动重拉重嵌入；进程活着但没嵌上——多开同时拉起窗口创建慢、嵌入轮询已超时——看门狗补挂嵌入轮询，窗口出现即自动嵌入）、"手动重启"按钮
 （按 `recover.method` 执行一次异常恢复 `reenter_pet`，调度器在跑先停，恢复期间开始/停止按钮禁用，恢复完成自动启动调度器）；设置页"检查更新"按钮 + 启动自动检查一次/每 6 小时一次（`src/update_checker.py`，
 有更新时设置页显示 Release 链接并打日志）；标题栏带版本号（`src/version.py` 的 `APP_VERSION`）；**scrcpy 必须带 `--port=按序列号分配的固定端口`（`_scrcpy_port`，含无头关屏 scrcpy）**：默认范围 27183:27199 在 Windows 下多个 scrcpy 能同时绑定 27183（SO_REUSEADDR 语义），各设备 adb reverse 回连被投递到错误的 scrcpy 进程——双开同时开镜像画面串台/两窗口同一画面/Server connection failed |
-| `src/stats_chart.py` | 统计页：各任务近 N 天次数的平滑折线图（QPainter 自绘 + Catmull-Rom 平滑，数据来自 `runs/*_progress.json` 的 history） |
+| `src/stats_chart.py` | 统计页：各任务近 N 天次数的平滑折线图（QPainter 自绘 + Catmull-Rom 平滑，数据来自 `runs/*_progress.json` 的 history）；坐标轴文字/网格颜色跟随 Fluent 明暗主题（`_text_color()`/`_grid_color()` 读 `isDarkTheme()`，自绘不吃样式表） |
 | `scenarios/runner.py` | 统一调度器，两种引擎（`runner.engine`）：`task_queue`（默认，`TaskQueueRunner`：执行顺序由 `tasks.order` 配置，> 分隔越靠前越优先，不在 order 里不调度；每任务独立 enabled / trigger（interval 间隔 / daily 每日时间点窗口）/ enabled_time_range / success_interval / failure_interval，见 `tasks` 段）/ `legacy`（`Runner.run` 老主循环，顺序写死：护理 → 冒险 → 踩踩 → PK → 好友雇佣 → 好友护理 → 学习/打工）。共通：场景异常分级重试（回主页面重进 → `recover()` 重启恢复）；都失败时主任务（学习/打工）发告警通知（`src/notify.py`）并退出，支线任务延后重试（legacy 用 `SIDE_TASK_RETRY_DELAY`，队列用各任务 `failure_interval`） |
 | `scenarios/school.py` `work.py` `adventure.py` `care.py` `visit.py` `pk.py` `friend_care.py` `hire_friend.py` `employed.py` | 各场景，均继承 `DeviceScenario`（`pk.py`/`friend_care.py` 继承 `visit.py` 复用好友导航；`hire_friend.py` 继承 `friend_care.py` 复用指定好友导航；`employed.py` 只做被雇佣检测，召回复用基类） |
 | `src/scenario.py` | 场景基类：截图/u2+OCR 定位点击/回主页面/等待结束（阻塞 `wait_end` / 非阻塞延时收尾 `defer_busy_end`+`finish_pending`，OCR 剩余时间登记 `pending`）/被雇佣召回/四种进行中状态检测 |
@@ -151,12 +155,15 @@ $PY build.py --emulator          # 模拟器版（内置 frida 客户端；frida
   - 枚举/取值范围字段先校验、非法回退旧值并记日志（如 `school.attribute`、
     `work.duration`、`work.location`——地点下拉选项统一在 `src/settings.py` 的 `WORK_LOCATIONS`，
     main.py 下拉和 validate_field 共用，新增地图时只改这一处），不要直接赋值导致运行时 KeyError；
-  - 例外（无需热加载）：`adb.*`（连接层，改完需重启 GUI）、`runner.engine`
+  - 例外（无需热加载）：`adb.*`（连接层，改完需重启 GUI）、`gui.*`（仅 GUI 用，如 theme 保存时即时 setTheme）、`runner.engine`
     （切换调度引擎需重启调度器）。
   - **统一失败重试间隔**：`tasks.failure_interval`（设置页"任务失败重试间隔"，`SETTING_FIELDS` + `DEFAULTS`/`validate_field`）是各任务 `failure_interval` 的**唯一入口**——`load_config` 构造完各 `TaskItemConfig` 后用全局值覆盖，改 config.yaml 里各任务单独的 `failure_interval` 无效（config 文件里已删除这些行）。
 - **GUI 线程纪律**：调度器是子进程（`scenarios/runner.py`，打包后为 `exe --runner`，
   两种入口都走 `run_scheduler()` 按 `runner.engine` 配置选引擎，不要写死 Runner），
   日志经 stdout → 队列 → QTimer 上屏；worker 线程不直接碰 Qt 控件。
+  界面是 PyQt6-Fluent-Widgets（`MSFluentWindow`）：新增页面用 `addSubInterface` 注册
+  （页面必须 setObjectName），主题切换由 qfluentwidgets 自己处理，
+  自绘/普通 Qt 控件要读 `isDarkTheme()` 或用 fluent 标签类。
 - **任务队列调度**（默认引擎 `task_queue`）：`TaskQueueRunner` 每轮按 `tasks.order`
   顺序扫描，执行第一个"可执行"的任务（`_eligible`：enabled / enabled_time_range /
   trigger 窗口 / 退避间隔 → `_task_due`：任务自身配额与场景时间窗），跑完一个回顶部

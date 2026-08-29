@@ -18,6 +18,8 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from qfluentwidgets import isDarkTheme
+
 from .progress import (
     ADVENTURE_PROGRESS_FILE,
     PK_PROGRESS_FILE,
@@ -47,6 +49,16 @@ _TEXT_COLOR = '#1e293b'
 _GRID_COLOR = '#e2e8f0'
 
 
+def _text_color() -> QColor:
+    """坐标轴文字颜色：跟随 Fluent 明暗主题（QPainter 自绘不吃样式表）。"""
+    return QColor(232, 232, 232) if isDarkTheme() else QColor(_TEXT_COLOR)
+
+
+def _grid_color() -> QColor:
+    """网格虚线颜色：暗色主题下半透明白，避免亮灰线条太刺眼。"""
+    return QColor(255, 255, 255, 46) if isDarkTheme() else QColor(_GRID_COLOR)
+
+
 def load_daily_counts(days: int) -> list[tuple[str, list[int]]]:
     """读各任务进度文件的 history，返回 [(日期, [各任务次数])]，最近 days 天、缺天补 0。"""
     histories = []
@@ -71,7 +83,7 @@ class LineChart(QWidget):
         self._hover_idx = -1
         self._on_wheel = on_wheel  # 滚轮缩放天数窗口的回调（StatsPanel 提供）
         self.setMouseTracking(True)
-        self.setFixedHeight(220)  # 固定高度：统计页内容置顶，图表不拉满整页
+        self.setFixedHeight(300)  # 固定高度：统计页内容置顶，图表不拉满整页
 
     def set_data(self, data: list[tuple[str, list[int]]]) -> None:
         self._data = data
@@ -122,26 +134,26 @@ class LineChart(QWidget):
         w = self.width() - _PAD_L - _PAD_R
         h = self.height() - _PAD_T - _PAD_B
         if not self._data:
-            p.setPen(QColor(_TEXT_COLOR))
+            p.setPen(_text_color())
             p.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, '暂无数据')
             return
         max_val = max((v for _, values in self._data for v in values), default=0) or 1
         n = len(self._data)
 
         # 虚线网格 + Y 轴刻度
-        grid_pen = QPen(QColor(_GRID_COLOR), 1, Qt.PenStyle.DashLine)
+        grid_pen = QPen(_grid_color(), 1, Qt.PenStyle.DashLine)
         for row in range(_GRID_ROWS + 1):
             y = _PAD_T + h - row * h / _GRID_ROWS
             p.setPen(grid_pen)
             p.drawLine(int(_PAD_L), int(y), int(_PAD_L + w), int(y))
-            p.setPen(QColor(_TEXT_COLOR))
+            p.setPen(_text_color())
             label = str(round(max_val * row / _GRID_ROWS))
             p.drawText(0, int(y) - 8, _PAD_L - 6, 16,
                        Qt.AlignmentFlag.AlignRight, label)
 
         # X 轴日期（MM-DD，抽样显示）
         step = max(1, n // 6)
-        p.setPen(QColor(_TEXT_COLOR))
+        p.setPen(_text_color())
         for i, (day, _) in enumerate(self._data):
             if i % step and i != n - 1:
                 continue

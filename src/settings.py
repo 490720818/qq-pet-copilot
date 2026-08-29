@@ -19,6 +19,8 @@ WORK_LOCATIONS = ('风铃旅社', '彩虹画室', '迷雾侦探所', '星尘魔�
 DEFAULTS = {
     'adb.path': 'resources/scrcpy-win64/adb.exe',
     'adb.device_serial': '',
+    'gui.theme': '跟随系统',
+    'gui.mirror': True,
     'control.method': 'injectInputEvent',
     'emulator.type': 'auto',
     'emulator.name': '',
@@ -107,6 +109,8 @@ def validate_field(key: str, value):
         return (True, value) if value in ('task_queue', 'legacy') else (False, default)
     if key == 'control.method':
         return (True, value) if value in ('injectInputEvent', 'minitouch') else (False, default)
+    if key == 'gui.theme':
+        return (True, value) if value in ('跟随系统', '深色', '浅色') else (False, default)
     if key == 'emulator.type':
         from .emulator import EMULATOR_TYPES
         return (True, value) if value in ('auto', *EMULATOR_TYPES) else (False, default)
@@ -147,7 +151,7 @@ def validate_field(key: str, value):
         except (TypeError, ValueError):
             return False, default
     if key == 'notify.win_toast' or key == 'adventure.skip_bad_weather' \
-            or key == 'emulator.device_spoof':
+            or key == 'emulator.device_spoof' or key == 'gui.mirror':
         return (True, value) if isinstance(value, bool) else (False, default)
     if key == 'notify.onepush_config':
         # OnePush 推送配置（YAML，支持多行）：留空，或能解析出含 provider 的字典
