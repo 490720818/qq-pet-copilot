@@ -158,26 +158,14 @@ class CareScenario(DeviceScenario):
     # ---- 状态识别 ----
 
     def read_status(self, screen=None, source=None) -> dict:
-        """OCR 宠物状态面板区域（locators 的 status_region 定范围，bounds 有缓存），
-        返回体力/清洁/心情/账号名称/宠物名称（识别不到的缺省）。
-        调用方已截图/抓控件树时传入，避免重复采集。"""
+        """OCR 屏幕上半部分识别宠物状态面板，返回体力/清洁/心情/账号名称/宠物名称
+        （识别不到的缺省）。状态面板在上半屏，不再走 status_region 控件定位
+        （深层 xpath 在好友宠物页会误命中底部好友列表栏，且多一次控件树采集）。
+        调用方已截图时传入，避免重复采集。"""
         if screen is None:
             screen = self.screen()
-        bounds = see_bounds(self.dev, 'status_region', source)
-        if bounds:
-            x1, y1, x2, y2 = bounds
-            region = screen[y1:y2, x1:x2]
-        else:
-            log('未定位到宠物状态区域，回退上半屏 OCR')
-            region = screen[: screen.shape[0] // 2]
+        region = screen[: screen.shape[0] // 2]
         results = ocr_texts(region)
-        # status_region 的深层结构 xpath 在好友宠物页会误命中底部好友列表栏
-        # （bounds 缓存让错误整个进程粘住）：区域 OCR 一个状态关键词都没有
-        # 就认为定位错了，回退上半屏重新 OCR
-        if not any(name in text for text, *_ in results for name in STATUS_NAMES):
-            log('状态区域未识别到状态数值，回退上半屏 OCR')
-            region = screen[: screen.shape[0] // 2]
-            results = ocr_texts(region)
         log('状态区域 OCR: '
             + (', '.join(f'{t!r}@({x},{y})' for t, x, y, _ in results) or '无'))
         # 不做放大：容差按当前屏宽相对 720 参考分辨率等比缩放

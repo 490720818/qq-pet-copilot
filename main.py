@@ -1113,8 +1113,11 @@ class MainWindow(MSFluentWindow):
                 else:
                     waiting += 1
                 if nxt == '无':
-                    # "启动后判定"（学习/打工要等金币与时长判定）这类内部提示不展示
-                    nxt = (SCHEDULE_TASK_NAMES[key] if pred == '启动后判定'
+                    # "启动后立即"（护理）/"启动后判定"（学习/打工要等金币与时长判定）/
+                    # "现在可执行"（支线任务当前在可执行窗口内）这类即时状态提示不展示，
+                    # 只保留带具体时间的推算（如"今天 13:10"）
+                    nxt = (SCHEDULE_TASK_NAMES[key]
+                           if pred in ('启动后立即', '启动后判定', '现在可执行')
                            else f'{SCHEDULE_TASK_NAMES[key]}（{pred}）')
             return nxt, str(ready), str(waiting)
         except Exception:

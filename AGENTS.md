@@ -87,6 +87,9 @@ $PY build.py --emulator          # 模拟器版（内置 frida 客户端；frida
   记入 `_locate_cache`，之后 `see()` 直接返回缓存点不再识别。
   位置固定的裁剪区域（如宠物状态面板 `status_region`）登记 xpath + `'cache': True`
   后用 `see_bounds()` 取范围：第一次命中后 bounds 记入 `_bounds_cache`，之后直接复用。
+  （`care.read_status` 读状态面板已不走 `status_region` 定位——深层 xpath 在好友
+  宠物页会误命中底部好友列表栏，直接 OCR 屏幕上半部分；`status_region` 仅
+  `tools/test_locator_all.py` 校准用。）
 - **洗澡搓洗**：搓洗点位按分辨率百分比（`care.py` 的 `SCRUB_TOP_PCT` / `SCRUB_BOTTOM_PCT`），
   起点取 `shower_10` 控件中心；搓洗中清洁连续 `SCRUB_STALL_REPRESS` 回合不提升判定
   按压失效（模拟器 minitouch 会话静默中断，touch_move 全丢），自动抬手重按肥皂自愈；
