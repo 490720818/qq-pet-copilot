@@ -280,7 +280,7 @@ tools/
 
 - [scrcpy](https://github.com/Genymobile/scrcpy)
   Android 画面镜像与控制工具，本项目的实时画面嵌入和 adb 能力实现。
-- [PyQt6-Fluent-Widgets](https://github.com/zhiyiYo/PyQt6-Fluent-Widgets)
+- [PyQt-Fluent-Widgets](https://github.com/zhiyiYo/PyQt-Fluent-Widgets/tree/PyQt6)（PyPI 包名 `PyQt6-Fluent-Widgets`，代码在主仓库的 PyQt6 分支）
   Fluent Design 组件库，GUI 的导航栏、卡片与控件实现。
 - [qqpet-module-opener](https://github.com/yikehuang/qqpet-module-opener)
   模拟器初始化 QQ 宠物 SDK 并直接打开宠物主页，本项目模拟器模式的 frida 兜底注入
