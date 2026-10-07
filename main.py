@@ -26,7 +26,7 @@ from datetime import datetime, timedelta
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from PyQt6.QtCore import QObject, QSize, Qt, QTime, QTimer, QUrl, pyqtSignal
-from PyQt6.QtGui import QColor, QDesktopServices
+from PyQt6.QtGui import QColor, QDesktopServices, QImage, QPainter, QPixmap
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -68,9 +68,16 @@ from qfluentwidgets import (
 
 from ruamel.yaml.scalarstring import DoubleQuotedScalarString
 
-import win32con
-import win32gui
-import win32process
+# Windows 专用：把 scrcpy 窗口用 Win32 API（SetParent）嵌进 Qt 控件。
+# Linux 没有等价且可靠的窗口嵌入方式（Wayland 下拿不到外来窗口句柄，
+# XWayland 下强制 xcb 后端才能重挂），改用后台抓设备帧的方式做镜像（DeviceMirror）。
+IS_WIN = sys.platform == 'win32'
+if IS_WIN:
+    import win32con
+    import win32gui
+    import win32process
+else:
+    win32con = win32gui = win32process = None
 
 from src import settings as settings_io
 from src.adb.device import Device
@@ -110,7 +117,12 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from src.u2dev import U2Device
 
-SCRCPY = resource_path('resources/scrcpy-win64') / 'scrcpy.exe'
+if IS_WIN:
+    SCRCPY = resource_path('resources/scrcpy-win64') / 'scrcpy.exe'
+else:
+    # Linux/macOS：官方 release 的免安装包（resources/scrcpy-linux/，tools/fetch_scrcpy.py
+    # 或手工解压；也可在 config 里用系统装的 scrcpy——这里只作为默认位置）
+    SCRCPY = resource_path('resources/scrcpy-linux') / 'scrcpy'
 SCRCPY_TITLE_PREFIX = 'QQPetCopilotScrcpy'
 RUNNER_SCRIPT = PROJECT_ROOT / 'scenarios' / 'runner.py'
 EMBED_TRIES = 40  # 查找 scrcpy 窗口的次数（每次 500ms）
@@ -118,6 +130,12 @@ LOG_MAX_LINES = 5000  # 日志区显示行数上限（超出自动丢弃最旧�
 SCRCPY_WATCHDOG_MS = 5000    # scrcpy 看门狗轮询间隔（毫秒）
 SCRCPY_RETRY_INTERVAL = 15.0  # 重拉失败后的退避（秒；设备重启要几十秒，别刷日志）
 UPDATE_CHECK_INTERVAL_MS = 6 * 3600 * 1000  # 检查更新周期（启动后先自动查一次）
+# Linux 镜像抓帧间隔（秒）：这是"抓完一帧再等这么久"，实际帧率还受截图耗时限制
+# （USB 真机单帧约 150~400ms，实测约 2~5 fps）。只为盯调度器在干什么，够用；
+# 想要 60fps 顺滑画面用工具栏的"独立镜像窗口"另开一个 scrcpy。
+MIRROR_INTERVAL = 0.25
+MIRROR_FAIL_BACKOFF = 3.0    # 抓帧失败后的退避（秒；设备掉线时别刷屏）
+MIRROR_CAPTURE_TIMEOUT = 20.0  # 单帧 screencap 的超时（秒）
 
 # Windows 下隐藏子进程的命令行窗口（scrcpy/taskkill 等都是控制台程序）
 _NO_WINDOW = subprocess.CREATE_NO_WINDOW if sys.platform == 'win32' else 0
@@ -128,6 +146,72 @@ ONEPUSH_HELP_URL = ('https://github.com/LmeSzinc/AzurLaneAutoScript'
 
 # 主题设置项（gui.theme）-> qfluentwidgets Theme
 THEME_MAP = {'跟随系统': Theme.AUTO, '深色': Theme.DARK, '浅色': Theme.LIGHT}
+
+class _MirrorSignals(QObject):
+    """Linux 画面镜像：后台抓帧线程 -> GUI 主线程 的信号（跨线程安全）。"""
+    frame = pyqtSignal(bytes)
+    failed = pyqtSignal(str)
+
+
+class DeviceMirror(threading.Thread):
+    """Linux 画面镜像：后台线程周期性抓设备帧，交给 Qt 主线程显示。
+
+    Windows 版把 scrcpy 窗口用 Win32 SetParent 嵌进 Qt 控件；Linux 上没有等价
+    且可靠的做法（Wayland 拿不到外来窗口句柄），改为直接抓设备帧缓冲：
+    adb exec-out screencap -p。代价是帧率受单帧耗时限制（USB 真机约 2~5 fps），
+    用于监视调度器在做什么足够；要顺滑 60fps 画面用"独立镜像窗口"另开 scrcpy。
+
+    抓帧走独立 adb 进程，不碰 uiautomator2 连接，和调度器互不干扰。
+    """
+
+    def __init__(self, adb_path: str, serial: str, signals: '_MirrorSignals',
+                 interval: float = MIRROR_INTERVAL):
+        super().__init__(daemon=True, name='device-mirror')
+        self._adb = adb_path
+        self._serial = serial
+        self._signals = signals
+        self._interval = interval
+        self._stop = threading.Event()
+        self.frames = 0          # 已成功显示帧数（供日志/调试）
+        self.last_error = ''
+
+    def stop(self) -> None:
+        self._stop.set()
+
+    def _capture(self) -> bytes:
+        cmd = [self._adb]
+        if self._serial:
+            cmd += ['-s', self._serial]
+        cmd += ['exec-out', 'screencap', '-p']
+        proc = subprocess.run(cmd, capture_output=True,
+                              timeout=MIRROR_CAPTURE_TIMEOUT,
+                              creationflags=_NO_WINDOW)
+        data = proc.stdout
+        # 空数据/极短输出说明设备掉线或 screencap 失败（PNG 头尾至少几十字节）
+        if proc.returncode != 0 or len(data) < 128:
+            raise RuntimeError(
+                (proc.stderr or b'').decode('utf-8', 'replace').strip()
+                or 'screencap 未返回画面数据')
+        return data
+
+    def run(self) -> None:
+        while not self._stop.is_set():
+            t0 = time.monotonic()
+            try:
+                png = self._capture()
+                self.frames += 1
+                self.last_error = ''
+                self._signals.frame.emit(png)
+            except Exception as e:  # noqa: BLE001 - 抓帧失败不该弄崩 GUI
+                msg = str(e)
+                if msg != self.last_error:  # 同一种错只报一次，别刷屏
+                    self.last_error = msg
+                    self._signals.failed.emit(msg)
+                self._stop.wait(MIRROR_FAIL_BACKOFF)
+                continue
+            elapsed = time.monotonic() - t0
+            self._stop.wait(max(0.05, self._interval - elapsed))
+
 
 class _TestSignals(QObject):
     """连接测试按钮：后台线程 -> GUI 主线程 的信号（跨线程安全）。"""
@@ -319,11 +403,15 @@ def _scrcpy_title() -> str:
 
 
 def _kill_scrcpy_by_marker(marker: str) -> None:
-    """结束命令行里包含 marker 的 scrcpy.exe 进程（不影响其他实例/程序）。
+    """结束命令行里包含 marker 的 scrcpy 进程（不影响其他实例/程序）。
 
-    taskkill /IM 会杀掉所有实例的 scrcpy（多开相互影响），这里用 PowerShell CIM
-    按命令行精确过滤；marker 经环境变量传入，避免引号/通配符转义问题。
+    taskkill /IM 会杀掉所有实例的 scrcpy（多开相互影响），这里按命令行精确过滤；
+    marker 经环境变量传入，避免引号/通配符转义问题。
+    Windows 用 PowerShell CIM 查询；Linux 直接读 /proc/<pid>/cmdline。
     """
+    if not IS_WIN:
+        _kill_scrcpy_by_marker_posix(marker)
+        return
     ps = (
         "Get-CimInstance Win32_Process -Filter \"Name='scrcpy.exe'\" "
         "| Where-Object { $_.CommandLine -and $_.CommandLine.Contains($env:QQPET_SCRCPY_MARKER) } "
@@ -334,6 +422,34 @@ def _kill_scrcpy_by_marker(marker: str) -> None:
         ['powershell', '-NoProfile', '-NonInteractive', '-Command', ps],
         capture_output=True, timeout=20, creationflags=_NO_WINDOW, env=env,
     )
+
+
+def _kill_scrcpy_by_marker_posix(marker: str) -> None:
+    """Linux：扫描 /proc 找命令行含 marker 的 scrcpy 进程并 SIGTERM。
+
+    不用 `pkill -f`：marker 里带设备序列号/PID，正则元字符（如 . 和 :）会被
+    pkill 当模式匹配，可能误杀；自己读 cmdline 做纯子串判断更准，也能跳过自己。
+    """
+    me = os.getpid()
+    for entry in os.listdir('/proc'):
+        if not entry.isdigit() or int(entry) == me:
+            continue
+        try:
+            with open(f'/proc/{entry}/cmdline', 'rb') as f:
+                argv = f.read().split(b'\0')
+        except OSError:
+            continue
+        if not argv or not argv[0]:
+            continue
+        if b'scrcpy' not in os.path.basename(argv[0].decode('utf-8', 'replace')).encode():
+            continue
+        cmdline = b' '.join(argv).decode('utf-8', 'replace')
+        if marker not in cmdline:
+            continue
+        try:
+            os.kill(int(entry), 15)
+        except OSError:
+            pass
 
 
 def kill_our_scrcpy(proc: subprocess.Popen | None = None) -> None:
@@ -457,6 +573,10 @@ def find_scrcpy_hwnd(proc: subprocess.Popen | None = None) -> int | None:
     重启瞬间旧窗口可能还没销毁（同标题），或别的实例窗口标题撞上，
     只有属于自己进程的窗口才会被嵌入。
     """
+    if not IS_WIN:
+        # Linux：没有可枚举/可重挂的 scrcpy 窗口（Wayland 拿不到外来窗口句柄），
+        # 画面走 DeviceMirror 抓帧，见 ScrcpyContainer.set_frame
+        return None
     title = _scrcpy_title()
     want_pid = proc.pid if proc is not None and proc.poll() is None else None
     found = []
@@ -477,17 +597,23 @@ def find_scrcpy_hwnd(proc: subprocess.Popen | None = None) -> int | None:
 
 
 class ScrcpyContainer(QWidget):
-    """scrcpy 窗口的嵌入容器，按手机屏幕比例等比适配并居中。
+    """画面容器：Windows 嵌入 scrcpy 窗口；Linux 直接显示抓来的设备帧。
 
     手机屏幕是 9:16 竖屏：sizeHint/heightForWidth 按竖屏比例报尺寸，
     让布局给画面区预留竖屏空间；设备未连接或比例读取失败时 _fit 也按
     (9, 16) 兜底，避免拿到横屏/空比例时把嵌入窗口拉成宽屏。
+
+    Linux 分支（IS_WIN 为假）：没有 scrcpy 窗口可嵌，改由 DeviceMirror 在后台
+    用 `adb exec-out screencap -p` 抓帧，经 set_frame 交到主线程，paintEvent
+    把帧按同一套等比居中逻辑画出来；_aspect 取首帧的真实像素尺寸。
     """
 
     def __init__(self):
         super().__init__()
         self._hwnd: int | None = None
         self._aspect: tuple[int, int] | None = None  # 手机屏幕物理像素 (宽, 高)
+        self._frame: QPixmap | None = None           # Linux：最近一帧设备画面
+        self._hint = '画面镜像未开启'
         # 普通 QWidget 子类要开 WA_StyledBackground，样式表背景才会真正绘制
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         # 未嵌入时跟随主题背景（透出下层卡片色），不显示死黑一块；
@@ -507,7 +633,50 @@ class ScrcpyContainer(QWidget):
     def set_hwnd(self, hwnd: int | None) -> None:
         self._hwnd = hwnd
 
+    # ---- Linux 抓帧镜像 -------------------------------------------------
+
+    def set_frame(self, png: bytes) -> None:
+        """Linux：收到一帧设备截图（主线程槽，由 _MirrorSignals.frame 触发）。"""
+        img = QImage.fromData(png)
+        if img.isNull():
+            return
+        # 首帧顺便记下真实比例：抓帧尺寸就是设备物理分辨率，比 device_aspect()
+        # 另起一次 adb 查询更可靠（也不受设备未授权等状态影响）
+        if img.width() > 32 and img.height() > 32:
+            self._aspect = (img.width(), img.height())
+        self._frame = QPixmap.fromImage(img)
+        self.update()
+
+    def clear_frame(self, hint: str = '') -> None:
+        """Linux：清掉当前帧（停镜像/断开时调用），可换占位文案。"""
+        self._frame = None
+        if hint:
+            self._hint = hint
+        self.update()
+
+    def paintEvent(self, event) -> None:
+        # Windows 下画面是子窗口自己画的，容器不画东西
+        if IS_WIN:
+            return
+        painter = QPainter(self)
+        if self._frame is None:
+            painter.setPen(QColor(128, 128, 128))
+            painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, self._hint)
+            return
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+        aw, ah = self._frame.width(), self._frame.height()
+        cw, ch = self.width(), self.height()
+        if aw <= 0 or ah <= 0 or cw <= 0 or ch <= 0:
+            return
+        scale = min(cw / aw, ch / ah)
+        w, h = int(aw * scale), int(ah * scale)
+        painter.drawPixmap((cw - w) // 2, (ch - h) // 2, w, h, self._frame)
+
+    # ---- Windows 窗口嵌入 -----------------------------------------------
+
     def embed(self, hwnd: int, aspect: tuple[int, int] | None = None) -> None:
+        if not IS_WIN:
+            return
         self._hwnd = hwnd
         win32gui.SetParent(hwnd, int(self.winId()))
         # 缩放前先取 scrcpy 窗口客户区真实尺寸作为嵌入比例（客户区 = 视频画面大小，
@@ -536,7 +705,7 @@ class ScrcpyContainer(QWidget):
 
     def _fit(self) -> None:
         """把 scrcpy 窗口等比缩放到容器内最大并居中，避免内部留黑边。"""
-        if not self._hwnd:
+        if not IS_WIN or not self._hwnd:
             return
         cw, ch = self.width(), self.height()
         # 设备比例未知（未连接/读取失败）时按 9:16 竖屏兜底
@@ -708,6 +877,12 @@ class MainWindow(MSFluentWindow):
         self._adb_dev = None
         self._adb_dev_key = None
         self._screen_off_proc: subprocess.Popen | None = None  # 无头关屏 scrcpy
+        # Linux 画面镜像：后台抓帧线程 + 跨线程帧信号（信号对象只建一次，
+        # 每次启停只换线程，避免反复 connect 把同一个槽挂上去多次）
+        self._mirror: DeviceMirror | None = None
+        self._mirror_signals = _MirrorSignals()
+        self._mirror_signals.frame.connect(self.scrcpy_view.set_frame)
+        self._mirror_signals.failed.connect(self._on_mirror_failed)
         # 配置保存后重启调度器的防抖定时器
         self._restart_timer = QTimer(self, singleShot=True, interval=1500,
                                      timeout=self._restart_runner)
@@ -951,6 +1126,20 @@ class MainWindow(MSFluentWindow):
             # 模拟器模式：目标 adb 设备不在线时后台启动所属模拟器实例（不阻塞 Qt 线程；
             # 设备上线后 scrcpy 看门狗会自动拉起并重嵌入）
             threading.Thread(target=self._ensure_emulator_device, daemon=True).start()
+        if not IS_WIN:
+            # Linux：画面镜像走抓帧预览（没有 scrcpy 窗口可嵌），
+            # 关屏仍用无头 scrcpy——两者互斥，见 _start_mirror / _stop_mirror
+            try:
+                if self.btn_scrcpy.isChecked():
+                    self._start_mirror()
+                else:
+                    log('画面镜像开关关闭，跳过启动')
+                    self._screen_off_proc = start_scrcpy_screen_off(self.emulator_mode)
+            except Exception:
+                import traceback
+
+                log(f'启动画面镜像失败:\n{traceback.format_exc()}')
+            return
         try:
             kill_previous_scrcpy()
             if self.btn_scrcpy.isChecked():
@@ -991,6 +1180,9 @@ class MainWindow(MSFluentWindow):
             log(f'检查/启动模拟器失败:\n{traceback.format_exc()}')
 
     def _try_embed(self) -> None:
+        if not IS_WIN:
+            self._embed_timer.stop()  # Linux 无窗口可嵌，画面由 DeviceMirror 直投
+            return
         hwnd = find_scrcpy_hwnd(self._scrcpy_proc)
         if hwnd:
             self.scrcpy_view.embed(hwnd, device_aspect())
@@ -1017,6 +1209,18 @@ class MainWindow(MSFluentWindow):
         """
         if not self.btn_scrcpy.isChecked():
             return  # 画面镜像已关闭，不自动拉起
+        if not IS_WIN:
+            # Linux：镜像健康度看后台抓帧线程。抓帧失败线程会自己退避重试
+            # （设备重启几十秒后自动恢复），这里只兜线程意外结束的情况
+            if self._mirror is not None and self._mirror.is_alive():
+                return
+            now = time.monotonic()
+            if now < self._scrcpy_retry_at:
+                return
+            self._scrcpy_retry_at = now + SCRCPY_RETRY_INTERVAL
+            log('画面镜像线程已退出，重连中...')
+            self._start_mirror()
+            return
         if not SCRCPY.is_file() or self._embed_timer.isActive():
             return  # 没有 scrcpy 可拉，或启动/重嵌流程正在进行
         if self._scrcpy_proc is not None and self._scrcpy_proc.poll() is None:
@@ -2189,10 +2393,60 @@ class MainWindow(MSFluentWindow):
         except Exception as e:
             log(f'adb connect 模拟器失败: {e}')
 
+    # ---- Linux 画面镜像（抓帧预览） -------------------------------------
+
+    def _wake_device(self, adb_path: str, serial: str) -> None:
+        """唤醒设备并保持常亮。
+
+        抓帧（screencap）在息屏/关屏状态下只能拿到黑帧，所以镜像开启前必须先
+        点亮屏幕；stayon 让 USB 供电期间不自动息屏。关屏 scrcpy 会自己恢复
+        屏幕状态，这里只做兜底唤醒，失败不阻塞镜像。
+        """
+        base = [adb_path] + (['-s', serial] if serial else [])
+        for args in (['shell', 'input', 'keyevent', 'KEYCODE_WAKEUP'],
+                     ['shell', 'svc', 'power', 'stayon', 'true']):
+            try:
+                subprocess.run(base + args, capture_output=True, timeout=10,
+                               creationflags=_NO_WINDOW)
+            except Exception:
+                pass
+
+    def _on_mirror_failed(self, msg: str) -> None:
+        """抓帧失败（设备掉线等）——线程会自己退避重试，这里只提示一次。"""
+        log(f'画面镜像抓帧失败（自动重试中）: {msg}')
+
+    def _start_mirror(self) -> None:
+        """Linux：启动后台抓帧线程，把设备画面投到 scrcpy_view。"""
+        self._stop_mirror()
+        cfg = load_config()
+        serial = self.emulator_device or cfg.adb.device_serial
+        adb_path = find_adb(cfg.adb.path)
+        if not adb_path:
+            log('未找到 adb，无法开启画面镜像')
+            return
+        self._wake_device(adb_path, serial)
+        self.scrcpy_view.clear_frame('正在连接设备…')
+        self._mirror = DeviceMirror(adb_path, serial, self._mirror_signals)
+        self._mirror.start()
+        # 实测一加 13（1080x2376）：`adb exec-out screencap -p` 单帧约 1s
+        # （设备端 PNG 编码是瓶颈；raw 只快 0.2s 但单帧 10MB，不划算），
+        # 所以实际约 1 fps。看调度器在干什么够用，别指望它像 scrcpy 一样流畅。
+        log(f'画面镜像已启动（抓帧预览，约 1 fps）：{serial or "默认设备"}')
+
+    def _stop_mirror(self) -> None:
+        """停掉后台抓帧线程（幂等）。"""
+        if self._mirror is not None:
+            self._mirror.stop()
+            self._mirror = None
+
     def _restart_scrcpy(self) -> None:
         """杀掉并重拉 scrcpy（换设备/换 adb 后画面也需要切换）。"""
         if not self.btn_scrcpy.isChecked():
             return  # 开关关闭时不启动 scrcpy
+        if not IS_WIN:
+            log('重新初始化画面镜像...')
+            self._start_mirror()
+            return
         log('重新初始化 scrcpy...')
         kill_our_scrcpy(self._scrcpy_proc)
         self.scrcpy_view.set_hwnd(None)
@@ -2225,6 +2479,10 @@ class MainWindow(MSFluentWindow):
             log('结束屏幕关闭 scrcpy')
             self._screen_off_proc.terminate()
         self._screen_off_proc = None
+        if not IS_WIN:
+            # Linux：关掉关屏 scrcpy 后必须唤醒屏幕，否则抓到的是黑帧
+            self._start_mirror()
+            return
         if self._scrcpy_proc is not None and self._scrcpy_proc.poll() is None:
             # 已在运行：若之前嵌入超时没嵌上（窗口落在屏幕外），补挂嵌入轮询而不是干等
             if self.scrcpy_view._hwnd is None and not self._embed_timer.isActive():
@@ -2241,6 +2499,12 @@ class MainWindow(MSFluentWindow):
 
     def _disable_scrcpy(self) -> None:
         """结束 scrcpy 并停止嵌入/看门狗维护（开关关闭状态）。"""
+        if not IS_WIN:
+            self._stop_mirror()
+            self.scrcpy_view.clear_frame('画面镜像已关闭')
+            log('画面镜像已停止')
+            self._screen_off_proc = start_scrcpy_screen_off(self.emulator_mode)
+            return
         self._embed_timer.stop()
         kill_our_scrcpy(self._scrcpy_proc)
         self._scrcpy_proc = None
@@ -2350,6 +2614,8 @@ class MainWindow(MSFluentWindow):
         if self._screen_off_proc and self._screen_off_proc.poll() is None:
             log('结束屏幕关闭 scrcpy')
             self._screen_off_proc.terminate()
+        # 抓帧线程是 daemon，但仍显式停掉，避免退出瞬间还在起 adb 子进程
+        self._stop_mirror()
         event.accept()
 
 
@@ -2367,7 +2633,7 @@ def _ensure_runtime_resources(emulator: bool) -> None:
         if not SCRCPY.is_file():
             if frozen:
                 log(f'未找到 scrcpy。需要画面镜像请手动放置（或重新打包），exe 旁 runs 目录：'
-                    f'{APP_ROOT / "runs" / "resources" / "scrcpy-win64"}/（内含 scrcpy.exe）')
+                    f'{APP_ROOT / "runs" / "resources" / SCRCPY.parent.name}/')
             else:
                 log('未找到 scrcpy，正在自动下载（tools/fetch_scrcpy.py）...')
                 fetch = PROJECT_ROOT / 'tools' / 'fetch_scrcpy.py'
@@ -2377,8 +2643,15 @@ def _ensure_runtime_resources(emulator: bool) -> None:
                     log('scrcpy 已就绪')
                 else:
                     # 下载失败不阻塞：给出下载地址与放置位置，用户手动处理
-                    log(f'scrcpy 自动下载失败。请手动下载 scrcpy win64 并解压到 {SCRCPY.parent}：\n'
-                        f'  地址: https://github.com/Genymobile/scrcpy/releases （scrcpy-win64-vX.zip，需含 scrcpy.exe）')
+                    if IS_WIN:
+                        log(f'scrcpy 自动下载失败。请手动下载 scrcpy win64 并解压到 {SCRCPY.parent}：\n'
+                            f'  地址: https://github.com/Genymobile/scrcpy/releases '
+                            f'（scrcpy-win64-vX.zip，需含 scrcpy.exe）')
+                    else:
+                        log(f'scrcpy 自动下载失败。请手动下载 scrcpy 的 Linux 包并解压到 {SCRCPY.parent}：\n'
+                            f'  地址: https://github.com/Genymobile/scrcpy/releases '
+                            f'（scrcpy-linux-x86_64-vX.tar.gz，需含 scrcpy 与 scrcpy-server）\n'
+                            f'  或用系统包管理器安装后，把配置里的 scrcpy 路径指向它')
         # frida-server：模拟器模式需要
         if emulator:
             from src.opener import FRIDA_SERVER_REL

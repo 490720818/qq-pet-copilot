@@ -35,9 +35,24 @@ import re
 import subprocess
 import sys
 import time
-import winreg
 from dataclasses import dataclass, field
 from pathlib import Path
+
+if sys.platform == 'win32':
+    import winreg
+else:
+    # 非 Windows：本模块的注册表探测（安装目录来源）全部不可用。用桩对象替身，
+    # 让 _reg_open 的 try/except OSError 统一兜住——所有注册表扫描函数返回空，
+    # 依赖注册表的实例探测（蓝叠 5 的 UserDefinedDir）自动回退到文件查找。
+    # 模拟器本身（MuMu/雷电/夜神/蓝叠）只有 Windows 版，Linux 上探测不到是正常的。
+    class _NoWinreg:
+        HKEY_LOCAL_MACHINE = 0
+        HKEY_CURRENT_USER = 0
+
+        def OpenKey(self, *args, **kwargs):
+            raise OSError('winreg 在非 Windows 平台不可用')
+
+    winreg = _NoWinreg()
 
 # Windows 下隐藏子进程的命令行窗口
 _NO_WINDOW = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0

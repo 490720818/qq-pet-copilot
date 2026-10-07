@@ -7,7 +7,7 @@ import yaml
 from ruamel.yaml import YAML
 from ruamel.yaml.scalarstring import DoubleQuotedScalarString, LiteralScalarString
 
-from .config import CONFIG_FILE, MAIN_TASK_KEYS, TASK_KEYS
+from .config import CONFIG_FILE, MAIN_TASK_KEYS, TASK_KEYS, bundled_adb_rel
 
 _yaml = YAML()  # 默认 round-trip，保留注释
 
@@ -17,7 +17,7 @@ WORK_LOCATIONS = ('风铃旅社', '彩虹画室', '迷雾侦探所', '星尘魔�
 
 # 各配置项默认值：设置页校验不通过时恢复
 DEFAULTS = {
-    'adb.path': 'resources/scrcpy-win64/adb.exe',
+    'adb.path': bundled_adb_rel(),
     'adb.device_serial': '',
     'gui.theme': '跟随系统',
     'gui.mirror': True,
