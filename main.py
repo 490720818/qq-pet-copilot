@@ -16,6 +16,7 @@
 import os
 import queue
 import re
+import signal
 import subprocess
 import sys
 import threading
@@ -124,16 +125,22 @@ else:
     # 或手工解压；也可在 config 里用系统装的 scrcpy——这里只作为默认位置）
     SCRCPY = resource_path('resources/scrcpy-linux') / 'scrcpy'
 SCRCPY_TITLE_PREFIX = 'QQPetCopilotScrcpy'
+# 无头熄屏 scrcpy 的标记（塞进 --window-title，只为让它出现在命令行里）。
+# 它不带 PID：熄屏是"每个设备一份"的独占资源，上次崩溃遗留的必须能被下次启动
+# 清掉——否则面板会一直黑着，用户按电源键都点不亮（进程还按着 powerMode=Off）。
+SCRCPY_OFF_TITLE_PREFIX = 'QQPetCopilotScrcpyOff'
 RUNNER_SCRIPT = PROJECT_ROOT / 'scenarios' / 'runner.py'
 EMBED_TRIES = 40  # 查找 scrcpy 窗口的次数（每次 500ms）
 LOG_MAX_LINES = 5000  # 日志区显示行数上限（超出自动丢弃最旧的行；完整日志在 runs/logs/ 文件里）
 SCRCPY_WATCHDOG_MS = 5000    # scrcpy 看门狗轮询间隔（毫秒）
 SCRCPY_RETRY_INTERVAL = 15.0  # 重拉失败后的退避（秒；设备重启要几十秒，别刷日志）
 UPDATE_CHECK_INTERVAL_MS = 6 * 3600 * 1000  # 检查更新周期（启动后先自动查一次）
-# Linux 镜像抓帧间隔（秒）：这是"抓完一帧再等这么久"，实际帧率还受截图耗时限制
-# （USB 真机单帧约 150~400ms，实测约 2~5 fps）。只为盯调度器在干什么，够用；
-# 想要 60fps 顺滑画面用工具栏的"独立镜像窗口"另开一个 scrcpy。
+# Linux 镜像抓帧间隔（秒）：这是"抓完一帧再等这么久"，实际帧率还受截图耗时限制。
+# 实测一加 13（1080x2376，USB 3.0）：单帧 `screencap -p` 约 1s，设备端 PNG 编码
+# 是瓶颈（raw 只快 0.2s 但单帧 10MB，不划算），所以实际约 1 fps。
+# 只为盯调度器在干什么，够用；想要顺滑画面用"独立镜像窗口"另开一个 scrcpy。
 MIRROR_INTERVAL = 0.25
+MIRROR_MIN_IDLE = 0.3        # 每轮之间的最小空闲（秒）：抓帧本来就要 1s，再背靠背连抓只是白烧 CPU
 MIRROR_FAIL_BACKOFF = 3.0    # 抓帧失败后的退避（秒；设备掉线时别刷屏）
 MIRROR_CAPTURE_TIMEOUT = 20.0  # 单帧 screencap 的超时（秒）
 
@@ -158,10 +165,11 @@ class DeviceMirror(threading.Thread):
 
     Windows 版把 scrcpy 窗口用 Win32 SetParent 嵌进 Qt 控件；Linux 上没有等价
     且可靠的做法（Wayland 拿不到外来窗口句柄），改为直接抓设备帧缓冲：
-    adb exec-out screencap -p。代价是帧率受单帧耗时限制（USB 真机约 2~5 fps），
-    用于监视调度器在做什么足够；要顺滑 60fps 画面用"独立镜像窗口"另开 scrcpy。
+    adb exec-out screencap -p。代价是帧率受单帧耗时限制（USB 真机约 1 fps，
+    见 MIRROR_INTERVAL 注释），用于监视调度器在做什么足够；要顺滑画面另开 scrcpy。
 
     抓帧走独立 adb 进程，不碰 uiautomator2 连接，和调度器互不干扰。
+    熄屏运行不影响它：实测面板 powerMode=Off 时 screencap 仍返回实时画面。
     """
 
     def __init__(self, adb_path: str, serial: str, signals: '_MirrorSignals',
@@ -172,11 +180,32 @@ class DeviceMirror(threading.Thread):
         self._signals = signals
         self._interval = interval
         self._stop = threading.Event()
+        self._pause = threading.Event()  # 窗口不可见时置位：暂停抓帧，省 CPU 与 USB 带宽
         self.frames = 0          # 已成功显示帧数（供日志/调试）
         self.last_error = ''
 
     def stop(self) -> None:
         self._stop.set()
+        self._pause.clear()  # 解除暂停，让 run() 立刻看到 stop 并退出
+
+    def set_paused(self, paused: bool) -> None:
+        """窗口最小化/隐藏时暂停抓帧（幂等，线程安全）。"""
+        if paused:
+            self._pause.set()
+        else:
+            self._pause.clear()
+
+    def _idle(self, seconds: float) -> None:
+        """可被 stop / 暂停打断的等待。暂停期间空转（不做抓帧）直到恢复或停止。"""
+        deadline = time.monotonic() + seconds
+        while not self._stop.is_set():
+            if self._pause.is_set():
+                time.sleep(0.2)
+                continue
+            left = deadline - time.monotonic()
+            if left <= 0:
+                return
+            self._stop.wait(min(0.2, left))
 
     def _capture(self) -> bytes:
         cmd = [self._adb]
@@ -196,6 +225,9 @@ class DeviceMirror(threading.Thread):
 
     def run(self) -> None:
         while not self._stop.is_set():
+            if self._pause.is_set():
+                self._idle(0.2)
+                continue
             t0 = time.monotonic()
             try:
                 png = self._capture()
@@ -207,10 +239,10 @@ class DeviceMirror(threading.Thread):
                 if msg != self.last_error:  # 同一种错只报一次，别刷屏
                     self.last_error = msg
                     self._signals.failed.emit(msg)
-                self._stop.wait(MIRROR_FAIL_BACKOFF)
+                self._idle(MIRROR_FAIL_BACKOFF)
                 continue
             elapsed = time.monotonic() - t0
-            self._stop.wait(max(0.05, self._interval - elapsed))
+            self._idle(max(MIRROR_MIN_IDLE, self._interval - elapsed))
 
 
 class _TestSignals(QObject):
@@ -480,6 +512,21 @@ def kill_previous_scrcpy() -> None:
         log('清理本设备遗留 scrcpy 失败（可忽略）')
 
 
+def kill_previous_screen_off() -> None:
+    """清理上次崩溃遗留的无头熄屏 scrcpy。
+
+    和 kill_previous_scrcpy 不同，这里**不要求配了序列号**：熄屏进程按着面板
+    powerMode=Off，GUI 被强杀（SIGKILL/崩溃）时 closeEvent 来不及执行，进程就
+    孤儿化了——不清理的话手机面板会一直黑着，用户按电源键也点不亮。宁可多杀，
+    也不要让用户面对一块点不亮的屏幕。
+    """
+    serial = load_config().adb.device_serial or 'auto'
+    try:
+        _kill_scrcpy_by_marker(f'{SCRCPY_OFF_TITLE_PREFIX}-{serial}')
+    except Exception:
+        log('清理遗留的熄屏 scrcpy 失败（可忽略）')
+
+
 def _scrcpy_port(serial: str) -> str:
     """本实例 scrcpy 客户端监听端口范围（按设备序列号稳定在 28200 起，8 个连续端口）。
 
@@ -494,30 +541,52 @@ def _scrcpy_port(serial: str) -> str:
     return f'{port}:{port + 7}'
 
 
+def _scrcpy_env() -> dict:
+    """给 scrcpy 子进程准备环境变量，重点是 ADB 指向本项目解析出的 adb。
+
+    scrcpy 只认 PATH 里的 adb 或 ADB 环境变量。Windows 上 Popen 会先搜 cwd，
+    原版靠 cwd=SCRCPY.parent 就能找到同目录的 adb.exe；Linux 的 execvp 不搜
+    cwd，不加这个会直接报 "Could not find any ADB device"。
+    """
+    env = os.environ.copy()
+    try:
+        adb = find_adb(load_config().adb.path)
+    except Exception:
+        adb = ''
+    if adb:
+        env['ADB'] = adb
+    return env
+
+
 def start_scrcpy(emulator: bool = False) -> subprocess.Popen | None:
     """以无边框、关屏（模拟器除外）、固定标题启动 scrcpy，返回进程。"""
     if not SCRCPY.is_file():
         log(f'未找到 {SCRCPY}，跳过 scrcpy 启动')
         return None
+    screen_off = load_config().gui.screen_off
     cmd = [str(SCRCPY)]
     serial = load_config().adb.device_serial
     if serial:  # 指定设备序列号
         cmd += ['-s', serial]
     cmd += ['--no-audio']  # 只要画面，不要音频（镜像/自动化用不到声音）
-    if not emulator:
-        # 模拟器没有物理屏幕可关，--turn-screen-off 无效且可能报错
+    if not emulator and screen_off:
+        # 模拟器没有物理屏幕可关，--turn-screen-off 无效且可能报错；
+        # 用户关掉"熄屏运行"开关时也不关，保持屏幕点亮
         cmd.append('--turn-screen-off')
     cmd += ['--window-borderless', '--stay-awake',
             f'--port={_scrcpy_port(serial or "")}',  # 多开防端口撞车串台
             f'--window-title={_scrcpy_title()}',
             # 先放到屏幕外，嵌入容器时再移回来，避免窗口先弹出再嵌入的闪烁
             '--window-x=-2000', '--window-y=-2000']
-    flags = '--no-audio' + ('' if emulator else ' --turn-screen-off') + ' --window-borderless'
+    flags = ('--no-audio'
+             + (' --turn-screen-off' if (not emulator and screen_off) else '')
+             + ' --window-borderless')
     log(f'启动 scrcpy（{flags}'
         + (f'，设备 {serial}）...' if serial else '）...'))
     proc = subprocess.Popen(
         cmd,
         cwd=str(SCRCPY.parent),  # scrcpy 需要同目录的 scrcpy-server 等文件
+        env=_scrcpy_env(),
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         creationflags=_NO_WINDOW,
@@ -540,6 +609,9 @@ def start_scrcpy_screen_off(emulator: bool = False) -> subprocess.Popen | None:
     if emulator:
         log('模拟器模式：跳过关屏（模拟器无物理屏幕可关）')
         return None
+    if not load_config().gui.screen_off:
+        # 用户把"熄屏运行"开关关掉了：保持屏幕点亮
+        return None
     if not SCRCPY.is_file():
         log(f'未找到 {SCRCPY}，跳过屏幕关闭')
         return None
@@ -550,11 +622,16 @@ def start_scrcpy_screen_off(emulator: bool = False) -> subprocess.Popen | None:
         cmd += ['-s', serial]
     # 无头关屏 scrcpy 同样占用监听端口，必须按实例区分（理由见 _scrcpy_port）
     cmd.append(f'--port={_scrcpy_port(serial or "")}')
+    # 标记只为进命令行：--no-window 下没有窗口，scrcpy 会忽略这个参数，但它让
+    # 上次崩溃遗留的熄屏进程能被 kill_previous_screen_off 认出来并清掉
+    cmd.append(f'--window-title={SCRCPY_OFF_TITLE_PREFIX}-{serial or "auto"}')
+    kill_previous_screen_off()
     log('启动 scrcpy 关闭屏幕（--turn-screen-off --no-video --no-audio '
         '--stay-awake --no-window）...')
     proc = subprocess.Popen(
         cmd,
         cwd=str(SCRCPY.parent),
+        env=_scrcpy_env(),
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         creationflags=_NO_WINDOW,
@@ -877,6 +954,8 @@ class MainWindow(MSFluentWindow):
         self._adb_dev = None
         self._adb_dev_key = None
         self._screen_off_proc: subprocess.Popen | None = None  # 无头关屏 scrcpy
+        # 熄屏 scrcpy 的看门狗退避时间戳（与画面镜像的 _scrcpy_retry_at 独立）
+        self._screen_off_retry_at = 0.0
         # Linux 画面镜像：后台抓帧线程 + 跨线程帧信号（信号对象只建一次，
         # 每次启停只换线程，避免反复 connect 把同一个槽挂上去多次）
         self._mirror: DeviceMirror | None = None
@@ -918,6 +997,14 @@ class MainWindow(MSFluentWindow):
         self.btn_scrcpy.setOffText('关')
         self.btn_scrcpy.setChecked(load_config().gui.mirror)
         self.btn_scrcpy.checkedChanged.connect(self._toggle_scrcpy)
+        # 熄屏运行开关：开=无头 scrcpy 关掉手机面板（OLED 防烧屏，截图/OCR 照常），
+        # 关=保持屏幕点亮。状态持久化到 gui.screen_off。
+        # 与画面镜像开关互相独立：镜像只是预览，熄屏只影响面板电源。
+        self.btn_screen_off = SwitchButton(self)
+        self.btn_screen_off.setOnText('开')
+        self.btn_screen_off.setOffText('关')
+        self.btn_screen_off.setChecked(load_config().gui.screen_off)
+        self.btn_screen_off.checkedChanged.connect(self._toggle_screen_off)
         # 连接测试：u2 截图 + OCR 识别 + 控件树拉取 耗时（后台线程执行，结果在日志页）
         self._btn_connect_test = PushButton('连接测试', self, FIF.LINK)
         self._btn_connect_test.clicked.connect(self._test_connect)
@@ -936,6 +1023,9 @@ class MainWindow(MSFluentWindow):
         row.addSpacing(6)
         row.addWidget(BodyLabel('画面镜像'))
         row.addWidget(self.btn_scrcpy)
+        row.addSpacing(6)
+        row.addWidget(BodyLabel('熄屏运行'))
+        row.addWidget(self.btn_screen_off)
         row.addSpacing(6)
         row.addWidget(self._btn_connect_test)
         row.addWidget(self._btn_manual_recover)
@@ -1127,14 +1217,14 @@ class MainWindow(MSFluentWindow):
             # 设备上线后 scrcpy 看门狗会自动拉起并重嵌入）
             threading.Thread(target=self._ensure_emulator_device, daemon=True).start()
         if not IS_WIN:
-            # Linux：画面镜像走抓帧预览（没有 scrcpy 窗口可嵌），
-            # 关屏仍用无头 scrcpy——两者互斥，见 _start_mirror / _stop_mirror
+            # Linux：画面镜像走抓帧预览（没有 scrcpy 窗口可嵌）；熄屏是独立的
+            # 无头 scrcpy，与镜像开关互不影响，见 _apply_screen_off
             try:
+                self._apply_screen_off()
                 if self.btn_scrcpy.isChecked():
                     self._start_mirror()
                 else:
                     log('画面镜像开关关闭，跳过启动')
-                    self._screen_off_proc = start_scrcpy_screen_off(self.emulator_mode)
             except Exception:
                 import traceback
 
@@ -1207,6 +1297,8 @@ class MainWindow(MSFluentWindow):
         进程活着但没嵌上（多开同时拉起时窗口创建慢、嵌入轮询已超时）也补挂嵌入轮询，
         否则窗口只会孤零零留在屏幕外，画面一直黑着。
         """
+        if not IS_WIN:
+            self._check_screen_off()  # 熄屏与镜像开关无关，先维护它
         if not self.btn_scrcpy.isChecked():
             return  # 画面镜像已关闭，不自动拉起
         if not IS_WIN:
@@ -2393,18 +2485,90 @@ class MainWindow(MSFluentWindow):
         except Exception as e:
             log(f'adb connect 模拟器失败: {e}')
 
+    # ---- Linux 熄屏运行（OLED 防烧屏） ----------------------------------
+
+    def _screen_off_wanted(self) -> bool:
+        """当前是否要熄屏运行（以工具栏开关为准，它是从 gui.screen_off 初始化的）。"""
+        try:
+            return bool(self.btn_screen_off.isChecked())
+        except Exception:
+            return False
+
+    def _apply_screen_off(self) -> None:
+        """用无头 scrcpy 关掉手机面板；已在跑就什么都不做（幂等）。
+
+        实测（一加 13 / Android 15 / scrcpy 5.0）：面板在 SurfaceFlinger 里变成
+        powerMode=Off 之后，`adb exec-out screencap -p` 仍返回完整实时画面，
+        uiautomator2 控件树与 OCR 全部照常——所以熄屏运行不影响任何自动化功能，
+        而面板不发光的这段时间对 OLED 寿命是实打实省下来的。
+
+        失败不影响其它功能：scrcpy 退出时会自己把面板恢复点亮，所以即使它中途
+        挂了，手机也不会被留在黑屏状态（看门狗随后会重拉）。
+        """
+        if not self._screen_off_wanted():
+            return
+        if self._screen_off_proc is not None and self._screen_off_proc.poll() is None:
+            return  # 已经在关屏了
+        self._screen_off_proc = start_scrcpy_screen_off(self.emulator_mode)
+
+    def _stop_screen_off(self) -> None:
+        """结束无头熄屏 scrcpy（它会自己把面板恢复点亮）。幂等。"""
+        proc = self._screen_off_proc
+        self._screen_off_proc = None
+        if proc is not None and proc.poll() is None:
+            try:
+                proc.terminate()
+            except Exception:
+                pass
+
+    def _check_screen_off(self) -> None:
+        """看门狗：熄屏 scrcpy 掉了就重拉（设备重插/重启会让它断开）。
+
+        它一退出手机面板就亮回来了，所以掉线要尽快补上，否则等于一直在亮屏。
+        """
+        if not self._screen_off_wanted():
+            return
+        if self._screen_off_proc is not None and self._screen_off_proc.poll() is None:
+            return
+        now = time.monotonic()
+        if now < self._screen_off_retry_at:
+            return
+        self._screen_off_retry_at = now + SCRCPY_RETRY_INTERVAL
+        log('熄屏 scrcpy 已退出，重新关闭手机屏幕...')
+        self._screen_off_proc = start_scrcpy_screen_off(self.emulator_mode)
+
+    def _toggle_screen_off(self, _checked: bool = False) -> None:
+        """熄屏运行开关切换：开=关面板，关=恢复点亮。
+        开关状态持久化到 gui.screen_off（下次启动保持）。"""
+        try:
+            data = settings_io.load_raw()
+            if settings_io.get_value(data, 'gui.screen_off') != self.btn_screen_off.isChecked():
+                settings_io.set_value(data, 'gui.screen_off', self.btn_screen_off.isChecked())
+                settings_io.save_raw(data)
+        except Exception as e:
+            log(f'保存熄屏开关状态失败: {e}')
+        if self.btn_screen_off.isChecked():
+            log('开启熄屏运行：关闭手机面板（截图与识别不受影响）')
+            self._apply_screen_off()
+        else:
+            log('关闭熄屏运行：恢复手机屏幕')
+            self._stop_screen_off()
+
     # ---- Linux 画面镜像（抓帧预览） -------------------------------------
 
     def _wake_device(self, adb_path: str, serial: str) -> None:
-        """唤醒设备并保持常亮。
+        """保持设备唤醒。
 
-        抓帧（screencap）在息屏/关屏状态下只能拿到黑帧，所以镜像开启前必须先
-        点亮屏幕；stayon 让 USB 供电期间不自动息屏。关屏 scrcpy 会自己恢复
-        屏幕状态，这里只做兜底唤醒，失败不阻塞镜像。
+        注意：熄屏运行时**不能**发 KEYCODE_WAKEUP——那会把刚被 scrcpy 关掉的
+        面板重新点亮，白费防烧屏。抓帧（screencap）并不依赖面板点亮：实测面板
+        powerMode=Off 时 screencap 仍返回完整画面，所以熄屏下也不需要唤醒屏幕。
+        stayon 只影响"自动息屏"，与 scrcpy 的面板关闭不冲突（两者实测可共存）。
         """
         base = [adb_path] + (['-s', serial] if serial else [])
-        for args in (['shell', 'input', 'keyevent', 'KEYCODE_WAKEUP'],
-                     ['shell', 'svc', 'power', 'stayon', 'true']):
+        steps = [['shell', 'svc', 'power', 'stayon', 'true']]
+        if not self._screen_off_wanted():
+            steps.insert(0, ['shell', 'input', 'keyevent', 'KEYCODE_WAKEUP'])
+        for args in steps:
             try:
                 subprocess.run(base + args, capture_output=True, timeout=10,
                                creationflags=_NO_WINDOW)
@@ -2428,6 +2592,7 @@ class MainWindow(MSFluentWindow):
         self.scrcpy_view.clear_frame('正在连接设备…')
         self._mirror = DeviceMirror(adb_path, serial, self._mirror_signals)
         self._mirror.start()
+        self._sync_mirror_pause()  # 窗口本来就是最小化/隐藏状态的话，直接以暂停态起步
         # 实测一加 13（1080x2376）：`adb exec-out screencap -p` 单帧约 1s
         # （设备端 PNG 编码是瓶颈；raw 只快 0.2s 但单帧 10MB，不划算），
         # 所以实际约 1 fps。看调度器在干什么够用，别指望它像 scrcpy 一样流畅。
@@ -2475,14 +2640,16 @@ class MainWindow(MSFluentWindow):
 
     def _enable_scrcpy(self) -> None:
         """启动 scrcpy 并开始查找嵌入（看门狗随后自动维护重连）。"""
+        if not IS_WIN:
+            # Linux：画面镜像走独立抓帧线程，与熄屏开关互不影响（实测面板
+            # powerMode=Off 时 screencap 仍返回实时画面），所以这里既不结束
+            # _screen_off_proc，也不唤醒屏幕，免得把刚关掉的面板又点亮
+            self._start_mirror()
+            return
         if self._screen_off_proc is not None and self._screen_off_proc.poll() is None:
             log('结束屏幕关闭 scrcpy')
             self._screen_off_proc.terminate()
         self._screen_off_proc = None
-        if not IS_WIN:
-            # Linux：关掉关屏 scrcpy 后必须唤醒屏幕，否则抓到的是黑帧
-            self._start_mirror()
-            return
         if self._scrcpy_proc is not None and self._scrcpy_proc.poll() is None:
             # 已在运行：若之前嵌入超时没嵌上（窗口落在屏幕外），补挂嵌入轮询而不是干等
             if self.scrcpy_view._hwnd is None and not self._embed_timer.isActive():
@@ -2503,14 +2670,15 @@ class MainWindow(MSFluentWindow):
             self._stop_mirror()
             self.scrcpy_view.clear_frame('画面镜像已关闭')
             log('画面镜像已停止')
-            self._screen_off_proc = start_scrcpy_screen_off(self.emulator_mode)
+            # 镜像关掉后按"熄屏运行"开关决定面板是否关闭（开关关着就保持点亮）
+            self._apply_screen_off()
             return
         self._embed_timer.stop()
         kill_our_scrcpy(self._scrcpy_proc)
         self._scrcpy_proc = None
         self.scrcpy_view.set_hwnd(None)
         # 镜像关闭：用无头 scrcpy 真正关掉设备屏幕（保持自动化可用）；
-        # 模拟器模式 start_scrcpy_screen_off 内部直接跳过
+        # 模拟器模式或熄屏开关关闭时 start_scrcpy_screen_off 内部直接跳过
         self._screen_off_proc = start_scrcpy_screen_off(self.emulator_mode)
 
     def _restart_runner(self) -> None:
@@ -2603,6 +2771,34 @@ class MainWindow(MSFluentWindow):
             self.btn_stop.setEnabled(running)
 
     # ---- 退出 ----
+
+    def _sync_mirror_pause(self) -> None:
+        """按窗口可见性同步抓帧线程的暂停状态（幂等）。"""
+        mirror = getattr(self, '_mirror', None)
+        if IS_WIN or mirror is None:
+            return
+        mirror.set_paused(self.isMinimized() or not self.isVisible())
+
+    def changeEvent(self, event) -> None:
+        """窗口最小化/隐藏时暂停抓帧。
+
+        单帧 screencap 约 1s，是设备端 PNG 编码在烧 CPU；窗口看不见的时候继续
+        每秒抓一帧纯属浪费（手机和电脑都白耗电发热）。恢复显示时自动继续。
+        注意用 getattr：Qt 在 __init__ 期间（super().__init__ / 添加子控件）就会
+        触发 changeEvent，那时 self._mirror 还没建出来。
+        """
+        super().changeEvent(event)
+        self._sync_mirror_pause()
+
+    def showEvent(self, event) -> None:
+        """显示时恢复抓帧（最小化→还原走的是 showEvent，不一定有 changeEvent）。"""
+        super().showEvent(event)
+        self._sync_mirror_pause()
+
+    def hideEvent(self, event) -> None:
+        """隐藏时暂停抓帧。"""
+        super().hideEvent(event)
+        self._sync_mirror_pause()
 
     def closeEvent(self, event) -> None:
         if self._runner_proc and self._runner_proc.poll() is None:
@@ -2749,7 +2945,37 @@ def main() -> None:
     setTheme(THEME_MAP.get(load_config().gui.theme, Theme.AUTO))
     window = MainWindow(emulator_mode=emulator, emulator_device=emulator_device)
     window.show()
+    _install_signal_handlers(app, window)
     sys.exit(app.exec())
+
+
+def _install_signal_handlers(app: QApplication, window: 'MainWindow') -> None:
+    """让 SIGTERM/SIGINT 走正常退出流程（触发 closeEvent 清理子进程）。
+
+    Linux 上关窗口不一定有点按钮的机会：会话注销、systemd 停服务、终端里
+    Ctrl+C、`kill <pid>` 都会直接给 SIGTERM。默认情况下 Qt 不处理它，进程被
+    立刻干掉，closeEvent 不执行——画面镜像线程是 daemon 无所谓，但**无头熄屏
+    scrcpy 会被孤儿化，手机面板就一直黑着**。所以这里接住信号，改成走
+    window.close()（和点右上角关闭完全同一条路径）。
+
+    Qt 事件循环在 C 里跑，Python 信号处理器要等解释器重新拿到控制权才会执行，
+    所以额外挂一个空转 QTimer 定期把控制权还给 Python。
+    """
+    def _on_signal(_signum, _frame) -> None:
+        # 信号处理器里不能直接动 Qt 对象，丢回事件循环去执行
+        QTimer.singleShot(0, window.close)
+
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        try:
+            signal.signal(sig, _on_signal)
+        except (ValueError, OSError):
+            pass  # 非主线程/不支持的平台，忽略
+    # 空转定时器：只是为了让上面注册的处理器有机会运行
+    pump = QTimer(app)
+    pump.setInterval(200)
+    pump.timeout.connect(lambda: None)
+    pump.start()
+    app._signal_pump = pump  # 持有引用，避免被 GC
 
 
 if __name__ == '__main__':

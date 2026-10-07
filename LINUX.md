@@ -14,7 +14,7 @@
 |---|---|---|
 | 画面镜像 | 起 scrcpy 窗口，用 `win32gui.SetParent` 嵌进 Qt | `adb exec-out screencap -p` 后台抓帧，Qt 直接绘制 |
 | 镜像帧率 | scrcpy 原生（30~60 fps） | **约 1 fps**（`screencap` 单帧 ~1s，设备端 PNG 编码是瓶颈） |
-| 关屏 | 镜像开着也能 `--turn-screen-off` | **镜像开着不能息屏**（息屏只抓到黑帧）；镜像关掉才用无头 scrcpy 真关屏 |
+| 关屏 | `--turn-screen-off` | 同样 `--turn-screen-off`，**实测不影响截图/OCR/自动化**，见第 6 节 |
 | 设备控制 | `injectInputEvent`（默认）/ `minitouch` | 同左，真机用默认 `injectInputEvent` 即可 |
 | 模拟器模式 | MuMu / 雷电 / 夜神 / 蓝叠 | **不可用**（这些模拟器只有 Windows 版）。Linux 上要用得自己搭 AVD/Genymotion |
 | 桌面通知 | `winotify` Toast | 不可用，改配 `notify.onepush_config` |
@@ -139,7 +139,7 @@ sudo bash tools/linux_android_udev.sh 22d9      # 参数是上面看到的 vendo
 .venv/bin/python main.py
 ```
 
-首页会显示画面镜像。**注意**：镜像开着时手机保持亮屏（见第 1 节）。
+首页会显示画面镜像。手机屏幕是否点亮由工具栏的**「熄屏运行」**开关控制，见第 6 节。
 
 ### 5.2 命令行调度器
 
@@ -168,7 +168,98 @@ QT_QPA_PLATFORM=offscreen .venv/bin/python tools/smoke_gui.py 10
 
 ---
 
-## 6. ⚠️ 运行前必读：关掉悬浮窗和画中画
+## 6. 熄屏运行（OLED 防烧屏）
+
+**这个项目可以完全熄屏跑。** 工具栏「熄屏运行」开关默认打开（`gui.screen_off: true`）。
+
+### 原理
+
+用无头 scrcpy 把手机面板关掉：
+
+```bash
+scrcpy --turn-screen-off --no-video --no-audio --stay-awake --no-window
+```
+
+关键是 `--turn-screen-off` 只关**面板电源**（SurfaceFlinger 里 `powerMode=Off`），
+**不是让设备休眠**。渲染管线照常工作，所以：
+
+| 能力 | 熄屏时 |
+|---|---|
+| `adb exec-out screencap -p` 截图 | ✅ 正常，返回实时画面 |
+| uiautomator2 控件树（`content-desc` / `resource-id`） | ✅ 正常 |
+| RapidOCR 整屏识别 | ✅ 正常 |
+| `injectInputEvent` 点击 | ✅ 正常 |
+| 整个调度器（学习/打工/冒险/踩踩/PK…） | ✅ 正常 |
+
+### 实测证据（一加 13 / Android 15 / scrcpy 5.0）
+
+- scrcpy 日志：`[server] INFO: Device display turned off`
+- `dumpsys SurfaceFlinger` → `Display ... (HWC display 0): ... powerMode=Off`
+- `dumpsys power` → `mWakefulness=Awake`（设备没睡）
+- 熄屏后截图 `mean=37.15 std=66.60`，与亮屏基线 `mean=37.15 std=66.61` 平均绝对差 **0.04**
+- 隔 30 秒再截 `mean=80.86`，与上一张差异 **80.97** → 是**实时画面**，不是缓存帧
+- 熄屏下完整跑 `scenarios/runner.py`：`已在主页面 (score=1.00)`、好友列表 OCR 认出 5 人、
+  一键护理、PK 连打 12 局 —— **零失败**
+
+> 反直觉的一点：`dumpsys display` 在 scrcpy 关面板时**仍显示** `Display State=ON`。
+> scrcpy 绕过 DisplayManager 直接调 SurfaceFlinger，只有 `dumpsys SurfaceFlinger`
+> 的 `powerMode=Off` 才是真实面板状态。别被 `dumpsys display` 骗了。
+
+### 怎么用
+
+- **开**（默认）：面板关闭，手机看起来是黑屏，但自动化照跑。省 OLED 寿命 + 省电。
+- **关**：面板保持点亮。调试/想盯着手机看的时候用。
+- 开关状态持久化到 `config.yaml` 的 `gui.screen_off`，重启保持。
+
+两个开关是**互相独立**的：
+
+| | 画面镜像开 | 画面镜像关 |
+|---|---|---|
+| **熄屏开** | 面板灭，GUI 里仍能看到画面 | 面板灭，GUI 无预览 |
+| **熄屏关** | 面板亮，GUI 有画面 | 面板亮，GUI 无预览 |
+
+> 「画面镜像」只是**电脑上**的预览窗口；「熄屏运行」只管**手机面板**电源。
+> 关掉镜像不会点亮手机屏幕，关掉熄屏也不会让电脑多耗电。
+
+### 掉线自愈
+
+熄屏 scrcpy 进程有 5 秒看门狗（`_check_screen_off`）：设备重插/重启后它会掉，
+看门狗 15 秒退避重拉。**它一退出手机面板就自动亮回来**，所以掉了不会让手机卡在黑屏。
+
+### 退出清理（避免面板卡在黑屏）
+
+GUI 正常关闭（点右上角 ×）和收到 `SIGTERM` / `SIGINT`（终端 `Ctrl+C`、`kill <pid>`、
+会话注销、systemd 停服务）都会走同一条 `closeEvent`，把熄屏 scrcpy 结束掉、面板恢复点亮。
+
+万一被 `SIGKILL -9` 或崩溃强杀，熄屏 scrcpy 会孤儿化、面板一直黑着。
+**下次启动 GUI 会自动清掉它**（`kill_previous_screen_off()`，靠命令行里的
+`QQPetCopilotScrcpyOff-*` 标记识别）。要立刻手动恢复：
+
+```bash
+pkill -f 'scrcpy.*--turn-screen-off'
+```
+
+### 顺带修的寿命问题
+
+- **`svc power stayon true` 与熄屏共存**：`stayon` 只管「USB 供电时别自动息屏」，
+  和 scrcpy 关面板不冲突，两个都开也不会把面板点亮。
+- **熄屏模式下不再发 `KEYCODE_WAKEUP`**：原来镜像启动前会唤醒屏幕，现在熄屏开着时跳过，
+  否则刚关掉的面板立刻又被点亮。
+- **窗口最小化时暂停抓帧**：单帧 `screencap` 约 1s，是**手机端** PNG 编码在烧 CPU。
+  GUI 最小化/隐藏后抓帧线程自动暂停（`DeviceMirror.set_paused`），还原时继续。
+- **抓帧间隔下限 0.3s**：抓一帧本来就要 1s，再背靠背连抓只是白烧电脑 CPU。
+
+### 还需要你自己做的（代码管不到）
+
+1. **充电上限设成 80%**：一加/OPPO 在 设置 → 电池 → 充电设置 里有「充电上限」。
+   长期插着 USB 还充到 100%，是锂电池衰减最快的方式。
+2. **别让它一直插着电又满电**：如果要挂几天，考虑用带开关的 USB hub 定时断电，
+   或者接受 80% 上限。本项目需要 USB 连接（adb 走 USB），所以这个只能靠充电上限缓解。
+3. **注意散热**：手机长时间跑游戏 + 充电会热。别放在被子里/密闭抽屉里。
+
+---
+
+## 7. ⚠️ 运行前必读：关掉悬浮窗和画中画
 
 **这是实测踩到的第一个坑，也是最容易踩的。**
 
@@ -206,7 +297,7 @@ adb -s <序列号> exec-out screencap -p > /tmp/s.png
 
 ---
 
-## 7. 故障排查
+## 8. 故障排查
 
 | 现象 | 原因 / 处理 |
 |---|---|
@@ -216,22 +307,26 @@ adb -s <序列号> exec-out screencap -p > /tmp/s.png
 | 镜像画面全黑 | 手机息屏了（`_wake_device` 会自动唤醒+stayon，但手动息屏后可能失效）；或设备上盖了黑窗口 |
 | 镜像不动 | `adb devices` 看看设备还在不在；抓帧线程失败会自己退避重试 |
 | GUI 起不来 / 花屏 | 试 `QT_QPA_PLATFORM=xcb .venv/bin/python main.py` 强制走 XWayland |
-| 金币/学园阶段识别错 | 十有八九是悬浮窗遮挡，见第 6 节 |
+| 金币/学园阶段识别错 | 十有八九是悬浮窗遮挡，见第 7 节 |
+| 手机面板不熄 / 亮回来 | 熄屏 scrcpy 掉了（看门狗 15s 内会重拉）；或「熄屏运行」开关被关了；或 `gui.screen_off: false` |
+| 熄屏后 GUI 画面卡住不动 | 检查 `adb devices`；抓帧线程会自己退避重试，设备回来就恢复 |
 | 一键护理找不到按钮 | 体力/清洁都正常时本来就不显示，属于正常跳过 |
 
 ---
 
-## 8. 本次为 Linux 适配做的改动
+## 9. 本次为 Linux 适配做的改动
 
 | 文件 | 改动 |
 |---|---|
 | `main.py` | 按平台导入 Win32 模块；scrcpy 路径分平台；`_kill_scrcpy_by_marker` 加 POSIX 实现；新增 `DeviceMirror` 抓帧线程 + `ScrcpyContainer` 双模绘制；`_start_all` / `_try_embed` / `_check_scrcpy` / `_enable_scrcpy` / `_disable_scrcpy` / `_restart_scrcpy` / `closeEvent` 各加 Linux 分支 |
-| `src/config.py` | 加 POSIX adb 搜索路径；`bundled_adb_rel()` / `_bundled_adb_candidates()` 按平台返回随包 adb 位置；错误提示分平台 |
-| `src/settings.py` | `DEFAULTS['adb.path']` 改用 `bundled_adb_rel()` |
+| `main.py`（熄屏） | 新增 `_scrcpy_env()`（给 scrcpy 传 `ADB` 环境变量，**否则 Linux 上找不到 adb**）；`start_scrcpy` / `start_scrcpy_screen_off` 受 `gui.screen_off` 控制并传 `env`；新增「熄屏运行」开关 `btn_screen_off` 与 `_screen_off_wanted` / `_apply_screen_off` / `_stop_screen_off` / `_check_screen_off` / `_toggle_screen_off`；`_wake_device` 熄屏时不发 `KEYCODE_WAKEUP`；`DeviceMirror` 加 `set_paused` + `_idle`，`MainWindow` 加 `changeEvent` / `showEvent` / `hideEvent` 同步暂停 |
+| `src/config.py` | 加 POSIX adb 搜索路径；`bundled_adb_rel()` / `_bundled_adb_candidates()` 按平台返回随包 adb 位置；错误提示分平台；`GuiConfig` 新增 `screen_off: bool = True` |
+| `src/settings.py` | `DEFAULTS['adb.path']` 改用 `bundled_adb_rel()`；新增 `DEFAULTS['gui.screen_off']` 与校验白名单 |
 | `src/emulator.py` | `winreg` 平台桩（非 Windows 时 `_reg_open` 统一返回 `None`） |
 | `src/u2dev.py` | `subprocess.CREATE_NO_WINDOW` 加平台守卫（原来在 Linux 上会直接 `AttributeError`） |
 | `tools/fetch_scrcpy.py` | 加 Linux 分支（下 `scrcpy-linux-x86_64-v*.tar.gz`，解压后补 `0o755`） |
-| `config.example.yaml` | `adb.path` 默认改为 `""`（自动搜索） |
+| `config.example.yaml` | `adb.path` 默认改为 `""`（自动搜索）；`gui.screen_off: true` |
 | `tools/linux_android_check.sh` | 新增：设备体检 |
 | `tools/linux_android_udev.sh` | 新增：装 udev 权限 |
 | `tools/smoke_gui.py` | 新增：无头 GUI 冒烟测试 |
+| `tools/test_mirror_pause.py` | 新增：验证窗口隐藏时抓帧暂停（PASS/FAIL 退出码） |

@@ -317,6 +317,12 @@ class GuiConfig:
     theme: str = "跟随系统"
     # 画面镜像开关（主页工具栏，开关状态持久化；仅 GUI 用）
     mirror: bool = True
+    # 熄屏运行（主页工具栏，开关状态持久化；仅 GUI 用）：
+    # 用无头 scrcpy --turn-screen-off 把手机面板关掉，OLED 防烧屏。
+    # 实测（一加 13 / Android 15 / scrcpy 5.0）：面板在 SurfaceFlinger 里变成
+    # powerMode=Off 之后，`adb exec-out screencap -p` 仍返回完整实时画面，
+    # uiautomator2 控件树与 OCR 全部照常，所以熄屏不影响任何自动化功能。
+    screen_off: bool = True
 
 
 @dataclass

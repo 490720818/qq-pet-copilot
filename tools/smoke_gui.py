@@ -34,6 +34,10 @@ def _report() -> None:
           f'frames={mir.frames if mir else 0} last_error={mir.last_error if mir else ""!r}')
     print(f'[smoke] 画面容器: hwnd={win.scrcpy_view._hwnd} aspect={win.scrcpy_view._aspect} '
           f'有帧={win.scrcpy_view._frame is not None}')
+    sop = win._screen_off_proc
+    print(f'[smoke] 熄屏开关={win.btn_screen_off.isChecked()} '
+          f'熄屏进程={sop.pid if sop else None} '
+          f'存活={sop.poll() is None if sop else None}')
     win.close()
     app.quit()
 
