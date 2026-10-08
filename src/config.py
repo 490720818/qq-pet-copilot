@@ -58,6 +58,31 @@ _COMMON_ADB_PATHS = [
     r"C:\Program Files (x86)\Android\android-sdk\platform-tools\adb.exe",
 ]
 
+# Linux/macOS 上 adb 的常见安装位置（apt 的 android-tools-adb / brew 的 android-platform-tools）
+_COMMON_ADB_PATHS_POSIX = [
+    "/usr/bin/adb",
+    "/usr/local/bin/adb",
+    "/opt/android-sdk/platform-tools/adb",
+    "/opt/android/platform-tools/adb",
+    "~/Android/Sdk/platform-tools/adb",
+    "~/Library/Android/sdk/platform-tools/adb",
+    "/opt/homebrew/bin/adb",
+]
+
+
+def bundled_adb_rel() -> str:
+    """随包 adb 的相对路径（Windows 用 scrcpy-win64 自带，Linux 用 platform-tools）。"""
+    if sys.platform == "win32":
+        return "resources/scrcpy-win64/adb.exe"
+    return "resources/platform-tools/adb"
+
+
+def _bundled_adb_candidates() -> list[str]:
+    """随包 adb 的候选相对路径（按优先级）。"""
+    if sys.platform == "win32":
+        return ["resources/scrcpy-win64/adb.exe"]
+    return ["resources/platform-tools/adb", "resources/scrcpy-linux/adb"]
+
 
 @dataclass
 class AdbConfig:
@@ -292,6 +317,12 @@ class GuiConfig:
     theme: str = "跟随系统"
     # 画面镜像开关（主页工具栏，开关状态持久化；仅 GUI 用）
     mirror: bool = True
+    # 熄屏运行（主页工具栏，开关状态持久化；仅 GUI 用）：
+    # 用无头 scrcpy --turn-screen-off 把手机面板关掉，OLED 防烧屏。
+    # 实测（一加 13 / Android 15 / scrcpy 5.0）：面板在 SurfaceFlinger 里变成
+    # powerMode=Off 之后，`adb exec-out screencap -p` 仍返回完整实时画面，
+    # uiautomator2 控件树与 OCR 全部照常，所以熄屏不影响任何自动化功能。
+    screen_off: bool = True
 
 
 @dataclass
@@ -325,21 +356,25 @@ def find_adb(configured_path: str = "") -> str:
         candidates.append(str(p if p.is_absolute() else resource_path(p)))
     # 随包 scrcpy 自带的 adb 兜底：配置路径失效时仍可用（如 exe 连同旧 config.yaml
     # 拷到别的电脑——配置里是指向原机器的路径/旧相对路径，本机靠 PATH 兜住没暴露）
-    bundled = str(resource_path('resources/scrcpy-win64/adb.exe'))
-    if bundled not in candidates:
-        candidates.append(bundled)
+    for rel in _bundled_adb_candidates():
+        bundled = str(resource_path(rel))
+        if bundled not in candidates:
+            candidates.append(bundled)
     which = shutil.which("adb")
     if which:
         candidates.append(which)
-    for raw in _COMMON_ADB_PATHS:
-        candidates.append(os.path.expandvars(raw))
+    common = _COMMON_ADB_PATHS if sys.platform == "win32" else _COMMON_ADB_PATHS_POSIX
+    for raw in common:
+        candidates.append(os.path.expanduser(os.path.expandvars(raw)))
 
     for path in candidates:
         if path and Path(path).is_file():
             return str(Path(path))
-    raise FileNotFoundError(
-        "找不到 adb。请安装 platform-tools，并在 config.yaml 的 adb.path 中填写 adb.exe 完整路径。"
-    )
+    hint = ("请安装 platform-tools，并在 config.yaml 的 adb.path 中填写 adb.exe 完整路径。"
+            if sys.platform == "win32" else
+            "请安装 adb（apt install android-tools-adb 或下载 platform-tools），"
+            "并在 config.yaml 的 adb.path 中填写 adb 完整路径。")
+    raise FileNotFoundError(f"找不到 adb。{hint}")
 
 
 def load_config(config_path: str | Path | None = None) -> Config:

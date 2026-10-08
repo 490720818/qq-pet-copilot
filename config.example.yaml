@@ -2,8 +2,10 @@
 # 复制为 config.yaml 后按需修改；config.yaml 不入库。
 
 adb:
-  # adb 可执行文件路径；留空则自动搜索 PATH 和常见安装目录（相对路径相对项目根目录）
-  path: "resources/scrcpy-win64/adb.exe"
+  # adb 可执行文件路径；留空则自动搜索：先找项目内随包的 adb
+  # （Windows: resources/scrcpy-win64/adb.exe；Linux/macOS: resources/platform-tools/adb），
+  # 再找 PATH 和常见安装目录。相对路径相对项目根目录。
+  path: ""
   # 设备序列号；留空则使用第一台在线设备
   device_serial: ""
 
@@ -13,6 +15,10 @@ gui:
   theme: 跟随系统
   # 画面镜像开关（主页工具栏开关状态持久化）
   mirror: true
+  # 熄屏运行（主页工具栏开关状态持久化）：用无头 scrcpy 把手机面板关掉，
+  # 长时间挂机时保护 OLED 屏幕。面板关闭后截图/OCR/控件识别全部照常工作，
+  # 不需要亮屏。关闭此项则手机屏幕保持点亮（费屏，不建议长时间挂机）。
+  screen_off: true
 
 # 控制方案：injectInputEvent（默认，uiautomator2 d.touch，走 u2 server 事件注入）/
 # minitouch（openstf minitouch socket 本地直发触摸事件，模拟器上 d.click 不可靠时更稳）

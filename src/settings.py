@@ -7,7 +7,7 @@ import yaml
 from ruamel.yaml import YAML
 from ruamel.yaml.scalarstring import DoubleQuotedScalarString, LiteralScalarString
 
-from .config import CONFIG_FILE, MAIN_TASK_KEYS, TASK_KEYS
+from .config import CONFIG_FILE, MAIN_TASK_KEYS, TASK_KEYS, bundled_adb_rel
 
 _yaml = YAML()  # 默认 round-trip，保留注释
 
@@ -17,10 +17,11 @@ WORK_LOCATIONS = ('风铃旅社', '彩虹画室', '迷雾侦探所', '星尘魔�
 
 # 各配置项默认值：设置页校验不通过时恢复
 DEFAULTS = {
-    'adb.path': 'resources/scrcpy-win64/adb.exe',
+    'adb.path': bundled_adb_rel(),
     'adb.device_serial': '',
     'gui.theme': '跟随系统',
     'gui.mirror': True,
+    'gui.screen_off': True,
     'control.method': 'injectInputEvent',
     'emulator.type': 'auto',
     'emulator.name': '',
@@ -154,7 +155,8 @@ def validate_field(key: str, value):
         except (TypeError, ValueError):
             return False, default
     if key == 'notify.win_toast' or key == 'adventure.skip_bad_weather' \
-            or key == 'emulator.device_spoof' or key == 'gui.mirror':
+            or key == 'emulator.device_spoof' or key == 'gui.mirror' \
+            or key == 'gui.screen_off':
         return (True, value) if isinstance(value, bool) else (False, default)
     if key == 'notify.onepush_config':
         # OnePush 推送配置（YAML，支持多行）：留空，或能解析出含 provider 的字典

@@ -29,6 +29,9 @@ from .adb.device import Device
 from .config import APP_ROOT, load_config, resource_path
 from .progress import log
 
+# Windows 下隐藏子进程的命令行窗口（adb 是控制台程序）；其他平台该常量不存在
+_NO_WINDOW = subprocess.CREATE_NO_WINDOW if sys.platform == 'win32' else 0
+
 # 相对坐标换算的参考分辨率（原 720x1280 模板时代的固定坐标以此为基准）
 REF_SIZE = (720, 1280)
 
@@ -471,7 +474,7 @@ class MiniTouchSession:
         cmd += list(args)
         proc = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8',
                               errors='replace', timeout=timeout,
-                              creationflags=subprocess.CREATE_NO_WINDOW)
+                              creationflags=_NO_WINDOW)
         if check and proc.returncode != 0:
             raise RuntimeError(f'adb 命令失败: {" ".join(cmd)}: {(proc.stderr or proc.stdout).strip()}')
         return proc
