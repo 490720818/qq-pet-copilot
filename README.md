@@ -57,8 +57,8 @@ PyQt6（Fluent Widgets）图形界面内嵌 scrcpy 实时画面，任务队列�
 - **每日计数与时长持久化**：各场景次数与累计时长按天记录在 `runs/*.json`（含历史），
   中途停止重跑接着计数，跨天自动归档清零（单账号，不按账号拆分）。
 - **GUI（PyQt6-Fluent-Widgets）**：左侧 Fluent 导航（主页/调度/统计/任务/设置），顶部全局
-  工具栏常驻（开始/停止/画面镜像/连接测试/手动重启 + 运行时间，画面镜像开关状态持久化
-  `gui.mirror`）；主页 = scrcpy 实时画面（9:16 竖屏等比自适应嵌入）+ 宠物状态/任务队列/
+  工具栏常驻（开始/停止/画面镜像/熄屏运行/连接测试/手动重启 + 运行时间，画面镜像
+  `gui.mirror`、熄屏运行 `gui.screen_off` 开关状态持久化）；主页 = scrcpy 实时画面（9:16 竖屏等比自适应嵌入）+ 宠物状态/任务队列/
   今日统计/日志卡片——任务队列卡调度器未运行时也按配置推算下一任务，今日统计以
   学习(h)/工作(h) 时长 + 各任务当日次数的两行网格展示；统计页为各任务近 N 天次数的
   平滑折线图；主题支持 跟随系统/深色/浅色（`gui.theme`，即时切换）；
@@ -67,6 +67,14 @@ PyQt6（Fluent Widgets）图形界面内嵌 scrcpy 实时画面，任务队列�
   设置页"检查更新"：启动后自动检查一次、之后每 6 小时一次，发现新版本显示 Release 下载链接。
 - **分辨率无关定位**：优先 u2 控件选择器，游戏内自绘按钮用 RapidOCR（PP-OCRv6 tiny）
   整屏文字识别，换分辨率/机型无需改代码。
+- **跨平台**：Windows（真机 + 模拟器；scrcpy 窗口用 Win32 `SetParent` 嵌进界面）与
+  Linux（真机；没有可嵌入的 scrcpy 窗口，改为后台 `adb exec-out screencap` 抓帧预览，
+  X11/Wayland 都能跑）都支持。Linux 上模拟器模式不可用（MuMu/雷电等只有 Windows 版），
+  adb 需自备——部署、差异对照与故障排查见 [LINUX.md](LINUX.md)。
+- **熄屏运行（OLED 防烧屏）**：工具栏「熄屏运行」开关（`gui.screen_off`，默认开）。
+  `scrcpy --turn-screen-off` 关的是**面板电源**而非设备休眠（`powerMode=Off` 但
+  `mWakefulness=Awake`），实测熄屏下面板关闭时 `screencap` 仍返回实时画面、
+  控件树 / OCR / 点击注入全部照常，可以整晚黑屏挂机。
 
 ## 快速开始
 
@@ -79,6 +87,10 @@ PyQt6（Fluent Widgets）图形界面内嵌 scrcpy 实时画面，任务队列�
    - `QQPetCopilotEmulator-<版本>-windows-x64.zip` —— **模拟器版**：模拟器（MuMu/雷电 等）使用，
      内置零注入 opener（MuMu 机型伪装 / 门禁补丁 + 官方 scheme 直开，frida 仅一次性兜底），
      解决模拟器 QQ 搜索卡片没有宠物入口的问题。
+   - `QQPetCopilot-<版本>-linux-x64.tar.gz` —— **Linux 版**：真机使用（Wayland/X11 均可），
+     onefile 可执行文件，`chmod +x QQPetCopilot && ./QQPetCopilot`。
+     模拟器模式在 Linux 上不可用（MuMu/雷电等只有 Windows 版），且 **adb 需自备**
+     （`apt install android-tools-adb`）——详见 [LINUX.md](LINUX.md)。
    - **模拟器版使用前提**：推荐使用最新版本 MuMu 模拟器（下载地址 [https://mumu.163.com/](https://mumu.163.com/)），
      模拟器内安装 **QQ 9.3.25 及以上版本**并登录账号后，再开启脚本。
      **Root 按需**：日常运行不需要 Root（机型伪装/门禁补丁持久化后零权限可用）；

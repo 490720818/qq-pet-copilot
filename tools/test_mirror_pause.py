@@ -51,8 +51,8 @@ def _tick() -> None:
             print(f'[pause] 隐藏期间（稳定后 8s）新增 {grew} 帧（期望 0）')
             if grew != 0:
                 fails.append(f'隐藏期间仍在抓帧：新增 {grew} 帧')
-            if not mir._pause.is_set():
-                fails.append('隐藏后 _pause 未置位')
+            if not mir._pause_event.is_set():
+                fails.append('隐藏后 _pause_event 未置位')
             win.show()
     elif state['phase'] == 'show':
         if now - state['t'] >= 8:
@@ -60,8 +60,8 @@ def _tick() -> None:
             print(f'[pause] 恢复显示 8s 内新增 {grew} 帧（期望 >0）')
             if grew <= 0:
                 fails.append('恢复显示后没有继续抓帧')
-            if mir._pause.is_set():
-                fails.append('恢复显示后 _pause 仍置位')
+            if mir._pause_event.is_set():
+                fails.append('恢复显示后 _pause_event 仍置位')
             _done()
 
 

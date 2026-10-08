@@ -7,7 +7,12 @@
 QQ 宠物自动化托管脚本。技术栈：Python 3 + uiautomator2（画面、输入与控件定位）+
 RapidOCR（文字/数字识别）+ PyQt6（GUI）。UI 定位分辨率无关：
 优先 u2 控件选择器，游戏内 canvas 自绘按钮靠 OCR 文字（`src/locators.py` 注册表）。
-平台：Windows（Git Bash 环境），目标设备：Android 手机（竖屏）。
+平台：**Windows 与 Linux**（开发机是 Windows / Git Bash，`.venv/Scripts/python`；
+Linux 真机模式见 `LINUX.md`，Windows 才是模拟器模式的平台），目标设备：Android 手机（竖屏）。
+平台差异集中在 `main.py`（`IS_WIN`：Win32 窗口嵌入 vs `DeviceMirror` 抓帧预览）、
+`src/config.py`（adb 路径/常见目录）、`src/emulator.py`（winreg 桩）、
+`src/u2dev.py` 与 `build.py`/`QQPetCopilot.spec`（产物名与随包资源）；改动时别在
+Windows 路径外新增无守卫的 `win32*`/`winreg`/`CREATE_NO_WINDOW` 调用。
 
 游戏机制注意：**护理相关勋章如果要拿的话不能一键！！！**（一键护理不计入勋章进度，
 要拿勋章必须把护理方式配成"ocr检测"手动喂食/洗澡，配置项 `care.method` /
@@ -44,7 +49,7 @@ $PY build.py --emulator          # 模拟器版（内置 frida 客户端；frida
 | --- | --- |
 | `main.py` | PyQt6 GUI，**界面基于 PyQt6-Fluent-Widgets**（requirements 已加 `PyQt6-Fluent-Widgets>=1.11,<2`，不要装 [full] 扩展会拉 scipy）：`MSFluentWindow` + 左侧导航栏（主页/调度/统计/任务/设置；设置页固定导航底部；主题按 `gui.theme` 配置（跟随系统/深色/浅色，`THEME_MAP`），启动时 `setTheme`、设置页改动即时生效）。**顶部全局工具栏**（`_install_toolbar` 把 stackedWidget 包进右侧容器：上工具栏下页面，切页不受影响）：开始 PrimaryPushButton、停止、画面镜像 SwitchButton（开关状态持久化 `gui.mirror`，`_toggle_scrcpy` 里写回，启动时 `load_config().gui.mirror` 恢复）、连接测试、手动重启 + 右侧运行时间 label。主页 = 左侧 scrcpy 画面卡片（SetParent 嵌入，**9:16 竖屏**：`ScrcpyContainer` 报竖屏 sizeHint/heightForWidth，`embed` 优先取 scrcpy 窗口客户区真实尺寸做嵌入比例（自适应任何设备/--max-size，用设备物理分辨率比例会留两侧黑边），`_aspect` 未知按 (9,16) 兜底 `_fit`，画面卡宽度随高度自适应收拢（`_fit_screen_card`：fixed width = 高度×画面比例，嵌入后/窗口缩放重算；**不用 QSplitter**——把手在深色主题下渲染成白色竖条；容器未嵌入时透明背景跟随主题，不写死黑色）+ 右侧卡片列（宠物状态横排一行/任务队列卡/今日统计（两行网格：学习(h)/工作(h) 时长拆分 + 各任务当日次数）/日志卡——三张卡内容都按列等宽均分（单元格 addWidget(cell, 1)，不要挤在左侧）——`log_view` 在主页吃剩余空间，状态/队列/今日卡垂直 sizePolicy Maximum 紧贴内容；**任务队列卡**（当前任务/下一任务/待执行/等待中）调度器运行时读 `runs/queue_status.json`、未运行按配置推算（`_predict_queue_summary` 复用调度页 `_predict_next`，按 `tasks.order` 顺序取第一个非"—"任务为下一任务）；分组卡片全用 `CompactCardWidget`（紧凑版 HeaderCardWidget：标题栏 48→34、内容边距 24→16/10/16/12，原版 chrome 占高 ~96px 一页放不了几组）；注意 `HeaderCardWidget.viewLayout` 是 QHBoxLayout，竖排内容要包一层 body widget）；调度页 = 每任务 开关（SwitchButton 开/关）/执行间隔（每日时间）/启用时段 可直接编辑（保存 config.yaml 热加载生效），下次执行 = 调度器运行时读 `runs/queue_status.json` 的 tasks 段、未运行时按配置推算的详细时间；任务/设置页 = `SETTING_FIELDS`/`TASK_SETTING_FIELDS` 数据驱动表单，按配置键第一段分组进 CompactCardWidget（分组标题映射 `SETTING_GROUP_TITLES`，任务页 = 任务队列顺序 + 场景任务设置，设置页 = 连接/调度引擎/全局规则/告警 + 关于与更新卡片），**分组卡片两列排布**（`TwoColumnCardsPanel`：QHBoxLayout 两个竖列、列尾 stretch 顶格，`_build_settings_form` 填完字段后 `finalize()` 按 sizeHint 高度把卡片平衡进较矮列，等宽；别用 FlowLayout——行高=该行最高卡片会在同列卡片间留白）；切页加载配置按页面 objectName 判定（`_on_tab_changed`，不依赖页序）；表单控件全用 fluent 类（SwitchButton 信号是 `checkedChanged` 不是 stateChanged；devices 下拉用 `_NoInsertEditableComboBox`——EditableComboBox 回车默认把输入追加进下拉，已改写拦截；**fluent ComboBox.addItem 签名是 (text, icon=None, userData=None)，userData 必须关键字传**（位置传参被当 icon、data 全 None，设备序列号下拉曾因此选啥都存成空）；HyperlinkLabel 的 (url, text) 重载要求 url 传 QUrl，传 str 会被当成 (text, parent) 重载（显示原始 URL、点击无效）；非 editable 的 fluent ComboBox **不是** QComboBox 子类但同名 API 基本兼容）、调度器子进程控制、scrcpy 看门狗（设备重启后自动重拉重嵌入；进程活着但没嵌上——多开同时拉起窗口创建慢、嵌入轮询已超时——看门狗补挂嵌入轮询，窗口出现即自动嵌入）、"手动重启"按钮
 （按 `recover.method` 执行一次异常恢复 `reenter_pet`，调度器在跑先停，恢复期间开始/停止按钮禁用，恢复完成自动启动调度器）；设置页"检查更新"按钮 + 启动自动检查一次/每 6 小时一次（`src/update_checker.py`，
-有更新时设置页显示 Release 链接并打日志）；标题栏带版本号（`src/version.py` 的 `APP_VERSION`）；**scrcpy 必须带 `--port=按序列号分配的固定端口`（`_scrcpy_port`，含无头关屏 scrcpy）**：默认范围 27183:27199 在 Windows 下多个 scrcpy 能同时绑定 27183（SO_REUSEADDR 语义），各设备 adb reverse 回连被投递到错误的 scrcpy 进程——双开同时开镜像画面串台/两窗口同一画面/Server connection failed |
+有更新时设置页显示 Release 链接并打日志）；标题栏带版本号（`src/version.py` 的 `APP_VERSION`）；**scrcpy 必须带 `--port=按序列号分配的固定端口`（`_scrcpy_port`，含无头关屏 scrcpy）**：默认范围 27183:27199 在 Windows 下多个 scrcpy 能同时绑定 27183（SO_REUSEADDR 语义），各设备 adb reverse 回连被投递到错误的 scrcpy 进程——双开同时开镜像画面串台/两窗口同一画面/Server connection failed。**平台分流**（`IS_WIN`）：非 Windows 时 win32con/win32gui/win32process 置 None、`_kill_scrcpy_by_marker` 改扫 `/proc/<pid>/cmdline`、`find_scrcpy_hwnd`/`embed`/`_fit` 直接返回，画面改由 `DeviceMirror` 后台线程 `adb exec-out screencap -p` 抓帧（约 1 fps，`_MirrorSignals.frame` → `ScrcpyContainer.set_frame`/`paintEvent` 等比绘制），`_start_all`/`_check_scrcpy`/`_try_embed`/`_enable_scrcpy`/`_disable_scrcpy`/`_restart_scrcpy` 各带 Linux 分支，`_scrcpy_env()` 给 scrcpy 传 `ADB`（Linux execvp 不搜 cwd）。**熄屏运行**（`gui.screen_off` 工具栏开关）：Windows 上面板归镜像进程自己的 `--turn-screen-off` 管（启动时固定，开关变了靠 `_apply_screen_off_state` → `_restart_scrcpy` 重启镜像生效；`_mirror_handles_screen_off` 判断），镜像没跑或 Linux 时用无头 scrcpy（`_apply_screen_off`/`_stop_screen_off`/`_check_screen_off`，看门狗两平台都跑），`closeEvent` 必须收掉无头熄屏进程。 |
 | `src/stats_chart.py` | 统计页：各任务近 N 天次数的平滑折线图（QPainter 自绘 + Catmull-Rom 平滑，数据来自 `runs/*_progress.json` 的 history）；坐标轴文字/网格颜色跟随 Fluent 明暗主题（`_text_color()`/`_grid_color()` 读 `isDarkTheme()`，自绘不吃样式表） |
 | `scenarios/runner.py` | 统一调度器，两种引擎（`runner.engine`）：`task_queue`（默认，`TaskQueueRunner`：执行顺序由 `tasks.order` 配置，> 分隔越靠前越优先，不在 order 里不调度；每任务独立 enabled / trigger（interval 间隔 / daily 每日时间点窗口）/ enabled_time_range / success_interval / failure_interval，见 `tasks` 段）/ `legacy`（`Runner.run` 老主循环，顺序写死：护理 → 冒险 → 踩踩 → PK → 好友雇佣 → 好友护理 → 学习/打工）。共通：场景异常分级重试（回主页面重进 → `recover()` 重启恢复）；都失败时主任务（学习/打工）发告警通知（`src/notify.py`）并退出，支线任务延后重试（legacy 用 `SIDE_TASK_RETRY_DELAY`，队列用各任务 `failure_interval`） |
 | `scenarios/school.py` `work.py` `adventure.py` `care.py` `visit.py` `pk.py` `friend_care.py` `hire_friend.py` `employed.py` | 各场景，均继承 `DeviceScenario`（`pk.py`/`friend_care.py` 继承 `visit.py` 复用好友导航；`hire_friend.py` 继承 `friend_care.py` 复用指定好友导航；`employed.py` 只做被雇佣检测，召回复用基类） |
@@ -65,12 +70,17 @@ $PY build.py --emulator          # 模拟器版（内置 frida 客户端；frida
 | `src/settings.py` | ruamel 往返读写 config.yaml（保留注释），GUI 设置页用 |
 | `src/notify.py` | 失败告警通知：Windows Toast（winotify）+ OnePush 多渠道推送（Bark/PushPlus/Server酱/SMTP/自定义 webhook 等），发送失败只记日志 |
 | `tools/dump_hierarchy.py` | 抓当前屏幕控件树 XML 存到 `xml/page.xml`（校准 locators 的 xpath/content-desc 用；`xml/` 已 git 排除） |
-| `tools/fetch_scrcpy.py` | 从官方 GitHub Release 下载解压 scrcpy（win64）到 `resources/scrcpy-win64/`（不入库）；`--version` 指定版本、`--force` 强制覆盖，build.py / CI 打包前自动调用 |
+| `tools/fetch_scrcpy.py` | 从官方 GitHub Release 下载解压 scrcpy 到 `resources/`（不入库）：Windows 取 `scrcpy-win64-v*.zip` → `resources/scrcpy-win64/`（**自带 adb.exe**），Linux 取 `scrcpy-linux-x86_64-v*.tar.gz` → `resources/scrcpy-linux/`（**只有 `scrcpy` + `scrcpy-server`，不含 adb**；解压后补 0o755）；`--version` 指定版本、`--force` 强制覆盖，build.py / CI 打包前自动调用 |
 | `tools/fetch_frida_server.py` | 下载 frida-server 离线包到 `resources/frida-server/`（不入库）；`--version`/`--arch`（可多个）/`--force`，GitHub 直连失败自动试镜像；源码运行 `src/opener.py` 缺失时自动调用（xz 不随 exe 打包，打包版兜底触发时按提示手动放置） |
 | `tools/fetch_minitouch.py` | 下载 minitouch 预编译二进制到 `resources/minitouch/minitouch-<abi>`（不入库，jsDelivr/unpkg/GitHub 多源）；`--arch`（可多个）/`--force`；源码运行 `src/u2dev.py` 控制方案选 minitouch 且缺失时自动调用，build.py 打包前也会调用 |
-| `resources/` | 第三方二进制/离线包（不入库）：`scrcpy-win64/`（tools/fetch_scrcpy.py 拉取）、`frida-server/`（离线 xz，不随 exe 打包，兜底触发时手动放置/源码运行自动下载）、`minitouch/`（minitouch 二进制，tools/fetch_minitouch.py 拉取，普通版/模拟器版都带上） |
+| `resources/` | 第三方二进制/离线包（不入库）：`scrcpy-win64/`（Windows，tools/fetch_scrcpy.py 拉取，自带 adb.exe）、`scrcpy-linux/`（Linux，同脚本按平台拉取，含 `scrcpy`+`scrcpy-server`，**无 adb**）、`platform-tools/`（可选：用户手动放入的 Linux/macOS adb，本项目不下载）、`frida-server/`（离线 xz，不随 exe 打包，兜底触发时手动放置/源码运行自动下载）、`minitouch/`（minitouch 二进制，tools/fetch_minitouch.py 拉取，普通版/模拟器版都带上） |
 | `tools/test_locator.py` | 测试 locator 的 xpath 在当前页面的命中稳定性（连设备连续多轮 dump，统计 live/snapshot 两种调用方式的命中率与 bounds 漂移，定位深层 xpath 时有时无/位置漂移问题） |
 | `tools/capture_visit_jump.py` | 抓取 QQ 宠物"访问好友"跳转参数（doJumpAction URL + doAction attrs），真机/模拟器对比、QQ 更新后排查用；`-s` 设备、`-c` 自动点 好友->访问；frida-server 按 opener 的隐身方式自动部署（伪装名 + 随机端口，用完即杀） |
+| `LINUX.md` | Linux（真机模式）部署与使用说明：与 Windows 的差异对照、chmod+运行方式、adb/udev 配置、熄屏运行原理与实测证据、必读的"关掉悬浮窗/画中画"、故障排查表 |
+| `tools/linux_android_check.sh` | Linux 设备体检：adb devices、按 **ADB 接口签名**（`bInterfaceClass=ff`/subclass 42/protocol 01）扫 USB 找设备（不按厂商 ID 白名单——MediaTek 等 ID 也用于蓝牙/网卡会误报）、打印设备节点权限、列出已有 udev 规则、给出下一步命令 |
+| `tools/linux_android_udev.sh` | 写 `/etc/udev/rules.d/51-android-qqpetcopilot.rules`（**独立文件名，不覆盖发行版/官方包的 51-android.rules**，去重 id、`MODE=0660`+`GROUP=plugdev` 并把 `$SUDO_USER` 加进 plugdev）+ `udevadm reload/trigger`；`sudo bash tools/linux_android_udev.sh <vendor id>` 只加单个厂商（推荐） |
+| `tools/smoke_gui.py` | Linux 无头 GUI 冒烟：`QT_QPA_PLATFORM=offscreen .venv/bin/python tools/smoke_gui.py [秒数]` 构造 MainWindow 跑几秒事件循环后正常退出，打印 IS_WIN/镜像线程/帧数/熄屏进程状态（不需要显示器，也不需要设备） |
+| `tools/test_mirror_pause.py` | 验证窗口隐藏/最小化时抓帧暂停（`DeviceMirror.set_paused` / `_pause_event`），PASS/FAIL 退出码；需真机（要出帧） |
 
 ## 关键约定（改动时必须遵守）
 
@@ -151,6 +161,8 @@ $PY build.py --emulator          # 模拟器版（内置 frida 客户端；frida
 - **配置改动**：新配置项加到 `config.yaml` + `src/config.py` 的 dataclass +
   `main.py` 的 `SETTING_FIELDS`（设置页表单，全局设置）或 `TASK_SETTING_FIELDS`
   （任务页表单，场景任务相关）+ `src/settings.py` 的 `DEFAULTS`/`validate_field` 四处。
+  （工具栏开关类配置是既有例外：`gui.mirror` / `gui.screen_off` 只在 `_toggle_scrcpy` /
+  `_toggle_screen_off` 里直接持久化，不进 `SETTING_FIELDS`——别好心补进设置页。）
 - **配置热加载**：新增配置项除了上面四处，还必须同步到 `scenarios/runner.py` 的
   `Runner.reload_config()`（两种引擎每轮调度前都会调用，GUI 设置页保存后下一轮生效）
   ——否则运行时改了不生效（历史教训：`work.duration` / `care.interval_seconds` /
@@ -291,6 +303,18 @@ $PY build.py --emulator          # 模拟器版（内置 frida 客户端；frida
     禁止整字典替换成 `{date}`（曾因此把 school_progress.json 的 history/learned 全丢）。
   **被雇佣时间段内主任务（冒险/学习/打工/雇佣好友）不触发**（队列 `_main_choice`
   返回 None，pending 收尾不受影响；legacy 跳过冒险/雇佣好友/学习打工段睡到下次检查）。
+- **平台分流与熄屏运行**（`main.py` 的 `IS_WIN`）：
+  - **别把线程属性命名成 `_stop`**：`threading.Thread` 自带私有方法 `_stop()`，`is_alive()` /
+    `join()` 在线程结束后会调它；被 `threading.Event` 顶掉后 `is_alive()` 抛 `TypeError`，
+    在 Qt 槽里就是未捕获异常 → PyQt6 qFatal 直接杀进程。`DeviceMirror` 用 `_stop_event` /
+    `_pause_event`。
+  - 熄屏（OLED 防烧屏）只关**面板电源**（SurfaceFlinger `powerMode=Off`，`dumpsys power` 仍
+    `mWakefulness=Awake`）：`screencap`、控件树、OCR、点击注入全部照常。面板归属：Windows 且
+    镜像在跑 = 镜像进程的 `--turn-screen-off`；否则无头 scrcpy（`--turn-screen-off --no-video
+    --no-audio --stay-awake --no-window`，`--window-title` 标记用于崩溃残留清理
+    `kill_previous_screen_off`）。GUI 正常退出/SIGTERM 都要收掉它，否则面板卡在黑屏。
+  - Linux 上：模拟器模式不可用（MuMu/雷电等只有 Windows 版）、adb 必须用户自备
+    （官方 scrcpy Linux 包不含 adb）、镜像约 1 fps；部署与排查见 `LINUX.md`。
 - 控制台中文乱码是 Windows GBK 终端显示问题，日志文件（UTF-8）里是正常的，不要当 bug 修。
 - **模拟器模式**（`--emulator`）：模拟器里 QQ 搜索卡片的宠物入口默认是空的（点不到
   `Q宠-*`），由 `src/opener.py` 打开宠物主页。**当前方案零注入**（旧版全程常驻 frida
@@ -348,9 +372,21 @@ $PY build.py --emulator          # 模拟器版（内置 frida 客户端；frida
 
 ## 打包
 
-`python build.py`（onefile）。`scrcpy-win64/` 不入库（二进制），打包前
-`build.py` 自动调 `tools/fetch_scrcpy.py` 从官方 Release 拉取。路径约定：打包后
-`APP_ROOT` = exe 所在目录（config.yaml 首启复制、runs/ 生成于此），
-`RESOURCE_ROOT` = `sys._MEIPASS`。exe 旁 `runs/` 目录放同名资源可覆盖包内资源（如 `runs/resources/scrcpy-win64/`、`runs/resources/frida-server/`）。
+`python build.py`（onefile）。scrcpy 目录不入库（二进制），打包前 `build.py` 自动调
+`tools/fetch_scrcpy.py` 按平台拉取：Windows → `resources/scrcpy-win64/`（自带 adb.exe），
+Linux → `resources/scrcpy-linux/`（只有 `scrcpy` + `scrcpy-server`，无 adb）。产物名按平台：
+Windows `dist/QQPetCopilot.exe`（`--emulator` 另出 `QQPetCopilotEmulator.exe`），
+Linux `dist/QQPetCopilot`（无后缀，`--emulator` 在 Linux 无意义）。`QQPetCopilot.spec`
+里 scrcpy 数据目录、包根重复二进制过滤都按平台取（`IS_WIN`），Linux 上还要注意别把
+`scrcpy` ELF 当数据留在包根。路径约定：打包后 `APP_ROOT` = exe 所在目录
+（config.yaml 首启复制、runs/ 生成于此），`RESOURCE_ROOT` = `sys._MEIPASS`。
+exe 旁 `runs/` 目录放同名资源可覆盖包内资源（如 `runs/resources/scrcpy-win64/`、
+`runs/resources/frida-server/`）。
 Release 工作流打包前会执行 `tools/write_version.py --tag <tag>` 把版本号写进 `src/version.py`
 （exe 内"检查更新"按它比较版本）；本地手动打包发布前如需正确版本号，同样先跑这个命令。
+
+CI（`.github/workflows/release.yml`）两个 job：`build-release`（windows-latest：普通版 +
+模拟器版，创建/更新 Release，`outputs.tag`/`outputs.target` 供下游复用）与 `build-linux`
+（ubuntu-latest，`needs: build-release`，跑 `python build.py` 后打成
+`QQPetCopilot-<tag>-linux-x64.tar.gz`（含 `QQPetCopilot` + `LINUX.md`）附到同一个 Release；
+串行是为了避免两个 job 同时 create release。**Linux 包不含 adb**，用户需自备）。

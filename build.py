@@ -7,6 +7,10 @@
                                      dist/QQPetCopilotEmulator.exe
       python build.py --all          普通版 + 模拟器版一起打包
 
+平台：Windows 产物带 .exe；Linux 产物为 dist/QQPetCopilot（无后缀，CI 见
+.github/workflows/release.yml 的 build-linux job）。--emulator 只对 Windows 有意义
+（MuMu/雷电/夜神/蓝叠只有 Windows 版），Linux 上仍可打但产物无用。
+
 目录约定（打包后）：
 - exe 所在目录：可写数据（config.yaml 首次运行自动复制出来、runs/ 进度与日志）
 - exe 同级的 resources/scrcpy-win64/ 若存在则优先于包内资源（方便替换）
@@ -19,6 +23,9 @@ import sys
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent
+
+IS_WIN = sys.platform == 'win32'
+EXE_SUFFIX = '.exe' if IS_WIN else ''
 
 ONEDIR = '--onedir' in sys.argv
 EMULATOR = '--emulator' in sys.argv
@@ -44,11 +51,13 @@ def fetch_common() -> None:
     fetch_scrcpy = PROJECT_ROOT / 'tools' / 'fetch_scrcpy.py'
     if fetch_scrcpy.exists():
         subprocess.run([sys.executable, str(fetch_scrcpy)], check=False)
-    # minitouch 控制方案二进制（resources/minitouch/，不入库；x86_64 模拟器 + arm64 真机）
+    # minitouch 控制方案二进制（resources/minitouch/，不入库）：x86_64 只对 Windows 版
+    # 模拟器有意义，Linux 上只有真机（arm64-v8a），少拉一个
+    arches = ['x86_64', 'arm64-v8a'] if IS_WIN else ['arm64-v8a']
     fetch_minitouch = PROJECT_ROOT / 'tools' / 'fetch_minitouch.py'
     if fetch_minitouch.exists():
         subprocess.run([sys.executable, str(fetch_minitouch),
-                        '--arch', 'x86_64', 'arm64-v8a'], check=False)
+                        '--arch', *arches], check=False)
 
 
 def build(emulator: bool) -> None:
@@ -63,9 +72,13 @@ def build(emulator: bool) -> None:
         env.pop('QQ_PET_EMULATOR', None)
     name = 'QQPetCopilotEmulator' if emulator else 'QQPetCopilot'
     mode = 'onedir 目录模式' if ONEDIR else 'onefile 单文件模式'
+    if emulator and not IS_WIN:
+        print('提示：模拟器版只对 Windows 模拟器（MuMu/雷电/夜神/蓝叠）有意义，'
+              'Linux 上只能跑真机；这里仍然照常打包，但产物无用。')
     print('开始打包（' + ('模拟器版，' if emulator else '普通版，') + mode + '）...')
     subprocess.run(ARGS, check=True, cwd=PROJECT_ROOT, env=env)
-    out = PROJECT_ROOT / 'dist' / (f'{name}/{name}.exe' if ONEDIR else f'{name}.exe')
+    out = PROJECT_ROOT / 'dist' / (f'{name}/{name}{EXE_SUFFIX}' if ONEDIR
+                                   else f'{name}{EXE_SUFFIX}')
     print(f'完成: {out}')
 
 

@@ -71,14 +71,19 @@ _COMMON_ADB_PATHS_POSIX = [
 
 
 def bundled_adb_rel() -> str:
-    """随包 adb 的相对路径（Windows 用 scrcpy-win64 自带，Linux 用 platform-tools）。"""
+    """项目内自备 adb 的相对路径（Windows 用 scrcpy-win64 自带，Linux 需用户自己放入）。
+
+    Windows 的 scrcpy 包自带 adb.exe；Linux 官方 scrcpy 包只有 scrcpy +
+    scrcpy-server，**不含 adb**，所以这里的非 Windows 返回值只是「用户手动解压
+    platform-tools 时的优先查找位置」，找不到就继续走 PATH / 常见目录。
+    """
     if sys.platform == "win32":
         return "resources/scrcpy-win64/adb.exe"
     return "resources/platform-tools/adb"
 
 
 def _bundled_adb_candidates() -> list[str]:
-    """随包 adb 的候选相对路径（按优先级）。"""
+    """项目内自备 adb 的候选相对路径（按优先级）。"""
     if sys.platform == "win32":
         return ["resources/scrcpy-win64/adb.exe"]
     return ["resources/platform-tools/adb", "resources/scrcpy-linux/adb"]

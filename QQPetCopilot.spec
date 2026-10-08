@@ -1,5 +1,6 @@
 # -*- mode: python ; coding: utf-8 -*-
 import os
+import sys
 from pathlib import Path
 
 from PyInstaller.utils.hooks import collect_data_files
@@ -10,10 +11,16 @@ from PyInstaller.utils.hooks import collect_all
 EMULATOR = bool(os.environ.get('QQ_PET_EMULATOR'))
 EXE_NAME = 'QQPetCopilotEmulator' if EMULATOR else 'QQPetCopilot'
 
+# 平台：Python 产物没有扩展名，模拟器版在 Linux 上无意义（MuMu/雷电等只有 Windows 版）
+IS_WIN = sys.platform == 'win32'
+
 datas = [('config.example.yaml', '.')]
-# resources/scrcpy-win64/ 不入库（tools/fetch_scrcpy.py 拉取），存在才随包带上
-if Path('resources/scrcpy-win64/scrcpy.exe').is_file():
-    datas.append(('resources/scrcpy-win64', 'resources/scrcpy-win64'))
+# scrcpy 目录不入库（tools/fetch_scrcpy.py 拉取），存在才随包带上：
+# Windows 的 zip 自带 adb.exe；Linux 的 tar.gz 只有 scrcpy + scrcpy-server（adb 需自备）
+SCRCPY_DIR = 'resources/scrcpy-win64' if IS_WIN else 'resources/scrcpy-linux'
+SCRCPY_BIN = 'scrcpy.exe' if IS_WIN else 'scrcpy'
+if (Path(SCRCPY_DIR) / SCRCPY_BIN).is_file():
+    datas.append((SCRCPY_DIR, SCRCPY_DIR))
 # resources/minitouch/（minitouch 控制方案二进制，tools/fetch_minitouch.py 拉取，不入库）
 _minitouch_dir = Path('resources/minitouch')
 if _minitouch_dir.is_dir():
@@ -97,14 +104,21 @@ a = Analysis(
 # （opencv_videoio_ffmpeg*.dll 约 30.9MB，打包体积大头；去掉后 cv2.VideoCapture 不可用，其余功能不受影响）
 a.binaries = [t for t in a.binaries if 'opencv_videoio_ffmpeg' not in t[0].lower()]
 
-# 注意：datas 里的 PE 文件会被 PyInstaller 自动提升为 binaries，所以 scrcpy-win64 下的
-# exe/DLL 实际由 BINARY 条目提供（目标仍是 scrcpy-win64\xxx）；二进制依赖分析额外把其中
-# 6 个 DLL（avcodec/SDL3/avutil/avformat/swresample/libusb）以根目录为目标又收集了一份，
-# 约 15MB 未压缩 / 5.8MB 压缩后。这里只去掉目标在根目录的重复项，保留 scrcpy-win64\ 下的。
-_scrcpy_root = Path('resources/scrcpy-win64').resolve()
+# 注意：datas 里的可执行文件会被 PyInstaller 自动提升为 binaries，所以 scrcpy 目录下的
+# scrcpy(.exe)/DLL 实际由 BINARY 条目提供（目标仍是 scrcpy 目录）；二进制依赖分析还会把
+# 其中几个共享库（Windows: avcodec/SDL3/... ；Linux: 静态包一般没有外部依赖）以**包根目录**
+# 为目标又收集一份。这里只去掉目标在包根的同名重复项，保留 scrcpy 目录下的那份。
+_scrcpy_root = Path(SCRCPY_DIR).resolve()
+
+
+def _is_flat(name: str) -> bool:
+    """条目名不含目录部分 = 被额外收集到包根的副本（跨平台判断，别只看 '\\'）。"""
+    return '/' not in name and '\\' not in name
+
+
 a.binaries = [t for t in a.binaries
               if not (Path(t[1]).resolve().is_relative_to(_scrcpy_root)
-                      and '\\' not in t[0] and '/' not in t[0])]
+                      and _is_flat(t[0]))]
 
 pyz = PYZ(a.pure)
 

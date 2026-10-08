@@ -2,9 +2,11 @@
 # 复制为 config.yaml 后按需修改；config.yaml 不入库。
 
 adb:
-  # adb 可执行文件路径；留空则自动搜索：先找项目内随包的 adb
-  # （Windows: resources/scrcpy-win64/adb.exe；Linux/macOS: resources/platform-tools/adb），
+  # adb 可执行文件路径；留空则自动搜索：先找项目内自备的 adb
+  # （Windows: resources/scrcpy-win64/adb.exe 随 scrcpy 包自带；
+  #   Linux/macOS: resources/platform-tools/adb 需自己解压放入，本项目不下载），
   # 再找 PATH 和常见安装目录。相对路径相对项目根目录。
+  # Linux 上没有它时请先装：sudo apt install android-tools-adb
   path: ""
   # 设备序列号；留空则使用第一台在线设备
   device_serial: ""

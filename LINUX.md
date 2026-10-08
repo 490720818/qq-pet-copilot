@@ -33,9 +33,14 @@
 # Python 3.12（源码运行要求；3.13+ 部分依赖还没轮子）
 python3.12 --version
 
-# 可选：系统级 adb（本项目自带 resources/platform-tools/adb，装不装都行）
+# adb：Linux 上必须自己准备（scrcpy 的 Linux 包不含 adb，本项目也不会下载它）
 sudo apt install android-tools-adb
 ```
+
+> `adb` 有三条路：装系统包（上面这条，最省事，装完在 `PATH` 里）、自己下载
+> Google 的 platform-tools 解压到项目根 `resources/platform-tools/`（`adb.path`
+> 留空时会优先用它），或在 `config.yaml` 的 `adb.path` 里直接写绝对路径。
+> 找不到 adb 时启动会报「找不到 adb」，见第 8 节。
 
 `scrcpy` **不需要** `apt install`——本项目的 `tools/fetch_scrcpy.py` 会拉官方 Linux 静态包
 （自带 SDL / libavcodec，不依赖系统库），解到 `resources/scrcpy-linux/`。
@@ -54,13 +59,24 @@ uv pip install --python .venv/bin/python -r requirements.txt
 ### 2.3 随包资源
 
 ```bash
-.venv/bin/python tools/fetch_scrcpy.py          # adb + scrcpy -> resources/
+.venv/bin/python tools/fetch_scrcpy.py          # scrcpy（Linux 静态包）-> resources/scrcpy-linux/
 .venv/bin/python tools/fetch_ocr_models.py      # PP-OCRv6 tiny 模型 -> runs/models/rapidocr/
 ```
 
 `fetch_scrcpy.py` 默认版本 `4.1`（与 Windows/CI 一致）；想要更新的可以
 `.venv/bin/python tools/fetch_scrcpy.py --version 5.0`。
-**注意**：OCR 模型也可以不预拉——首次 OCR 时会自动下载。
+**注意**：它只拉 scrcpy（官方 Linux 包里只有 `scrcpy` + `scrcpy-server`，没有 adb）；
+OCR 模型也可以不预拉——首次 OCR 时会自动下载。
+
+### 2.4 直接用 CI 打好的包（可选）
+
+不想自己搭环境/跑 PyInstaller 的话，GitHub Release 里有 Linux 包：
+
+- `QQPetCopilot-<版本>-linux-x64.tar.gz` —— 由 `.github/workflows/release.yml` 的
+  `build-linux` job（ubuntu runner）用 `python build.py` 打包，内含 onefile 可执行文件
+  `QQPetCopilot` 与本文档。
+- 解压后 `chmod +x QQPetCopilot && ./QQPetCopilot`（首次运行会在同目录生成 `config.yaml`
+  和 `runs/`）。**adb 仍需自备**（见 2.1）——包里不含 adb。
 
 ---
 
@@ -242,9 +258,9 @@ pkill -f 'scrcpy.*--turn-screen-off'
 ### 顺带修的寿命问题
 
 - **`svc power stayon true` 与熄屏共存**：`stayon` 只管「USB 供电时别自动息屏」，
-  和 scrcpy 关面板不冲突，两个都开也不会把面板点亮。
-- **熄屏模式下不再发 `KEYCODE_WAKEUP`**：原来镜像启动前会唤醒屏幕，现在熄屏开着时跳过，
-  否则刚关掉的面板立刻又被点亮。
+  和 scrcpy 关面板不冲突，两个都开也不会把面板点亮。抓帧（`screencap`）不依赖面板
+  点亮，所以熄屏时也不需要唤醒屏幕——抓帧前的那次 `KEYCODE_WAKEUP` 只在熄屏开关
+  关掉时才发（`_wake_device`，仅 Linux 抓帧镜像用；Windows 镜像路径不调它）。
 - **窗口最小化时暂停抓帧**：单帧 `screencap` 约 1s，是**手机端** PNG 编码在烧 CPU。
   GUI 最小化/隐藏后抓帧线程自动暂停（`DeviceMirror.set_paused`），还原时继续。
 - **抓帧间隔下限 0.3s**：抓一帧本来就要 1s，再背靠背连抓只是白烧电脑 CPU。
@@ -304,11 +320,13 @@ adb -s <序列号> exec-out screencap -p > /tmp/s.png
 | `no permissions` | 装 udev 规则，见 3.3 |
 | `unauthorized` | 手机上重新确认授权弹窗；或开发者选项里「撤消 USB 调试授权」后重插 |
 | `error: no devices/emulators found` | 没插好 / USB 用途是「仅充电」/ adb server 卡了（`adb kill-server`） |
-| 镜像画面全黑 | 手机息屏了（`_wake_device` 会自动唤醒+stayon，但手动息屏后可能失效）；或设备上盖了黑窗口 |
+| `找不到 adb` | Linux 的 scrcpy 包不含 adb，必须自己装/放（见 2.1）：`apt install android-tools-adb`，或把 platform-tools 解压到 `resources/platform-tools/` |
+| 镜像画面全黑 | 设备上盖了黑窗口（悬浮窗/画中画，见第 7 节）；或面板被熄屏 scrcpy 关了且设备没在渲染（`gui.screen_off: false` 可排除） |
 | 镜像不动 | `adb devices` 看看设备还在不在；抓帧线程失败会自己退避重试 |
 | GUI 起不来 / 花屏 | 试 `QT_QPA_PLATFORM=xcb .venv/bin/python main.py` 强制走 XWayland |
 | 金币/学园阶段识别错 | 十有八九是悬浮窗遮挡，见第 7 节 |
 | 手机面板不熄 / 亮回来 | 熄屏 scrcpy 掉了（看门狗 15s 内会重拉）；或「熄屏运行」开关被关了；或 `gui.screen_off: false` |
+| 切换「熄屏运行」时镜像窗口闪一下/重开 | Windows 上属正常：镜像进程自带的 `--turn-screen-off` 在启动时固定，开关一变只能重启镜像才能生效 |
 | 熄屏后 GUI 画面卡住不动 | 检查 `adb devices`；抓帧线程会自己退避重试，设备回来就恢复 |
 | 一键护理找不到按钮 | 体力/清洁都正常时本来就不显示，属于正常跳过 |
 

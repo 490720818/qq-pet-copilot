@@ -20,6 +20,10 @@ jobs:
     runs-on: windows-latest
     permissions:
       contents: write
+    # 供 build-linux job 复用（它等这个 job 建好 Release 后再补传 Linux 资产）
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+      target: ${{ steps.meta.outputs.target }}
 
     steps:
       - name: Checkout
@@ -240,6 +244,7 @@ jobs:
           $body += '| --- | --- |'
           $body += '| `QQPetCopilot.exe` | 普通版：真机（物理手机）使用，标准自动化托管，无需 Root。 |'
           $body += '| `QQPetCopilotEmulator.exe` | 模拟器版：模拟器（MuMu/雷电 等）使用；内置零注入 opener（MuMu 机型伪装 / 门禁补丁 + 官方 scheme 直开，frida 仅一次性兜底），解决模拟器 QQ 搜索卡片没有宠物入口的问题。Root 按需：日常运行不需要 Root，仅首次打门禁补丁或兜底注入时临时开一次。 |'
+          $body += '| `QQPetCopilot`（linux-x64.tar.gz） | Linux 版：真机（物理手机）使用，onefile 可执行文件。**adb 需自备**（scrcpy 的 Linux 包不含 adb，`apt install android-tools-adb`），详见仓库 `LINUX.md`。 |'
           $body += ''
           $body += '---'
           $body += ''
@@ -277,3 +282,82 @@ jobs:
             Write-Host "Create new release..."
             gh release create $tag $asset $assetEmu --target $target --title $tag --notes-file $notesFile --latest
           }
+
+  # Linux 打包（真机模式）：onefile 可执行文件 dist/QQPetCopilot，打进 tar.gz 上传。
+  # needs: build-release —— 等 Windows job 建好 Release 后再补传资产，避免两个 job
+  # 同时 create release 打架；Linux 失败也不影响已发布的 Windows 资产。
+  # 产物不含 adb（scrcpy 官方 Linux 包只有 scrcpy + scrcpy-server），用户需自备，
+  # 见 LINUX.md 2.1。
+  build-linux:
+    needs: build-release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      PYTHONIOENCODING: utf-8
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.build-release.outputs.target }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          # 与 Windows job / 本机 venv 一致的 3.12（frida 17 需要 3.11+）
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Download OCR models
+        run: python tools/fetch_ocr_models.py
+
+      - name: Download scrcpy (linux static build)
+        run: python tools/fetch_scrcpy.py
+
+      - name: Write app version
+        run: python tools/write_version.py --tag "${{ needs.build-release.outputs.tag }}"
+
+      - name: Build with PyInstaller
+        run: |
+          # 普通版（真机使用）：Linux 没有可用的 Windows 模拟器，不打模拟器版
+          python build.py
+          test -f dist/QQPetCopilot
+          chmod +x dist/QQPetCopilot
+
+      - name: Prepare package asset
+        id: package
+        run: |
+          set -euo pipefail
+          # 打包脚本在 Linux 上产物无 .exe 后缀（build.py 按平台加）
+          tag='${{ needs.build-release.outputs.tag }}'
+          asset="QQPetCopilot-${tag}-linux-x64.tar.gz"
+          stage="$(mktemp -d)"
+          cp dist/QQPetCopilot "$stage/"
+          cp LINUX.md "$stage/"
+          tar -czf "$asset" -C "$stage" QQPetCopilot LINUX.md
+          rm -rf "$stage"
+          echo "asset=$asset" >> "$GITHUB_OUTPUT"
+          ls -lh "$asset"
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: QQPetCopilot-${{ needs.build-release.outputs.tag }}-linux-x64
+          path: ${{ steps.package.outputs.asset }}
+
+      - name: Upload asset to GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          tag='${{ needs.build-release.outputs.tag }}'
+          asset='${{ steps.package.outputs.asset }}'
+          gh release upload "$tag" "$asset" --clobber
+          echo "Release assets now:"
+          gh release view "$tag" --json assets --jq '.assets[].name'
