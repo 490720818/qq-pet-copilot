@@ -70,7 +70,7 @@ PyQt6（Fluent Widgets）图形界面内嵌 scrcpy 实时画面，任务队列�
 - **跨平台**：Windows（真机 + 模拟器；scrcpy 窗口用 Win32 `SetParent` 嵌进界面）与
   Linux（真机；没有可嵌入的 scrcpy 窗口，改为后台 `adb exec-out screencap` 抓帧预览，
   X11/Wayland 都能跑）都支持。Linux 上模拟器模式不可用（MuMu/雷电等只有 Windows 版），
-  adb 需自备——部署、差异对照与故障排查见 [LINUX.md](LINUX.md)。
+  adb 随包（scrcpy 的 Linux 包自带）——部署、差异对照与故障排查见 [LINUX.md](LINUX.md)。
 - **熄屏运行（OLED 防烧屏）**：工具栏「熄屏运行」开关（`gui.screen_off`，默认开）。
   `scrcpy --turn-screen-off` 关的是**面板电源**而非设备休眠（`powerMode=Off` 但
   `mWakefulness=Awake`），实测熄屏下面板关闭时 `screencap` 仍返回实时画面、
@@ -89,8 +89,8 @@ PyQt6（Fluent Widgets）图形界面内嵌 scrcpy 实时画面，任务队列�
      解决模拟器 QQ 搜索卡片没有宠物入口的问题。
    - `QQPetCopilot-<版本>-linux-x64.tar.gz` —— **Linux 版**：真机使用（Wayland/X11 均可），
      onefile 可执行文件，`chmod +x QQPetCopilot && ./QQPetCopilot`。
-     模拟器模式在 Linux 上不可用（MuMu/雷电等只有 Windows 版），且 **adb 需自备**
-     （`apt install android-tools-adb`）——详见 [LINUX.md](LINUX.md)。
+     模拟器模式在 Linux 上不可用（MuMu/雷电等只有 Windows 版）；adb 已随包带上
+     （`resources/scrcpy-linux/adb`，与 Windows 版一致）——详见 [LINUX.md](LINUX.md)。
    - **模拟器版使用前提**：推荐使用最新版本 MuMu 模拟器（下载地址 [https://mumu.163.com/](https://mumu.163.com/)），
      模拟器内安装 **QQ 9.3.25 及以上版本**并登录账号后，再开启脚本。
      **Root 按需**：日常运行不需要 Root（机型伪装/门禁补丁持久化后零权限可用）；

@@ -71,22 +71,24 @@ _COMMON_ADB_PATHS_POSIX = [
 
 
 def bundled_adb_rel() -> str:
-    """项目内自备 adb 的相对路径（Windows 用 scrcpy-win64 自带，Linux 需用户自己放入）。
+    """项目内自备 adb 的相对路径（两个平台都随 scrcpy 包自带）。
 
-    Windows 的 scrcpy 包自带 adb.exe；Linux 官方 scrcpy 包只有 scrcpy +
-    scrcpy-server，**不含 adb**，所以这里的非 Windows 返回值只是「用户手动解压
-    platform-tools 时的优先查找位置」，找不到就继续走 PATH / 常见目录。
+    Windows 的 `scrcpy-win64-v*.zip` 里有 `adb.exe`；Linux 的
+    `scrcpy-linux-x86_64-v*.tar.gz` 里也有 `adb`（scrcpy 官方 Linux 构建会下载
+    Google platform-tools 并把它打进包），所以跑过 `tools/fetch_scrcpy.py` 后两边
+    都能直接用随包 adb。`resources/platform-tools/adb` 只是用户手动放
+    platform-tools 时的备选位置。
     """
     if sys.platform == "win32":
         return "resources/scrcpy-win64/adb.exe"
-    return "resources/platform-tools/adb"
+    return "resources/scrcpy-linux/adb"
 
 
 def _bundled_adb_candidates() -> list[str]:
-    """项目内自备 adb 的候选相对路径（按优先级）。"""
+    """项目内自备 adb 的候选相对路径（随包 scrcpy 的 adb 优先，手动 platform-tools 兜底）。"""
     if sys.platform == "win32":
         return ["resources/scrcpy-win64/adb.exe"]
-    return ["resources/platform-tools/adb", "resources/scrcpy-linux/adb"]
+    return ["resources/scrcpy-linux/adb", "resources/platform-tools/adb"]
 
 
 @dataclass
@@ -377,8 +379,9 @@ def find_adb(configured_path: str = "") -> str:
             return str(Path(path))
     hint = ("请安装 platform-tools，并在 config.yaml 的 adb.path 中填写 adb.exe 完整路径。"
             if sys.platform == "win32" else
-            "请安装 adb（apt install android-tools-adb 或下载 platform-tools），"
-            "并在 config.yaml 的 adb.path 中填写 adb 完整路径。")
+            "跑 tools/fetch_scrcpy.py 会把 scrcpy 和它自带的 adb 一起拉到 "
+            "resources/scrcpy-linux/adb；也可 apt install android-tools-adb / 下载 "
+            "platform-tools，并在 config.yaml 的 adb.path 中填写 adb 完整路径。")
     raise FileNotFoundError(f"找不到 adb。{hint}")
 
 

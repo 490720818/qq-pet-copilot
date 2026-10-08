@@ -33,14 +33,15 @@
 # Python 3.12（源码运行要求；3.13+ 部分依赖还没轮子）
 python3.12 --version
 
-# adb：Linux 上必须自己准备（scrcpy 的 Linux 包不含 adb，本项目也不会下载它）
+# 可选：系统级 adb；不装也行——tools/fetch_scrcpy.py 拉的 scrcpy Linux 包自带 adb
 sudo apt install android-tools-adb
 ```
 
-> `adb` 有三条路：装系统包（上面这条，最省事，装完在 `PATH` 里）、自己下载
-> Google 的 platform-tools 解压到项目根 `resources/platform-tools/`（`adb.path`
-> 留空时会优先用它），或在 `config.yaml` 的 `adb.path` 里直接写绝对路径。
-> 找不到 adb 时启动会报「找不到 adb」，见第 8 节。
+> adb 有四个来源（按 `find_adb` 的优先序）：随包 `resources/scrcpy-linux/adb`（**scrcpy
+> 官方 Linux 包自带，跑过 `tools/fetch_scrcpy.py` 就有**，与 Windows 版的
+> `resources/scrcpy-win64/adb.exe` 一个道理）→ 手动放进 `resources/platform-tools/adb`
+> 的 platform-tools → `PATH`（如 `apt install android-tools-adb`）→ 常见安装目录。
+> `config.yaml` 的 `adb.path` 留空即走上面的自动搜索；找不到 adb 时报错见第 8 节。
 
 `scrcpy` **不需要** `apt install`——本项目的 `tools/fetch_scrcpy.py` 会拉官方 Linux 静态包
 （自带 SDL / libavcodec，不依赖系统库），解到 `resources/scrcpy-linux/`。
@@ -65,7 +66,8 @@ uv pip install --python .venv/bin/python -r requirements.txt
 
 `fetch_scrcpy.py` 默认版本 `4.1`（与 Windows/CI 一致）；想要更新的可以
 `.venv/bin/python tools/fetch_scrcpy.py --version 5.0`。
-**注意**：它只拉 scrcpy（官方 Linux 包里只有 `scrcpy` + `scrcpy-server`，没有 adb）；
+**注意**：这个包**自带 `adb`**（scrcpy 官方 Linux 包用 Google platform-tools 的 adb
+打进包里，解到 `resources/scrcpy-linux/adb`），所以 Linux 侧 adb 也不用单独准备；
 OCR 模型也可以不预拉——首次 OCR 时会自动下载。
 
 ### 2.4 直接用 CI 打好的包（可选）
@@ -76,7 +78,7 @@ OCR 模型也可以不预拉——首次 OCR 时会自动下载。
   `build-linux` job（ubuntu runner）用 `python build.py` 打包，内含 onefile 可执行文件
   `QQPetCopilot` 与本文档。
 - 解压后 `chmod +x QQPetCopilot && ./QQPetCopilot`（首次运行会在同目录生成 `config.yaml`
-  和 `runs/`）。**adb 仍需自备**（见 2.1）——包里不含 adb。
+  和 `runs/`）。adb 已随包（scrcpy Linux 包自带，打进 onefile 里），无需自备。
 
 ---
 
@@ -320,7 +322,7 @@ adb -s <序列号> exec-out screencap -p > /tmp/s.png
 | `no permissions` | 装 udev 规则，见 3.3 |
 | `unauthorized` | 手机上重新确认授权弹窗；或开发者选项里「撤消 USB 调试授权」后重插 |
 | `error: no devices/emulators found` | 没插好 / USB 用途是「仅充电」/ adb server 卡了（`adb kill-server`） |
-| `找不到 adb` | Linux 的 scrcpy 包不含 adb，必须自己装/放（见 2.1）：`apt install android-tools-adb`，或把 platform-tools 解压到 `resources/platform-tools/` |
+| `找不到 adb` | 先跑 `tools/fetch_scrcpy.py`（随包 adb 落在 `resources/scrcpy-linux/adb`）；或装系统 adb（`apt install android-tools-adb`），或把 platform-tools 解压到 `resources/platform-tools/` |
 | 镜像画面全黑 | 设备上盖了黑窗口（悬浮窗/画中画，见第 7 节）；或面板被熄屏 scrcpy 关了且设备没在渲染（`gui.screen_off: false` 可排除） |
 | 镜像不动 | `adb devices` 看看设备还在不在；抓帧线程失败会自己退避重试 |
 | GUI 起不来 / 花屏 | 试 `QT_QPA_PLATFORM=xcb .venv/bin/python main.py` 强制走 XWayland |

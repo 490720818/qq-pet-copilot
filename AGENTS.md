@@ -70,10 +70,10 @@ $PY build.py --emulator          # 模拟器版（内置 frida 客户端；frida
 | `src/settings.py` | ruamel 往返读写 config.yaml（保留注释），GUI 设置页用 |
 | `src/notify.py` | 失败告警通知：Windows Toast（winotify）+ OnePush 多渠道推送（Bark/PushPlus/Server酱/SMTP/自定义 webhook 等），发送失败只记日志 |
 | `tools/dump_hierarchy.py` | 抓当前屏幕控件树 XML 存到 `xml/page.xml`（校准 locators 的 xpath/content-desc 用；`xml/` 已 git 排除） |
-| `tools/fetch_scrcpy.py` | 从官方 GitHub Release 下载解压 scrcpy 到 `resources/`（不入库）：Windows 取 `scrcpy-win64-v*.zip` → `resources/scrcpy-win64/`（**自带 adb.exe**），Linux 取 `scrcpy-linux-x86_64-v*.tar.gz` → `resources/scrcpy-linux/`（**只有 `scrcpy` + `scrcpy-server`，不含 adb**；解压后补 0o755）；`--version` 指定版本、`--force` 强制覆盖，build.py / CI 打包前自动调用 |
+| `tools/fetch_scrcpy.py` | 从官方 GitHub Release 下载解压 scrcpy 到 `resources/`（不入库）：Windows 取 `scrcpy-win64-v*.zip` → `resources/scrcpy-win64/`（**自带 adb.exe**），Linux 取 `scrcpy-linux-x86_64-v*.tar.gz` → `resources/scrcpy-linux/`（**自带 `scrcpy` + `scrcpy-server` + `adb`**——官方 Linux 包用 Google platform-tools 的 adb 打进包；解压后补 0o755）；`--version` 指定版本、`--force` 强制覆盖，build.py / CI 打包前自动调用 |
 | `tools/fetch_frida_server.py` | 下载 frida-server 离线包到 `resources/frida-server/`（不入库）；`--version`/`--arch`（可多个）/`--force`，GitHub 直连失败自动试镜像；源码运行 `src/opener.py` 缺失时自动调用（xz 不随 exe 打包，打包版兜底触发时按提示手动放置） |
 | `tools/fetch_minitouch.py` | 下载 minitouch 预编译二进制到 `resources/minitouch/minitouch-<abi>`（不入库，jsDelivr/unpkg/GitHub 多源）；`--arch`（可多个）/`--force`；源码运行 `src/u2dev.py` 控制方案选 minitouch 且缺失时自动调用，build.py 打包前也会调用 |
-| `resources/` | 第三方二进制/离线包（不入库）：`scrcpy-win64/`（Windows，tools/fetch_scrcpy.py 拉取，自带 adb.exe）、`scrcpy-linux/`（Linux，同脚本按平台拉取，含 `scrcpy`+`scrcpy-server`，**无 adb**）、`platform-tools/`（可选：用户手动放入的 Linux/macOS adb，本项目不下载）、`frida-server/`（离线 xz，不随 exe 打包，兜底触发时手动放置/源码运行自动下载）、`minitouch/`（minitouch 二进制，tools/fetch_minitouch.py 拉取，普通版/模拟器版都带上） |
+| `resources/` | 第三方二进制/离线包（不入库）：`scrcpy-win64/`（Windows，tools/fetch_scrcpy.py 拉取，自带 adb.exe）、`scrcpy-linux/`（Linux，同脚本按平台拉取，含 `scrcpy`+`scrcpy-server`+`adb`）、`platform-tools/`（可选：用户手动放入的 Linux/macOS platform-tools，本项目不下载）、`frida-server/`（离线 xz，不随 exe 打包，兜底触发时手动放置/源码运行自动下载）、`minitouch/`（minitouch 二进制，tools/fetch_minitouch.py 拉取，普通版/模拟器版都带上） |
 | `tools/test_locator.py` | 测试 locator 的 xpath 在当前页面的命中稳定性（连设备连续多轮 dump，统计 live/snapshot 两种调用方式的命中率与 bounds 漂移，定位深层 xpath 时有时无/位置漂移问题） |
 | `tools/capture_visit_jump.py` | 抓取 QQ 宠物"访问好友"跳转参数（doJumpAction URL + doAction attrs），真机/模拟器对比、QQ 更新后排查用；`-s` 设备、`-c` 自动点 好友->访问；frida-server 按 opener 的隐身方式自动部署（伪装名 + 随机端口，用完即杀） |
 | `LINUX.md` | Linux（真机模式）部署与使用说明：与 Windows 的差异对照、chmod+运行方式、adb/udev 配置、熄屏运行原理与实测证据、必读的"关掉悬浮窗/画中画"、故障排查表 |
@@ -313,8 +313,9 @@ $PY build.py --emulator          # 模拟器版（内置 frida 客户端；frida
     镜像在跑 = 镜像进程的 `--turn-screen-off`；否则无头 scrcpy（`--turn-screen-off --no-video
     --no-audio --stay-awake --no-window`，`--window-title` 标记用于崩溃残留清理
     `kill_previous_screen_off`）。GUI 正常退出/SIGTERM 都要收掉它，否则面板卡在黑屏。
-  - Linux 上：模拟器模式不可用（MuMu/雷电等只有 Windows 版）、adb 必须用户自备
-    （官方 scrcpy Linux 包不含 adb）、镜像约 1 fps；部署与排查见 `LINUX.md`。
+  - Linux 上：模拟器模式不可用（MuMu/雷电等只有 Windows 版）、adb 随包自带
+    （scrcpy 官方 Linux 包里有 `adb`，落在 `resources/scrcpy-linux/adb`）、镜像约 1 fps；
+    部署与排查见 `LINUX.md`。
 - 控制台中文乱码是 Windows GBK 终端显示问题，日志文件（UTF-8）里是正常的，不要当 bug 修。
 - **模拟器模式**（`--emulator`）：模拟器里 QQ 搜索卡片的宠物入口默认是空的（点不到
   `Q宠-*`），由 `src/opener.py` 打开宠物主页。**当前方案零注入**（旧版全程常驻 frida
@@ -374,7 +375,7 @@ $PY build.py --emulator          # 模拟器版（内置 frida 客户端；frida
 
 `python build.py`（onefile）。scrcpy 目录不入库（二进制），打包前 `build.py` 自动调
 `tools/fetch_scrcpy.py` 按平台拉取：Windows → `resources/scrcpy-win64/`（自带 adb.exe），
-Linux → `resources/scrcpy-linux/`（只有 `scrcpy` + `scrcpy-server`，无 adb）。产物名按平台：
+Linux → `resources/scrcpy-linux/`（含 `scrcpy` + `scrcpy-server` + `adb`）。产物名按平台：
 Windows `dist/QQPetCopilot.exe`（`--emulator` 另出 `QQPetCopilotEmulator.exe`），
 Linux `dist/QQPetCopilot`（无后缀，`--emulator` 在 Linux 无意义）。`QQPetCopilot.spec`
 里 scrcpy 数据目录、包根重复二进制过滤都按平台取（`IS_WIN`），Linux 上还要注意别把
@@ -389,4 +390,4 @@ CI（`.github/workflows/release.yml`）两个 job：`build-release`（windows-la
 模拟器版，创建/更新 Release，`outputs.tag`/`outputs.target` 供下游复用）与 `build-linux`
 （ubuntu-latest，`needs: build-release`，跑 `python build.py` 后打成
 `QQPetCopilot-<tag>-linux-x64.tar.gz`（含 `QQPetCopilot` + `LINUX.md`）附到同一个 Release；
-串行是为了避免两个 job 同时 create release。**Linux 包不含 adb**，用户需自备）。
+串行是为了避免两个 job 同时 create release。随包的 scrcpy-linux 里含 adb，产物自带 adb）。

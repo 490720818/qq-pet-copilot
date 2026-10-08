@@ -4,12 +4,15 @@
 set -u
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-ADB="$ROOT/resources/platform-tools/adb"
+# 与 src/config.py 的 find_adb 同序：随包 scrcpy-linux/adb（官方 Linux 包自带）→ 手动放的
+# platform-tools → PATH
+ADB="$ROOT/resources/scrcpy-linux/adb"
+[ -x "$ADB" ] || ADB="$ROOT/resources/platform-tools/adb"
 [ -x "$ADB" ] || ADB="$(command -v adb || true)"
 
 echo "== adb =="
 if [ -z "${ADB:-}" ]; then
-  echo "找不到 adb（先跑 tools/fetch_scrcpy.py 或 apt install android-tools-adb）"
+  echo "找不到 adb（先跑 tools/fetch_scrcpy.py——它会连同 scrcpy 一起拉下官方自带的 adb；或 apt install android-tools-adb）"
 else
   echo "路径: $ADB"
   "$ADB" start-server >/dev/null 2>&1

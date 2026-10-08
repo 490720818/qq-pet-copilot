@@ -16,7 +16,7 @@ IS_WIN = sys.platform == 'win32'
 
 datas = [('config.example.yaml', '.')]
 # scrcpy 目录不入库（tools/fetch_scrcpy.py 拉取），存在才随包带上：
-# Windows 的 zip 自带 adb.exe；Linux 的 tar.gz 只有 scrcpy + scrcpy-server（adb 需自备）
+# Windows 的 zip 和 Linux 的 tar.gz 都自带 adb（Linux 版是用 Google platform-tools 的 adb 打进包的）
 SCRCPY_DIR = 'resources/scrcpy-win64' if IS_WIN else 'resources/scrcpy-linux'
 SCRCPY_BIN = 'scrcpy.exe' if IS_WIN else 'scrcpy'
 if (Path(SCRCPY_DIR) / SCRCPY_BIN).is_file():

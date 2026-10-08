@@ -244,7 +244,7 @@ jobs:
           $body += '| --- | --- |'
           $body += '| `QQPetCopilot.exe` | 普通版：真机（物理手机）使用，标准自动化托管，无需 Root。 |'
           $body += '| `QQPetCopilotEmulator.exe` | 模拟器版：模拟器（MuMu/雷电 等）使用；内置零注入 opener（MuMu 机型伪装 / 门禁补丁 + 官方 scheme 直开，frida 仅一次性兜底），解决模拟器 QQ 搜索卡片没有宠物入口的问题。Root 按需：日常运行不需要 Root，仅首次打门禁补丁或兜底注入时临时开一次。 |'
-          $body += '| `QQPetCopilot`（linux-x64.tar.gz） | Linux 版：真机（物理手机）使用，onefile 可执行文件。**adb 需自备**（scrcpy 的 Linux 包不含 adb，`apt install android-tools-adb`），详见仓库 `LINUX.md`。 |'
+          $body += '| `QQPetCopilot`（linux-x64.tar.gz） | Linux 版：真机（物理手机）使用，onefile 可执行文件，**adb 已随包**（scrcpy 的 Linux 包自带，与 Windows 版一致）。详见仓库 `LINUX.md`。 |'
           $body += ''
           $body += '---'
           $body += ''
@@ -286,8 +286,8 @@ jobs:
   # Linux 打包（真机模式）：onefile 可执行文件 dist/QQPetCopilot，打进 tar.gz 上传。
   # needs: build-release —— 等 Windows job 建好 Release 后再补传资产，避免两个 job
   # 同时 create release 打架；Linux 失败也不影响已发布的 Windows 资产。
-  # 产物不含 adb（scrcpy 官方 Linux 包只有 scrcpy + scrcpy-server），用户需自备，
-  # 见 LINUX.md 2.1。
+  # 随包的 scrcpy-linux 里含 adb（scrcpy 官方 Linux 包用 Google platform-tools 的 adb），
+  # 所以产物自带 adb，用户不必自备，见 LINUX.md 2.1。
   build-linux:
     needs: build-release
     runs-on: ubuntu-latest

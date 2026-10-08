@@ -1,6 +1,6 @@
 """验证画面镜像在窗口隐藏/最小化时暂停抓帧（Linux 专属省电逻辑）。
 
-    PATH=resources/platform-tools:$PATH QT_QPA_PLATFORM=offscreen \
+    PATH=resources/scrcpy-linux:$PATH QT_QPA_PLATFORM=offscreen \
         .venv/bin/python tools/test_mirror_pause.py
 """
 from __future__ import annotations
