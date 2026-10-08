@@ -77,8 +77,6 @@ $PY build.py --emulator          # 模拟器版（内置 frida 客户端；frida
 | `tools/test_locator.py` | 测试 locator 的 xpath 在当前页面的命中稳定性（连设备连续多轮 dump，统计 live/snapshot 两种调用方式的命中率与 bounds 漂移，定位深层 xpath 时有时无/位置漂移问题） |
 | `tools/capture_visit_jump.py` | 抓取 QQ 宠物"访问好友"跳转参数（doJumpAction URL + doAction attrs），真机/模拟器对比、QQ 更新后排查用；`-s` 设备、`-c` 自动点 好友->访问；frida-server 按 opener 的隐身方式自动部署（伪装名 + 随机端口，用完即杀） |
 | `LINUX.md` | Linux（真机模式）部署与使用说明：与 Windows 的差异对照、chmod+运行方式、adb/udev 配置、熄屏运行原理与实测证据、必读的"关掉悬浮窗/画中画"、故障排查表 |
-| `tools/linux_android_check.sh` | Linux 设备体检：adb devices、按 **ADB 接口签名**（`bInterfaceClass=ff`/subclass 42/protocol 01）扫 USB 找设备（不按厂商 ID 白名单——MediaTek 等 ID 也用于蓝牙/网卡会误报）、打印设备节点权限、列出已有 udev 规则、给出下一步命令 |
-| `tools/linux_android_udev.sh` | 写 `/etc/udev/rules.d/51-android-qqpetcopilot.rules`（**独立文件名，不覆盖发行版/官方包的 51-android.rules**，去重 id、`MODE=0660`+`GROUP=plugdev` 并把 `$SUDO_USER` 加进 plugdev）+ `udevadm reload/trigger`；`sudo bash tools/linux_android_udev.sh <vendor id>` 只加单个厂商（推荐） |
 | `tools/smoke_gui.py` | Linux 无头 GUI 冒烟：`QT_QPA_PLATFORM=offscreen .venv/bin/python tools/smoke_gui.py [秒数]` 构造 MainWindow 跑几秒事件循环后正常退出，打印 IS_WIN/镜像线程/帧数/熄屏进程状态（不需要显示器，也不需要设备） |
 | `tools/test_mirror_pause.py` | 验证窗口隐藏/最小化时抓帧暂停（`DeviceMirror.set_paused` / `_pause_event`），PASS/FAIL 退出码；需真机（要出帧） |
 

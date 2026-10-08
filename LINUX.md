@@ -96,33 +96,54 @@ OCR 模型也可以不预拉——首次 OCR 时会自动下载。
 ### 3.2 电脑端
 
 ```bash
-bash tools/linux_android_check.sh
+adb devices -l        # adb 不在 PATH 时用随包的：resources/scrcpy-linux/adb devices -l
 ```
 
-这个脚本会：跑 `adb devices -l`；按 **ADB 接口签名**（`bInterfaceClass=ff` +
-`bInterfaceSubClass=42` + `bInterfaceProtocol=01`）扫 USB 找设备；打印设备节点权限；
-列出已有 udev 规则；给出结论和下一步命令。
-
-正常输出：
+正常输出（能被 adb 认到）：
 
 ```
 faf55425    device usb:3-2 product:PJZ110 model:PJZ110 device:OP5D0DL1
-  22d9:2765  一加 13
-      节点: /dev/bus/usb/003/009  权限: crw-rw-r-- root:plugdev
-  ✅ adb 已认到设备，可以启动 GUI 了
 ```
+
+没出现 `device` 时，三条命令定位卡在哪一层：
+
+```bash
+adb devices -l            # 列表里有没有？状态是 device / unauthorized / no permissions
+lsusb                     # USB 层看不看得到手机（只想看某个厂商：lsusb -d 22d9:）
+ls -l /dev/bus/usb/*/*    # 节点权限，如 crw-rw-r-- 1 root plugdev
+```
+
+| 现象 | 说明 |
+|---|---|
+| `device` | 好了，可以启动 GUI |
+| `unauthorized` | 手机上点「允许 USB 调试」；没弹窗就开发者选项里「撤消 USB 调试授权」后重插 |
+| `no permissions` | 权限问题 → 见 3.3 |
+| adb 列表空，但 `lsusb` 能看到手机 | 多半是 USB 调试没开，或通知栏 USB 用途是「仅充电」 |
+| `lsusb` 也看不到 | 线/口/供电问题，换个口或换根线 |
 
 ### 3.3 权限问题（`no permissions`）
 
-Ubuntu / Pop!_OS 默认不带安卓 udev 规则，普通用户访问 `/dev/bus/usb/*` 会被拒：
+Ubuntu / Pop!_OS 默认不带安卓 udev 规则，普通用户访问 `/dev/bus/usb/*` 会被拒。装发行版维护的
+规则包即可（覆盖各厂商、由 udev 按 `uaccess` 发 ACL，**不用重新登录、也不用加组**）：
 
 ```bash
-sudo bash tools/linux_android_udev.sh 22d9      # 参数是上面看到的 vendor id
+sudo apt install android-sdk-platform-tools-common
 ```
 
-不加参数会写入 30+ 常见厂商的全量规则。脚本会写
-`/etc/udev/rules.d/51-android.rules`、把 `$SUDO_USER` 加进 `plugdev` 组、
-然后 `udevadm control --reload-rules` + `trigger`。**之后把手机拔了重插**。
+只给某一台手机放权限（或不想装上面那个包）时，自己写一条 —— 把 `22d9` 换成 `lsusb` 里看到的
+vendor id（`ID 22d9:2765 OPPO...` 里冒号前那段）：
+
+```bash
+echo 'SUBSYSTEM=="usb", ATTR{idVendor}=="22d9", TAG+="uaccess"' \
+  | sudo tee /etc/udev/rules.d/51-android-local.rules >/dev/null
+sudo udevadm control --reload-rules
+sudo udevadm trigger --subsystem-match=usb --action=add
+```
+
+之后把手机拔了重插，再 `adb devices -l` 确认变成 `device`。
+
+> 不建议用 `MODE="0666"`（等于放开给所有用户可写）或「加进 `plugdev` 组」那套老办法：
+> 前者权限过宽，后者要重新登录才生效（`uaccess` 是给当前登录会话发 ACL，立即生效）。
 
 ---
 
@@ -319,7 +340,7 @@ adb -s <序列号> exec-out screencap -p > /tmp/s.png
 
 | 现象 | 原因 / 处理 |
 |---|---|
-| `no permissions` | 装 udev 规则，见 3.3 |
+| `no permissions` | 装 udev 规则包：`sudo apt install android-sdk-platform-tools-common`（或手写一条 `uaccess` 规则），见 3.3 |
 | `unauthorized` | 手机上重新确认授权弹窗；或开发者选项里「撤消 USB 调试授权」后重插 |
 | `error: no devices/emulators found` | 没插好 / USB 用途是「仅充电」/ adb server 卡了（`adb kill-server`） |
 | `找不到 adb` | 先跑 `tools/fetch_scrcpy.py`（随包 adb 落在 `resources/scrcpy-linux/adb`）；或装系统 adb（`apt install android-tools-adb`），或把 platform-tools 解压到 `resources/platform-tools/` |
@@ -346,7 +367,11 @@ adb -s <序列号> exec-out screencap -p > /tmp/s.png
 | `src/u2dev.py` | `subprocess.CREATE_NO_WINDOW` 加平台守卫（原来在 Linux 上会直接 `AttributeError`） |
 | `tools/fetch_scrcpy.py` | 加 Linux 分支（下 `scrcpy-linux-x86_64-v*.tar.gz`，解压后补 `0o755`） |
 | `config.example.yaml` | `adb.path` 默认改为 `""`（自动搜索）；`gui.screen_off: true` |
-| `tools/linux_android_check.sh` | 新增：设备体检 |
-| `tools/linux_android_udev.sh` | 新增：装 udev 权限 |
 | `tools/smoke_gui.py` | 新增：无头 GUI 冒烟测试 |
 | `tools/test_mirror_pause.py` | 新增：验证窗口隐藏时抓帧暂停（PASS/FAIL 退出码） |
+
+> 早期版本还带过 `tools/linux_android_check.sh`（设备体检）和 `tools/linux_android_udev.sh`
+> （写 udev 规则），后已删除：前者要的信息 `adb devices -l` / `lsusb` / `ls -l /dev/bus/usb/*/*`
+> 三条命令就能给（见 3.2），后者与发行版包 `android-sdk-platform-tools-common` 重复、且它用的
+> `MODE=0660` + `plugdev` 组不如标准的 `TAG+="uaccess"`（后者不必重新登录），现在 3.3 直接给
+> 装包与手写规则两条路。
