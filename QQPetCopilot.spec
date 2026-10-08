@@ -120,6 +120,19 @@ a.binaries = [t for t in a.binaries
               if not (Path(t[1]).resolve().is_relative_to(_scrcpy_root)
                       and _is_flat(t[0]))]
 
+# adbutils（uiautomator2 的依赖）自带一份 adb，分析时会被收集进包（约 3.5MB 压缩）。
+# src/u2dev.py 已用 ADBUTILS_ADB_PATH 把 adbutils 指到本项目解析出的 adb（随包 scrcpy
+# 那份），第二份只是白占体积，这里排掉。注意只排 adb 本体，保留 adbutils/binaries/
+# 这个包本身（adbutils 靠它定位自带 adb，包没了会变成报错而不是回退 PATH）。
+_ADBUTILS_BUNDLED_ADB = {'adbutils/binaries/adb', 'adbutils/binaries/adb.exe'}
+
+
+def _is_adbutils_bundled_adb(name: str) -> bool:
+    return name.replace('\\', '/') in _ADBUTILS_BUNDLED_ADB
+
+
+a.binaries = [t for t in a.binaries if not _is_adbutils_bundled_adb(t[0])]
+
 pyz = PYZ(a.pure)
 
 if os.environ.get('QQ_PET_ONEDIR'):

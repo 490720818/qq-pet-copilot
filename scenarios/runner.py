@@ -69,7 +69,7 @@ from datetime import date, datetime, timedelta
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.adb.device import Device
+from src.adb.device import AdbError, Device
 from src.coins import read_coins
 from src.config import (
     MAIN_TASK_KEYS,
@@ -1567,10 +1567,26 @@ if __name__ == '__main__':
                     help='宠物主页已打开（如 GUI 手动重启刚恢复完），启动时跳过 opener 打开')
     args = ap.parse_args()
 
+    def _fatal_env_error(e: Exception) -> None:
+        """设备/环境类错误：给一条能照着做的日志 + 非零退出，不要甩 traceback。
+
+        常见触发：手机没插好或没授权、config 的 adb.device_serial 不对、找不到 adb。
+        （GUI 会把 runner 的 stderr 原样显示在日志区，traceback 只会让人看不懂。）
+        """
+        log(f'启动失败: {e}')
+        log('请检查：USB 连接与手机上的「允许 USB 调试」授权、'
+            'config.yaml 的 adb.path / adb.device_serial，以及 `adb devices` 能否列出设备。')
+        sys.exit(1)
+
     if args.test:
         # 单测也同步模拟器模式标记（visit 等场景走 am start 好友入口分支）
         opener.EMULATOR_MODE = args.emulator or (is_emulator_build() and not args.no_emulator)
-        run_test(args.test)
+        try:
+            run_test(args.test)
+        except KeyboardInterrupt:
+            log('手动停止')
+        except (AdbError, FileNotFoundError) as e:
+            _fatal_env_error(e)
     else:
         if args.emulator:
             use_opener = True
@@ -1582,3 +1598,5 @@ if __name__ == '__main__':
             run_scheduler(use_opener, args.emulator_device, skip_opener=args.skip_opener)
         except KeyboardInterrupt:
             log('手动停止')
+        except (AdbError, FileNotFoundError) as e:
+            _fatal_env_error(e)

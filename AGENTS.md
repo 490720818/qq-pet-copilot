@@ -377,7 +377,11 @@ Linux → `resources/scrcpy-linux/`（含 `scrcpy` + `scrcpy-server` + `adb`）�
 Windows `dist/QQPetCopilot.exe`（`--emulator` 另出 `QQPetCopilotEmulator.exe`），
 Linux `dist/QQPetCopilot`（无后缀，`--emulator` 在 Linux 无意义）。`QQPetCopilot.spec`
 里 scrcpy 数据目录、包根重复二进制过滤都按平台取（`IS_WIN`），Linux 上还要注意别把
-`scrcpy` ELF 当数据留在包根。路径约定：打包后 `APP_ROOT` = exe 所在目录
+`scrcpy` ELF 当数据留在包根。spec 里另外排掉 adbutils 自带的那份 adb（`adbutils/binaries/adb[.exe]`，
+约 3.5MB 压缩）：`src/u2dev.py` 在 `u2.connect()` 之前用 `ADBUTILS_ADB_PATH`（adbutils 官方
+支持的环境变量，优先级高于 PATH 和它自带的副本）把 adbutils 指到 `find_adb()` 解析出的同一份
+adb，所以两处用的是同一个 binary；**别把 `adbutils/binaries/` 整个包一起排掉**（adbutils 靠它
+定位，包没了会直接报错而不是回退 PATH）。路径约定：打包后 `APP_ROOT` = exe 所在目录
 （config.yaml 首启复制、runs/ 生成于此），`RESOURCE_ROOT` = `sys._MEIPASS`。
 exe 旁 `runs/` 目录放同名资源可覆盖包内资源（如 `runs/resources/scrcpy-win64/`、
 `runs/resources/frida-server/`）。

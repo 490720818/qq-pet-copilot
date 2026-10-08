@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import functools
+import os
 import random
 import socket
 import subprocess
@@ -162,6 +163,11 @@ class U2Device:
 
     def __init__(self, adb_path: str, serial: str = ""):
         self.adb = Device(adb_path, serial)
+        # uiautomator2 / adbutils 内部自己找 adb（顺序：ADBUTILS_ADB_PATH 环境变量 →
+        # PATH → 它自带的 adbutils/binaries/adb）。打包版里我们的 adb 不在 PATH，
+        # 随包再带第二份 adb 纯属浪费体积，这里让它直接用我们解析出的这一份。
+        if adb_path:
+            os.environ.setdefault('ADBUTILS_ADB_PATH', str(adb_path))
         resolved = self.adb.ensure_connected()
         log(f'设备在线: {resolved}，正在连接 uiautomator2（首次会自动部署 u2.jar 到 /data/local/tmp）...')
         import uiautomator2 as u2  # 重依赖，用到才加载

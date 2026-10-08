@@ -43,6 +43,14 @@ sudo apt install android-tools-adb
 > 的 platform-tools → `PATH`（如 `apt install android-tools-adb`）→ 常见安装目录。
 > `config.yaml` 的 `adb.path` 留空即走上面的自动搜索；找不到 adb 时报错见第 8 节。
 
+PyQt6 与 OpenCV 需要一些系统运行库，桌面版一般已经带上；**最小化安装或容器里**要自己装
+（缺 `libGL.so.1` 之类的报错就是这里没装全）：
+
+```bash
+sudo apt install libgl1 libegl1 libglib2.0-0 libxkbcommon0 libdbus-1-3 \
+    libfontconfig1 libfreetype6 libx11-6 libxext6 libxrender1 libxcb1 libxcb-cursor0
+```
+
 `scrcpy` **不需要** `apt install`——本项目的 `tools/fetch_scrcpy.py` 会拉官方 Linux 静态包
 （自带 SDL / libavcodec，不依赖系统库），解到 `resources/scrcpy-linux/`。
 
